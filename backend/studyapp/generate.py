@@ -32,7 +32,7 @@ DIFFICULTY = {
 
 
 def _gen_budget():
-    return int(db.setting("llm_context") * 0.6)
+    return int(llm.context_tokens() * 0.6)
 
 
 def _system(subject_scope: str, group: dict) -> str:
@@ -149,7 +149,7 @@ def gen_quiz(art, params, groups, prog):
 def _page_call(system, task, reasoning, page_tokens) -> tuple[str, str]:
     """(text, finish_reason). With reasoning on, the thinking shares max_tokens with the page itself, so it gets all
     the room the context window has left (at high effort the thinking alone can use well over 10k tokens)."""
-    room = int(db.setting("llm_context")) - approx_tokens(system + task) - 1500
+    room = int(llm.context_tokens()) - approx_tokens(system + task) - 1500
     max_tokens = page_tokens if reasoning == "off" else max(page_tokens, min(room, 48000))
     res = llm.chat([{"role": "system", "content": system}, {"role": "user", "content": task}],
                    max_tokens=max(2000, min(max_tokens, room)), reasoning=reasoning, temperature=0.3)

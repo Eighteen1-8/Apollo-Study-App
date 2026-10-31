@@ -120,7 +120,7 @@ export const api = {
     req<{ results: SearchResult[]; warning: string | null }>('POST', '/search', { query, topic_id, include_reference }),
   settings: () => req<Settings>('GET', '/settings'),
   saveSettings: (s: Settings) => req<Settings>('PUT', '/settings', s),
-  testSettings: () => req<Record<string, { ok: boolean; error?: string; dim?: number; ms?: number; max_model_len?: number; models?: string[] }>>('POST', '/settings/test'),
+  testSettings: () => req<Record<string, { ok: boolean; online?: boolean; model?: string; error?: string; dim?: number; ms?: number; max_model_len?: number; models?: string[] }>>('POST', '/settings/test'),
   previewUrl: (docId: number, idx: number) => `${BASE}/documents/${docId}/units/${idx}/preview`,
   assetUrl: (rel: string) => `${BASE}/assets/${rel}`,
   embeddingMap: () => req<EmbeddingMap>('GET', '/embeddings/map'),

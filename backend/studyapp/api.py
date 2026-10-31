@@ -29,7 +29,7 @@ app.include_router(projection_router)
 app.add_middleware(CORSMiddleware, allow_origin_regex=r"^(http://(localhost|127\.0\.0\.1)(:\d+)?|file://.*|null)$",
                    allow_methods=["*"], allow_headers=["*"])
 
-SECRET_KEYS = ("llm_api_key", "embed_api_key")
+SECRET_KEYS = ("llm_api_key", "embed_api_key", "openrouter_api_key")
 
 
 def _404(row, what="Not found"):
@@ -76,7 +76,7 @@ class NameBody(BaseModel):
 @app.get("/subjects")
 def list_subjects():
     subjects = db.q("SELECT * FROM subjects ORDER BY name COLLATE NOCASE")
-    model = db.setting("embed_model")
+    model = llm.embed_model()
     # stale: embedded with a different model than the current one, so search can't use them until re-ingested
     topics = db.q("""SELECT t.*, (SELECT COUNT(*) FROM documents d WHERE d.topic_id=t.id) AS doc_count,
                      (SELECT COUNT(*) FROM documents d WHERE d.topic_id=t.id AND d.embed_model IS NOT NULL AND d.embed_model<>?) AS stale_docs
@@ -98,9 +98,9 @@ def list_subjects():
 def embedding_status(model: str | None = None):
     """How many files would need re-ingesting with embedding model `model` (for the settings warning): those embedded
     with any other model. Switching back to the model files were embedded with needs nothing."""
-    model = model or db.setting("embed_model")
+    model = model or llm.embed_model()
     return {"documents": db.q1("SELECT COUNT(*) n FROM documents WHERE embed_model IS NOT NULL AND embed_model<>?", (model,))["n"],
-            "current": db.setting("embed_model")}
+            "current": llm.embed_model()}
 
 
 class StaleBody(BaseModel):
@@ -116,7 +116,7 @@ def reingest_stale(sid: int, body: StaleBody):
         where, args = "topic_id=?", [body.topic_id]
     elif body.reference:
         where += " AND kind='reference'"
-    rows = db.q(f"SELECT id FROM documents WHERE {where} AND embed_model IS NOT NULL AND embed_model<>?", (*args, db.setting("embed_model")))
+    rows = db.q(f"SELECT id FROM documents WHERE {where} AND embed_model IS NOT NULL AND embed_model<>?", (*args, llm.embed_model()))
     for r in rows:
         jobs.cancel_for_document(r["id"])
         db.ex("UPDATE documents SET status='queued', updated_at=? WHERE id=?", (time.time(), r["id"]))
@@ -163,7 +163,7 @@ def get_topic(tid: int):
     t["stats"] = db.q1("""SELECT COUNT(*) docs, COALESCE(SUM(token_count),0) tokens, COALESCE(SUM(chunk_count),0) chunks,
                           COALESCE(SUM(vision_done),0) vision_done, COALESCE(SUM(vision_total),0) vision_total
                           FROM documents WHERE topic_id=?""", (tid,))
-    t["context_budget"] = int(db.setting("llm_context") * 0.65)
+    t["context_budget"] = int(llm.context_tokens() * 0.65)
     return t
 
 

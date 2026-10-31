@@ -412,3 +412,13 @@ a.cite:hover { transform: translateY(-1px); background: color-mix(in srgb, var(-
 :root[data-theme="daylight"] .app-backdrop::after { opacity: 0.8; }
 :root[data-theme="daylight"] .btn-primary::after { background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent); }
 :root[data-theme="daylight"] .chat-shell.floating, :root[data-theme="daylight"] .modal { box-shadow: var(--shadow-lg); }
+
+/* ================================================================ online models (OpenRouter) */
+.mini-online { width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center; cursor: pointer; color: var(--warn);
+  background: var(--warn-soft); border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); animation: online-pulse 2.6s ease-in-out infinite; }
+.mini-online:hover { background: color-mix(in srgb, var(--warn) 22%, transparent); }
+.minibar .mini-online[data-tip]:hover::after { white-space: normal; width: 230px; }
+@keyframes online-pulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 35%, transparent); } 50% { box-shadow: 0 0 0 5px transparent; } }
+.online-banner { line-height: 1.55; }
+.provider-seg button { padding: 6px 14px; }
+.provider-seg button.active.online { background: var(--warn-soft); color: var(--warn); }

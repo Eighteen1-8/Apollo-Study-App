@@ -156,7 +156,7 @@ def ingest(doc_id, job, keep_vision=False):
              parser_version=PARSER_VERSION)
 
     # Embed only the real extracted text.
-    model, batch = s["embed_model"], int(s["embed_batch"])
+    model, batch = llm.embed_model(), int(s["embed_batch"])
     for i in range(0, len(chunks), batch):
         job.check()
         part = chunks[i:i + batch]

@@ -224,7 +224,7 @@ def _system_prompt(chat) -> tuple[str, bool]:
         tail = ("\n\n=== STUDENT PROGRESS ===\nThe student marked these flashcards as 'I need more revision on this'. "
                 "They are struggling with these ideas: explain them extra carefully, check understanding, and connect "
                 "answers to them where relevant:\n" + "\n".join(f"- {c['front']}" for c in struggles))
-    budget = int(db.setting("llm_context") * 0.55)
+    budget = int(llm.context_tokens() * 0.55)
     groups = context.material_groups(chat["subject_id"], chat["topic_id"], budget)
     if not groups:
         return rules + "\n\n(No material has been uploaded for this scope yet.)" + tail, True
@@ -378,7 +378,7 @@ def _attachment_material(chat, docs: list[dict], query: str, full: bool) -> str:
     """Attached files' text for the latest turn. Files already in the system prompt aren't repeated; long files
     contribute their most relevant parts."""
     in_prompt = {d["id"] for d in context.topic_documents(chat["subject_id"], chat["topic_id"])} if full else set()
-    budget = int(db.setting("llm_context") * 0.2 / max(len(docs), 1))
+    budget = int(llm.context_tokens() * 0.2 / max(len(docs), 1))
     blocks = []
     for d in docs:
         if d["id"] in in_prompt:

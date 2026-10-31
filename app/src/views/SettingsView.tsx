@@ -11,7 +11,7 @@ type Field = {
 
 const GROUPS: { title: string; fields: Field[] }[] = [
   {
-    title: 'Language model (the model behind Apollo, via ninfer)',
+    title: 'Local language model (the model behind Apollo, via ninfer)',
     fields: [
       { key: 'llm_base_url', label: 'Base URL', type: 'text' },
       { key: 'llm_model', label: 'Model id', type: 'text' },
@@ -33,7 +33,7 @@ const GROUPS: { title: string; fields: Field[] }[] = [
     ],
   },
   {
-    title: 'Embedding model (LM Studio)',
+    title: 'Local embedding model (LM Studio)',
     fields: [
       { key: 'embed_base_url', label: 'Base URL', type: 'text' },
       { key: 'embed_model', label: 'Model id', type: 'text', help: 'Changing this requires re-ingesting documents.' },
@@ -72,6 +72,62 @@ const DIALS: { key: string; label: string; levels: [string, string, string]; hel
   { key: 'chat_interactive', label: 'Interactive', levels: ['Direct answers', 'Check understanding', 'Guide with questions'],
     help: 'At the top level Apollo breaks a problem into smaller questions for you to answer instead of giving the answer straight away.' },
 ];
+
+export const ONLINE_WARNING = <>
+  Your messages, uploaded material, page images and generated content will be sent to <b>OpenRouter</b> and the
+  model provider behind it. They will be <b>logged on external servers</b> and <b>may be used for training or other
+  purposes</b>, especially with free models. Nothing is private once it is sent. Choose <b>Local</b> to keep everything on
+  this computer.
+</>;
+
+const ONLINE_FIELDS: Field[] = [
+  { key: 'openrouter_api_key', label: 'OpenRouter API key', type: 'password', help: 'Stored only on this computer.' },
+  { key: 'openrouter_base_url', label: 'Base URL', type: 'text' },
+  { key: 'openrouter_model', label: 'Chat model id', type: 'text', help: 'e.g. google/gemma-4-26b-a4b-it:free' },
+  { key: 'openrouter_embed_model', label: 'Embedding model id', type: 'text', help: 'Changing embeddings requires re-ingesting documents.' },
+  { key: 'openrouter_context', label: 'Context window (tokens)', type: 'number' },
+  { key: 'openrouter_concurrency', label: 'Max simultaneous requests', type: 'number', help: 'Free models are rate limited; keep this low.' },
+];
+
+/** Where the models run: local servers (default) or OpenRouter, chosen separately for chat and embeddings. */
+function ProviderSettings({ s, set }: { s: Settings; set: (k: string, v: string | number) => void }) {
+  const ov = useOverlay();
+  const online = s.llm_provider === 'openrouter' || s.embed_provider === 'openrouter';
+  const choose = async (key: 'llm_provider' | 'embed_provider', v: string) => {
+    if (v === 'openrouter' && s[key] !== 'openrouter' && !(await ov.confirm({
+      title: 'Use an online model?', confirmText: 'I understand, use OpenRouter', danger: true, body: ONLINE_WARNING,
+    }))) return;
+    set(key, v);
+  };
+  const row = (key: 'llm_provider' | 'embed_provider', label: string, help: string) => (
+    <div className="field">
+      <span className="field-label">{label}</span>
+      <div className="seg provider-seg">
+        <button className={s[key] !== 'openrouter' ? 'active' : ''} onClick={() => choose(key, 'local')}>Local (private)</button>
+        <button className={s[key] === 'openrouter' ? 'active online' : ''} onClick={() => choose(key, 'openrouter')}>OpenRouter (online)</button>
+      </div>
+      <span className="field-help">{help}</span>
+    </div>
+  );
+  return (
+    <section className="section">
+      <h2>Model provider</h2>
+      {online && <div className="banner banner-warn online-banner"><b>Online models are on.</b> {ONLINE_WARNING}</div>}
+      <div className="form">
+        {row('llm_provider', 'Chat, generation, vision and marking', 'Local uses the language model settings below.')}
+        {row('embed_provider', 'Embeddings (search)', 'Files embedded with the other model must be re-ingested before search uses them.')}
+        {online && ONLINE_FIELDS.map((f) => (
+          <label key={f.key} className="field">
+            <span className="field-label">{f.label}</span>
+            <input className="input" type={f.type === 'number' ? 'number' : f.type} value={String(s[f.key] ?? '')}
+              onChange={(e) => set(f.key, f.type === 'number' ? Number(e.target.value) : e.target.value)} />
+            {f.help && <span className="field-help">{f.help}</span>}
+          </label>
+        ))}
+      </div>
+    </section>
+  );
+}
 
 /** Theme, accent, motion and the home cloud. Saved instantly on this computer (not with the Save button). */
 function AppearanceSettings() {
@@ -169,6 +225,9 @@ function TutorSettings({ s, set }: { s: Settings; set: (k: string, v: string | n
   );
 }
 
+/** The embedding model new vectors are made with, given the provider choice (mirrors llm.embed_model()). */
+const effectiveEmbedModel = (s: Settings) => String(s.embed_provider === 'openrouter' ? s.openrouter_embed_model : s.embed_model);
+
 export default function SettingsView({ onSaved }: { onSaved: () => void }) {
   const ov = useOverlay();
   const [s, setS] = useState<Settings | null>(null);
@@ -177,23 +236,24 @@ export default function SettingsView({ onSaved }: { onSaved: () => void }) {
   const [test, setTest] = useState<Awaited<ReturnType<typeof api.testSettings>> | null>(null);
   const [testing, setTesting] = useState(false);
 
-  useEffect(() => { api.settings().then((x) => { setS(x); setSavedModel(String(x.embed_model)); }); }, []);
+  useEffect(() => { api.settings().then((x) => { setS(x); setSavedModel(effectiveEmbedModel(x)); }); }, []);
 
   /** Changing the embedding model makes every stored vector unusable for search until files are re-ingested. */
   const save = async () => {
     if (!s) return;
-    if (savedModel !== null && String(s.embed_model) !== savedModel) {
-      const { documents } = await api.embeddingStatus(String(s.embed_model));
+    const model = effectiveEmbedModel(s);
+    if (savedModel !== null && model !== savedModel) {
+      const { documents } = await api.embeddingStatus(model);
       if (documents > 0 && !(await ov.confirm({
         title: 'Change the embedding model?', confirmText: 'Change model', danger: true,
         body: <>All {documents} ingested file{documents === 1 ? '' : 's'} will need to be re-ingested before search can use them with
-          “{String(s.embed_model)}”. Subjects and topics with files to re-ingest get a red <b>!</b> mark; click it to re-ingest.
+          “{model}”. Subjects and topics with files to re-ingest get a red <b>!</b> mark; click it to re-ingest.
           The marks go away after re-ingesting, or if you change the model back to “{savedModel}”.</>,
       }))) return;
     }
     const next = await api.saveSettings(s);
     setS(next);
-    setSavedModel(String(next.embed_model));
+    setSavedModel(effectiveEmbedModel(next));
     setSaved(true);
     onSaved();
   };
@@ -205,7 +265,9 @@ export default function SettingsView({ onSaved }: { onSaved: () => void }) {
   return (
     <div className="page settings">
       <header className="page-head">
-        <div><h1>Settings</h1><p className="muted">All endpoints are local. Nothing leaves this computer.</p></div>
+        <div><h1>Settings</h1><p className="muted">{s.llm_provider === 'openrouter' || s.embed_provider === 'openrouter'
+          ? 'Some models run online through OpenRouter. See Model provider below.'
+          : 'All endpoints are local. Nothing leaves this computer.'}</p></div>
         <div className="head-actions">
           <Button onClick={async () => { setTesting(true); try { setTest(await api.testSettings()); } finally { setTesting(false); } }}>
             {testing ? 'Testing…' : 'Test connections'}
@@ -218,7 +280,7 @@ export default function SettingsView({ onSaved }: { onSaved: () => void }) {
         <div className="test-results">
           {Object.entries(test).map(([k, r]) => (
             <div key={k} className={`banner ${r.ok ? 'banner-ok' : 'banner-bad'}`}>
-              <b>{k === 'llm' ? 'Apollo (language model)' : 'Embeddings'}:</b>{' '}
+              <b>{k === 'llm' ? 'Apollo (language model)' : 'Embeddings'}{r.online ? ' · OpenRouter' : ''}:</b>{' '}
               {r.ok ? (k === 'llm' ? `connected · context ${r.max_model_len?.toLocaleString()} · ${r.ms} ms` : `connected · ${r.dim}-dim vectors · ${r.ms} ms`) : r.error}
             </div>
           ))}
@@ -226,6 +288,7 @@ export default function SettingsView({ onSaved }: { onSaved: () => void }) {
       )}
 
       <AppearanceSettings />
+      <ProviderSettings s={s} set={set} />
       <TutorSettings s={s} set={set} />
 
       {GROUPS.map((g) => (

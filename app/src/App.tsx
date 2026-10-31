@@ -19,6 +19,11 @@ export default function App() {
   const [route, setRoute] = useState<Route>({ name: 'home' });
   const subjects = usePoll(api.subjects, 0);
   const [backendUp, setBackendUp] = useState<boolean | null>(null);
+  /** Which parts run on OpenRouter (shown as a warning badge in the minibar; data leaves the computer). */
+  const [online, setOnline] = useState<string[]>([]);
+  const loadProvider = () => api.settings()
+    .then((s) => setOnline([s.llm_provider === 'openrouter' && 'chat', s.embed_provider === 'openrouter' && 'embeddings'].filter(Boolean) as string[]))
+    .catch(() => {});
 
   useEffect(() => {
     let alive = true;
@@ -28,7 +33,7 @@ export default function App() {
     return () => { alive = false; clearInterval(t); };
   }, []);
 
-  useEffect(() => { if (backendUp) subjects.reload(); }, [backendUp]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (backendUp) { subjects.reload(); loadProvider(); } }, [backendUp]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // While files are being re-ingested for a new embedding model, keep the warning marks current.
   const staleCount = (subjects.data ?? []).reduce((n, s) => n + (s.stale_docs ?? 0), 0);
@@ -39,13 +44,13 @@ export default function App() {
   }, [staleCount]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const go = (r: Route) => setRoute(r);
-  const refresh = () => subjects.reload();
+  const refresh = () => { subjects.reload(); loadProvider(); };
   const list = subjects.data ?? [];
 
   let view;
   switch (route.name) {
     case 'home':
-      view = <Home key="home" subjects={list} go={go} onChange={refresh} />;
+      view = <Home key="home" subjects={list} go={go} onChange={refresh} online={online} />;
       break;
     case 'subject':
       view = <SubjectView key={route.id} route={route} subjects={list} go={go} onChange={refresh} />;
@@ -59,7 +64,7 @@ export default function App() {
     <OverlayProvider>
       <div className="app">
         <div className="app-backdrop" aria-hidden />
-        <Minibar subjects={list} route={route} go={go} onChange={refresh} />
+        <Minibar subjects={list} route={route} go={go} onChange={refresh} online={online} />
         <main className={`main${route.name === 'subject' ? ' main-subject' : ''}`}>
           {backendUp === false && (
             <div className="banner banner-bad">Local backend is not responding. Restart the app if this persists.</div>

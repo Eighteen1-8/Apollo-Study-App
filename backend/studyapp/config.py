@@ -38,6 +38,16 @@ DEFAULT_SETTINGS = {
     "embed_api_key": os.environ.get("EMBED_API_KEY", ""),
     "embed_model": os.environ.get("EMBED_MODEL", "text-embedding-qwen3-embedding-4b"),
     "embed_batch": 16,
+    # Online models (OpenRouter). Off by default: "local" keeps everything on this computer. Chat/generation and
+    # embeddings switch independently. The key comes from the gitignored .env, never from source.
+    "llm_provider": "local",  # "local" | "openrouter"
+    "embed_provider": "local",  # "local" | "openrouter"
+    "openrouter_base_url": os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+    "openrouter_api_key": os.environ.get("OPENROUTER_API_KEY", ""),
+    "openrouter_model": os.environ.get("OPENROUTER_MODEL", "google/gemma-4-26b-a4b-it:free"),
+    "openrouter_embed_model": os.environ.get("OPENROUTER_EMBED_MODEL", "nvidia/nemotron-3.5-embed-1b:free"),
+    "openrouter_context": int(os.environ.get("OPENROUTER_CONTEXT", 131072)),
+    "openrouter_concurrency": int(os.environ.get("OPENROUTER_CONCURRENCY", 1)),
     # Vision: "off" | "auto" (heuristic) | "all" (every unit with any content)
     "vision_default_topic": "auto",
     "vision_default_reference": "all",

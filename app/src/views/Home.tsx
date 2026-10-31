@@ -14,7 +14,9 @@ function greeting() {
   return h < 5 ? 'Burning the midnight oil' : h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
 }
 
-export default function Home({ subjects, go, onChange }: { subjects: Subject[]; go: (r: Route) => void; onChange: () => void }) {
+export default function Home({ subjects, go, onChange, online }: {
+  subjects: Subject[]; go: (r: Route) => void; onChange: () => void; online: string[];
+}) {
   const ov = useOverlay();
   const act = useLibraryActions(subjects, go, onChange);
   const [look] = useAppearance();
@@ -30,9 +32,11 @@ export default function Home({ subjects, go, onChange }: { subjects: Subject[]; 
     <div className="page home">
       <section className="hero">
         <div className="hero-copy">
-          <div className="hero-kicker">Apollo · offline study</div>
+          <div className="hero-kicker">{online.length ? 'Apollo · online models on' : 'Apollo · offline study'}</div>
           <h1 className="hero-title">{greeting()}.</h1>
-          <p className="hero-sub">Everything stays on this computer. Your material is read, embedded and explained by local models only.</p>
+          <p className="hero-sub">{online.length
+            ? `Online models are on (${online.join(' and ')} via OpenRouter), so material used there is sent to external servers. Switch back to Local in Settings to keep everything on this computer.`
+            : 'Everything stays on this computer. Your material is read, embedded and explained by local models only.'}</p>
           <div className="hero-stats">
             {stats.map((s, i) => (
               <div key={s.label} className="hero-stat" style={{ '--i': i } as CSSProperties}>

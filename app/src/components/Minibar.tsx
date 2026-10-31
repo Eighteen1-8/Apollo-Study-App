@@ -8,8 +8,8 @@ import StaleBadge from './StaleBadge';
 import SubjectIcon, { PALETTE } from './SubjectIcon';
 
 /** Narrow icon bar: home, one tile per subject, add, background jobs, settings. */
-export default function Minibar({ subjects, route, go, onChange }: {
-  subjects: Subject[]; route: Route; go: (r: Route) => void; onChange: () => void;
+export default function Minibar({ subjects, route, go, onChange, online }: {
+  subjects: Subject[]; route: Route; go: (r: Route) => void; onChange: () => void; online: string[];
 }) {
   const ov = useOverlay();
   const act = useLibraryActions(subjects, go, onChange);
@@ -55,6 +55,14 @@ export default function Minibar({ subjects, route, go, onChange }: {
         <button className="mini-add" data-tip="New subject" onClick={act.newSubject}>+</button>
       </div>
       <div className="mini-bottom">
+        {online.length > 0 && (
+          <button className="mini-online" onClick={() => go({ name: 'settings' })}
+            data-tip={`Online: ${online.join(' and ')} via OpenRouter. Data is logged externally and may be used for training`}>
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+              <circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z" />
+            </svg>
+          </button>
+        )}
         <JobsPanel />
         <button className={`mini-icon${route.name === 'settings' ? ' active' : ''}`} data-tip="Settings" onClick={() => go({ name: 'settings' })}>
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">

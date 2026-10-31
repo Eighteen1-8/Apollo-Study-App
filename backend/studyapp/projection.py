@@ -5,7 +5,7 @@ PCA via SVD over the current embedding model's vectors; each axis is whitened an
 import numpy as np
 from fastapi import APIRouter
 
-from . import db
+from . import db, llm
 
 router = APIRouter()
 
@@ -16,7 +16,7 @@ _cache: dict = {}
 @router.get("/embeddings/map")
 def embedding_map(limit: int = MAX_POINTS):
     limit = max(1, min(limit, MAX_POINTS))
-    model = db.setting("embed_model")
+    model = llm.embed_model()
     sig = db.q1("SELECT COUNT(*) n, COALESCE(MAX(id), 0) m FROM chunks WHERE embedding IS NOT NULL AND embed_model=?", (model,))
     key = (model, sig["n"], sig["m"], limit)
     if _cache.get("key") == key:
@@ -28,13 +28,16 @@ def embedding_map(limit: int = MAX_POINTS):
         rows = [rows[i] for i in np.linspace(0, len(rows) - 1, limit).astype(int)]
 
     points = []
-    if len(rows) >= 4:
+    if rows:
         mat = np.vstack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows]).astype(np.float64)
         mat /= np.linalg.norm(mat, axis=1, keepdims=True) + 1e-12
         mat -= mat.mean(axis=0)
         u, s, _ = np.linalg.svd(mat, full_matrices=False)
-        xyz = u[:, :3] * s[:3]
-        xyz /= xyz.std(axis=0) + 1e-12
+        xyz = np.zeros((len(rows), 3))  # fewer than 4 chunks have fewer than 3 components; the rest stay 0
+        k = min(3, len(s))
+        xyz[:, :k] = u[:, :k] * s[:k]
+        std = xyz.std(axis=0)
+        xyz /= np.where(std > 1e-9, std, 1)
         xyz /= np.percentile(np.linalg.norm(xyz, axis=1), 98) + 1e-12
         points = [[r["id"], r["document_id"], round(float(p[0]), 4), round(float(p[1]), 4), round(float(p[2]), 4), r["label"]]
                   for r, p in zip(rows, xyz)]

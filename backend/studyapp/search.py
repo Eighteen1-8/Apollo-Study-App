@@ -40,7 +40,7 @@ def search(query: str, doc_ids: list[int], k=10):
 
     # Only vectors from the current model are comparable (a different model may not even have the same size).
     rows = db.q(f"SELECT id, embedding FROM chunks WHERE embedding IS NOT NULL AND embed_model=? AND document_id IN ({marks})",
-                (db.setting("embed_model"), *doc_ids))
+                (llm.embed_model(), *doc_ids))
     if rows:
         mat = np.vstack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows])
         qv = llm.embed([query], query=True)[0]
