@@ -1,7 +1,49 @@
+# --- Secrets & credentials ---
 .env
-.venv/
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+secrets/
+credentials*
+*.token
+
+# --- Machine-specific docs (local endpoints, hardware, system notes) ---
+CLAUDE.md
+.CLAUDE.md
+PLAN.md
+.PLAN.md
+.claude/
+
+# --- Local data & generated artifacts ---
+*.db
+*.sqlite
+*.sqlite3
+data/
+renders/
+figure_cache/
 spike/out/
 spike/samples/
+.trash/
+trash/
+
+# --- Python ---
+.venv/
 __pycache__/
+*.pyc
+
+# --- Node / frontend ---
 node_modules/
 app/dist/
+
+# --- Logs ---
+*.log
+logs/
+
+# --- OS / editor ---
+Thumbs.db
+desktop.ini
+.DS_Store

@@ -1,13 +1,12 @@
-# Study (offline AI study app)
+# Apollo (offline AI study app)
 
-Electron + React frontend, Python (FastAPI) sidecar backend, local models only. See [PLAN.md](PLAN.md).
+Electron + React frontend, Python (FastAPI) sidecar backend, local models only.
 
 ## Requirements
-- ninfer serving `qwen3.8-27b` (vision on, C=1) at `http://127.0.0.1:8080/v1`
-- LM Studio serving `text-embedding-qwen3-embedding-4b` at `http://127.0.0.1:8989/v1`
+- OpenAI compatible API (with vision and embedding enabled)
 - Node 20+, [uv](https://docs.astral.sh/uv/)
 
-Endpoints, model ids and keys can be changed in the app under **Settings**. On first run they're seeded from the repo's `.env`.
+Endpoints, model ids and keys can be changed in the app under **Settings**. On first run they're seeded from a `.env` file in the repo root — copy `.env.example` and fill it in.
 
 ## Setup (once)
 ```
@@ -35,3 +34,6 @@ Electron starts the backend itself and stops it on exit. App data (database, cop
 - `app/electron/`: main process (spawns backend, blocks all non-localhost traffic), preload
 - `app/src/`: React UI
 - `spike/`: Phase 0 experiments
+
+## Note
+- FULLY vibecoded btw (but it works tho)
