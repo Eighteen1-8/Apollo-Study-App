@@ -2,6 +2,23 @@
 
 Electron + React frontend, Python (FastAPI) sidecar backend. Local models by default; online models via OpenRouter are optional.
 
+## Screenshots
+
+| Home | Subject workspace |
+|:--:|:--:|
+| ![Home](docs/screenshots/01-home.png) | ![Subject workspace](docs/screenshots/02-subject.png) |
+| Vector database projection cloud | Add specific topic or entire subject materials|
+
+| Document viewer | Chat with citations |
+|:--:|:--:|
+| ![Document viewer](docs/screenshots/03-document.png) | ![Chat](docs/screenshots/04-chat.png) |
+| Annotate, markup, note and modify any document like a PDF |Verifiable claims made by an LLM| 
+
+| Settings | Subject menu |
+|:--:|:--:|
+| ![Settings](docs/screenshots/05-settings.png) | ![Subject context menu](docs/screenshots/06-context-menu.png) |
+|Tailor Apollo to suit your needs|Customise to your liking |
+
 ## Requirements
 - OpenAI compatible API (with vision and embedding enabled)
 - Node 20+, [uv](https://docs.astral.sh/uv/)
@@ -25,7 +42,7 @@ npm start        # production build of the UI + Electron
 ```
 Electron starts the backend itself and stops it on exit. App data (database, copied files, vision images) lives in `%APPDATA%\Apollo Study\data`.
 
-## Portable exe
+## Building a Portable exe
 ```
 cd app
 npm run dist     # UI build + PyInstaller backend + electron-builder → app/release/ApolloStudy-<version>-portable.exe
@@ -42,10 +59,29 @@ uv run pytest --online   # also live OpenRouter checks (sends synthetic test tex
 ```
 
 ## Using it
-- **Left icon bar**: one tile per subject (right-click to change colour, letters, emoji or image), + to add, the background-jobs bar, and settings.
-- **Subject workspace**: generated content on the left (grouped by topic), chat in the middle, and to-dos, textbooks and topics on the right. Hover a topic for upload/create; right-click anything for more.
-- **Chat**: pick a topic and a reasoning level (Off / Low / Medium / XHigh; levels set in Settings). Qwen quotes and cites your material; click a citation to open that slide/page. Opening a file floats the chat bottom-left (collapse with ▾).
-- **Quizzes / flashcards** open fullscreen. Quizzes: one question per page, Check, then a results screen where Qwen reviews your answers and suggests topics for your to-do list. Flashcards: ✓ / ✗ under each card; ✗ cards are passed to the chat tutor as things you're struggling with.
+
+### Getting started
+1. **Create a subject** — `+` on the left minibar (or *New subject* on the home screen). Right click to customise.
+2. **Create a topic** —  Create a topic within a subject to group material and everything you generate.
+3. **Upload study material** — Drag files in (PPTX, DOCX, PDF, text, images), or click on `+` to upload reference material. Each file is parsed into units (slides/pages/sections), exactly deduplicated, chunked and embedded.
+4. **Vision notes** — a second pass has a vision model annotate slides/pages (auto mode: units with images or little text). Progress shows on the jobs bar at the bottom of the rail (note that this is very slow).
+5. **Reference library** — Upload entire textbooks and other entire subject materials into the reference libary. All data stays locally on your device (unless an online API is used).
+
+### Chat Window
+- Pick a **topic** (or *All topics*) and a **reasoning level** (Off / Low / Medium / XHigh — levels set in Settings), then ask.
+- Apollo answers from your material and **cites** it inline — click a citation to open that slide/page.
+- Quick actions under the input — **Flashcards, Quiz, Exam, Full notes, Cheat sheet** — open a short form, then generate and save to the *Generated* panel (grouped by topic).
+- Ask Apollo to generate you this content - it can also tailor it to what you struggle with most.
+- Opening a document floats the chat bottom-left (collapse with ▾).
+
+### Viewing documents
+Click a document in a topic to open the viewer. A toolbar in the top right helps you annotate and work through content.
+
+### Studying
+- **Quizzes/Flashcards** open fullscreen. With flashcards, mark `✓` / `✗`under each card for confidence. Marking `✗` lets Apollo know in chat the topics you are struggling with.
+
+### Settings
+- Endpoints, model ids and keys (local or OpenRouter - online mode is optional), themes, accent colour, Reduce motion, 3D knowledge cloud.
 - **Browser preview of the UI** (dev only): `http://localhost:5173/?backend=PORT` points the page at a backend on another port.
 
 ## Layout
