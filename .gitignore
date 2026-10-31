@@ -1,0 +1,7 @@
+.env
+.venv/
+spike/out/
+spike/samples/
+__pycache__/
+node_modules/
+app/dist/

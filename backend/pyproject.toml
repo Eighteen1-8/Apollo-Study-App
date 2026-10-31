@@ -1,0 +1,24 @@
+[project]
+name = "studyapp"
+version = "0.1.0"
+description = "Offline AI study app - local backend sidecar"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "python-dotenv>=1.0",
+    "numpy>=2.0",
+    "pillow>=10.4",
+    "pymupdf>=1.24",
+    "python-pptx>=1.0",
+    "python-docx>=1.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["studyapp"]

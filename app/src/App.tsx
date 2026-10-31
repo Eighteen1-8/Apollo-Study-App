@@ -1,0 +1,71 @@
+import { useEffect, useState } from 'react';
+import { api, ToolName } from './api';
+import { usePoll } from './hooks';
+import { OverlayProvider } from './components/overlay';
+import Minibar from './components/Minibar';
+import Home from './views/Home';
+import SubjectView from './views/SubjectView';
+import SettingsView from './views/SettingsView';
+
+/** `launch` opens a create-content form in the chat (from a topic's Create menu). */
+export type Launch = { tool: ToolName; topicId: number | null; nonce: number };
+
+export type Route =
+  | { name: 'home' }
+  | { name: 'subject'; id: number; launch?: Launch }
+  | { name: 'settings' };
+
+export default function App() {
+  const [route, setRoute] = useState<Route>({ name: 'home' });
+  const subjects = usePoll(api.subjects, 0);
+  const [backendUp, setBackendUp] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    const check = () => api.health().then(() => alive && setBackendUp(true)).catch(() => alive && setBackendUp(false));
+    check();
+    const t = setInterval(check, 5000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+
+  useEffect(() => { if (backendUp) subjects.reload(); }, [backendUp]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // While files are being re-ingested for a new embedding model, keep the warning marks current.
+  const staleCount = (subjects.data ?? []).reduce((n, s) => n + (s.stale_docs ?? 0), 0);
+  useEffect(() => {
+    if (!staleCount) return;
+    const t = setInterval(() => subjects.reload(), 5000);
+    return () => clearInterval(t);
+  }, [staleCount]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const go = (r: Route) => setRoute(r);
+  const refresh = () => subjects.reload();
+  const list = subjects.data ?? [];
+
+  let view;
+  switch (route.name) {
+    case 'home':
+      view = <Home subjects={list} go={go} onChange={refresh} />;
+      break;
+    case 'subject':
+      view = <SubjectView key={route.id} route={route} subjects={list} go={go} onChange={refresh} />;
+      break;
+    case 'settings':
+      view = <SettingsView onSaved={refresh} />;
+      break;
+  }
+
+  return (
+    <OverlayProvider>
+      <div className="app">
+        <Minibar subjects={list} route={route} go={go} onChange={refresh} />
+        <main className={`main${route.name === 'subject' ? ' main-subject' : ''}`}>
+          {backendUp === false && (
+            <div className="banner banner-bad">Local backend is not responding. Restart the app if this persists.</div>
+          )}
+          {view}
+        </main>
+      </div>
+    </OverlayProvider>
+  );
+}
