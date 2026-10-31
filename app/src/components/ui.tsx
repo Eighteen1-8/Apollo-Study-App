@@ -12,6 +12,13 @@ export function Button({ children, onClick, kind = 'default', disabled, title, s
   );
 }
 
+/** onMouseMove for cards with a cursor-following glow (`--mx`/`--my`, drawn by styles-v4.css). */
+export function spotlight(e: React.MouseEvent<HTMLElement>) {
+  const r = e.currentTarget.getBoundingClientRect();
+  e.currentTarget.style.setProperty('--mx', `${e.clientX - r.left}px`);
+  e.currentTarget.style.setProperty('--my', `${e.clientY - r.top}px`);
+}
+
 const STATUS_TONE: Record<string, string> = {
   ready: 'ok', done: 'ok', queued: 'muted', parsing: 'busy', embedding: 'busy', vision: 'busy', running: 'busy',
   pending: 'muted', failed: 'bad', cancelled: 'muted', none: 'muted', skipped: 'muted',

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api, Settings } from '../api';
 import { useOverlay } from '../components/overlay';
 import { Button } from '../components/ui';
+import { ACCENTS, THEMES, useAppearance } from '../theme';
 
 type Field = {
   key: string; label: string; type: 'text' | 'password' | 'number' | 'bool' | 'select' | 'reasoning' | 'list';
@@ -71,6 +72,57 @@ const DIALS: { key: string; label: string; levels: [string, string, string]; hel
   { key: 'chat_interactive', label: 'Interactive', levels: ['Direct answers', 'Check understanding', 'Guide with questions'],
     help: 'At the top level Apollo breaks a problem into smaller questions for you to answer instead of giving the answer straight away.' },
 ];
+
+/** Theme, accent, motion and the home cloud. Saved instantly on this computer (not with the Save button). */
+function AppearanceSettings() {
+  const [a, set] = useAppearance();
+  return (
+    <section className="section">
+      <h2>Appearance</h2>
+      <div className="form appearance">
+        <div className="field field-wide">
+          <span className="field-label">Theme</span>
+          <div className="theme-grid">
+            {THEMES.map((t) => (
+              <button key={t.id} className={`theme-card${a.theme === t.id ? ' on' : ''}`} onClick={() => set({ theme: t.id })}>
+                <span className="theme-preview" style={{ background: t.swatch[0] }}>
+                  <span className="tp-bar" style={{ background: t.swatch[1] }} />
+                  <span className="tp-panel" style={{ background: t.swatch[1] }}>
+                    <span className="tp-line" style={{ background: a.accent ?? t.swatch[2] }} />
+                    <span className="tp-line short" style={{ background: t.light ? '#0002' : '#fff2' }} />
+                  </span>
+                  <span className="tp-orb" style={{ background: a.accent ?? t.swatch[2], color: a.accent ?? t.swatch[2] }} />
+                </span>
+                <span className="theme-name">{t.name}</span>
+                <span className="theme-blurb">{t.blurb}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="field field-wide">
+          <span className="field-label">Accent</span>
+          <div className="accent-row">
+            <button className={`accent-swatch accent-auto${a.accent === null ? ' on' : ''}`} onClick={() => set({ accent: null })} title="Theme default">Auto</button>
+            {ACCENTS.map((c) => (
+              <button key={c} className={`accent-swatch${a.accent === c ? ' on' : ''}`} style={{ background: c, color: c }} onClick={() => set({ accent: c })} title={c} />
+            ))}
+            <label className="accent-swatch accent-custom" title="Custom colour">
+              <input type="color" value={a.accent ?? '#8b9bff'} onChange={(e) => set({ accent: e.target.value })} />+
+            </label>
+          </div>
+        </div>
+        <label className="field field-bool">
+          <input type="checkbox" checked={a.motion === 'reduced'} onChange={(e) => set({ motion: e.target.checked ? 'reduced' : 'full' })} />
+          <span>Reduce motion (turns off most animations; also follows the Windows setting)</span>
+        </label>
+        <label className="field field-bool">
+          <input type="checkbox" checked={a.cloud} onChange={(e) => set({ cloud: e.target.checked })} />
+          <span>Show the 3D knowledge cloud on the home page</span>
+        </label>
+      </div>
+    </section>
+  );
+}
 
 /** The tutor's rules (editable, {scope} = the subject/topic) and personality dials. */
 function TutorSettings({ s, set }: { s: Settings; set: (k: string, v: string | number) => void }) {
@@ -173,6 +225,7 @@ export default function SettingsView({ onSaved }: { onSaved: () => void }) {
         </div>
       )}
 
+      <AppearanceSettings />
       <TutorSettings s={s} set={set} />
 
       {GROUPS.map((g) => (

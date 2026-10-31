@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from . import config, db, jobs, llm, pipeline, render, search, viewer
 from .annotations import router as annotations_router
 from .chat_api import router as chat_router
+from .projection import router as projection_router
 from .study_api import router as study_router
 from .parsers import IMAGE_EXTS, SUPPORTED, TEXT_EXTS
 
@@ -24,6 +25,7 @@ app = FastAPI(title="StudyApp backend")
 app.include_router(chat_router)
 app.include_router(annotations_router)
 app.include_router(study_router)
+app.include_router(projection_router)
 app.add_middleware(CORSMiddleware, allow_origin_regex=r"^(http://(localhost|127\.0\.0\.1)(:\d+)?|file://.*|null)$",
                    allow_methods=["*"], allow_headers=["*"])
 

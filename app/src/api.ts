@@ -53,6 +53,13 @@ export interface SearchResult {
   score: number; bm25_rank?: number; vector_rank?: number; similarity?: number;
   vision_notes: { label: string; vision_notes: string }[];
 }
+/** Chunk embeddings projected to 3D for the home page cloud. Points: [chunk id, document id, x, y, z, label]. */
+export interface EmbeddingMap {
+  model: string; total: number;
+  points: [number, number, number, number, number, string][];
+  documents: Record<string, { filename: string; kind: string; subject_id: number; topic_id: number | null; topic: string | null }>;
+  subjects: { id: number; name: string; color: string }[];
+}
 export type Settings = Record<string, string | number | boolean | string[]>;
 export type Reasoning = 'off' | 'low' | 'medium' | 'xhigh';
 
@@ -116,6 +123,7 @@ export const api = {
   testSettings: () => req<Record<string, { ok: boolean; error?: string; dim?: number; ms?: number; max_model_len?: number; models?: string[] }>>('POST', '/settings/test'),
   previewUrl: (docId: number, idx: number) => `${BASE}/documents/${docId}/units/${idx}/preview`,
   assetUrl: (rel: string) => `${BASE}/assets/${rel}`,
+  embeddingMap: () => req<EmbeddingMap>('GET', '/embeddings/map'),
 
   chats: (subjectId: number) => req<Chat[]>('GET', `/subjects/${subjectId}/chats`),
   createChat: (subjectId: number, topic_id: number | null) => req<Chat>('POST', `/subjects/${subjectId}/chats`, { topic_id }),

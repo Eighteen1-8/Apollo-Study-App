@@ -45,19 +45,20 @@ export default function App() {
   let view;
   switch (route.name) {
     case 'home':
-      view = <Home subjects={list} go={go} onChange={refresh} />;
+      view = <Home key="home" subjects={list} go={go} onChange={refresh} />;
       break;
     case 'subject':
       view = <SubjectView key={route.id} route={route} subjects={list} go={go} onChange={refresh} />;
       break;
     case 'settings':
-      view = <SettingsView onSaved={refresh} />;
+      view = <SettingsView key="settings" onSaved={refresh} />;
       break;
   }
 
   return (
     <OverlayProvider>
       <div className="app">
+        <div className="app-backdrop" aria-hidden />
         <Minibar subjects={list} route={route} go={go} onChange={refresh} />
         <main className={`main${route.name === 'subject' ? ' main-subject' : ''}`}>
           {backendUp === false && (
