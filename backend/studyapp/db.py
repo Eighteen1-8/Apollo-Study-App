@@ -117,6 +117,9 @@ MIGRATIONS = [
     "CREATE TABLE IF NOT EXISTS figure_cache (key TEXT PRIMARY KEY, data TEXT NOT NULL)",
     # Where each viewer screenshot came from, so a screenshot sent to the chat can jump back to its page and area
     "CREATE TABLE IF NOT EXISTS snapshots (path TEXT PRIMARY KEY, document_id INTEGER, unit INTEGER, rect TEXT NOT NULL, created_at REAL NOT NULL)",
+    # Opaque UI state stored for the frontend and never read by the backend, e.g. 'folders:<subject id>' (file
+    # folders inside topics, display only)
+    "CREATE TABLE IF NOT EXISTS ui_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
 ]
 
 _lock = threading.RLock()

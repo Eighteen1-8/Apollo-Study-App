@@ -17,6 +17,15 @@ export const THEMES: { id: ThemeId; name: string; blurb: string; swatch: [string
 
 export const ACCENTS = ['#8b9bff', '#3ee6b8', '#d58bff', '#ff8fa3', '#ffb454', '#5cc8ff', '#a3e635', '#f472b6'];
 
+/** A topic's colour in its subject's knowledge cloud and sidebar: the accent palette in topic creation order. */
+export function topicColor(topics: { id: number }[], id: number) {
+  const ids = topics.map((t) => t.id).sort((a, b) => a - b);
+  const i = ids.indexOf(id);
+  return i < 0 ? '#9aa1b2' : ACCENTS[i % ACCENTS.length];
+}
+/** Textbooks (the reference library) in a subject's cloud. */
+export const REF_COLOR = '#d9c9a3';
+
 const KEY = 'apollo.appearance';
 const DEFAULT: Appearance = { theme: 'midnight', accent: null, motion: 'full', cloud: true };
 

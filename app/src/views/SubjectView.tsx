@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { api, AreaSource, DocRef, Quote, Subject, ToolName } from '../api';
 import type { Route } from '../App';
 import { usePoll } from '../hooks';
+import EmbeddingCloud, { CloudFocus } from '../components/EmbeddingCloud';
 import { FileDropOverlay, TopicAssignDialog } from '../components/FileDrop';
 import { useOverlay } from '../components/overlay';
 import { Empty } from '../components/ui';
@@ -12,6 +13,7 @@ import LibraryPanel from './LibraryPanel';
 import ResourcePanel from './ResourcePanel';
 import SourceView from './SourceView';
 import ArtifactViewer, { ArtifactPage } from './ArtifactViewer';
+import { useAppearance } from '../theme';
 
 type RouteSubject = Extract<Route, { name: 'subject' }>;
 type Side = 'left' | 'right';
@@ -40,8 +42,9 @@ function savePref(key: string, v: string) {
 }
 
 /**
- * Subject workspace: generated-content library (left) · chat or an open document (centre) · resources (right).
- * With a document open, the chat floats in a bottom corner (drag the header to switch corners, drag its inner top
+ * Subject workspace: generated-content library (left) · the subject's knowledge cloud, an open document, or the
+ * chat (centre) · resources (right). The cloud is the default centre: sidebar clicks narrow it to a topic, folder or
+ * file (see ResourcePanel). With the cloud or a document showing, the chat floats in a bottom corner (drag the header to switch corners, drag its inner top
  * corner to resize) and can be minimised to a pill or made full screen. The shell's box is set in pixels so every
  * change animates. Files dragged in from Explorer get a drop overlay: reference library, topic, or this chat.
  */
@@ -51,7 +54,10 @@ export default function SubjectView({ route, subjects, go, onChange }: {
   const ov = useOverlay();
   const subject = subjects.find((s) => s.id === route.id);
   const [doc, setDoc] = useState<{ id: number; focus?: string; nonce: number; details: boolean; pulse?: AreaSource } | null>(null);
-  const [chatCollapsed, setChatCollapsed] = useState(false);
+  const [look] = useAppearance();
+  const [focus, setFocus] = useState<CloudFocus>(null);
+  // the cloud is what a subject opens to, so the chat starts as a pill unless a create form is waiting in it
+  const [chatCollapsed, setChatCollapsed] = useState(() => look.cloud && !route.launch);
   const [chatFull, setChatFull] = useState(false);
   const [side, setSide] = useState<Side>(() => loadPref('chatSide', (v) => (v === 'left' ? 'left' : 'right'), 'right'));
   const [size, setSize] = useState<{ w: number; h: number } | null>(() => loadPref('chatSize', JSON.parse, null));
@@ -161,7 +167,8 @@ export default function SubjectView({ route, subjects, go, onChange }: {
     else setAssign(paths);
   };
 
-  const floating = !!doc || page !== null;
+  const showCloud = look.cloud && !doc && page === null;
+  const floating = !!doc || page !== null || showCloud;
   const collapsed = floating && chatCollapsed;
   const full = floating && chatFull && !collapsed;
   const maxW = box.w - 2 * MARGIN;
@@ -236,7 +243,7 @@ export default function SubjectView({ route, subjects, go, onChange }: {
   };
   const inner = side === 'right' ? -1 : 1; // the inner side faces the middle of the screen
 
-  const closeDoc = () => { setDoc(null); setPage(null); setChatCollapsed(false); setChatFull(false); };
+  const closeDoc = () => { setDoc(null); setPage(null); setChatFull(false); if (!look.cloud) setChatCollapsed(false); };
   const docsChanged = () => { docs.reload(); onChange(); };
 
   return (
@@ -244,6 +251,10 @@ export default function SubjectView({ route, subjects, go, onChange }: {
       <LibraryPanel subject={subject} onOpen={openArtifact} />
 
       <section ref={center} className={`center${floating ? ' has-doc' : ''}`}>
+        {showCloud && (
+          <EmbeddingCloud className="cloud-pane" subjectId={subject.id} topics={subject.topics} title={`${subject.name} · knowledge map`}
+            focus={focus} onFocus={setFocus} onOpenDoc={(id, label) => openDoc(id, label)} />
+        )}
         {page !== null && !doc && (
           <div className="doc-pane"><ArtifactPage key={page} id={page} onClose={closeDoc} onCite={openCitation} /></div>
         )}
@@ -278,7 +289,7 @@ export default function SubjectView({ route, subjects, go, onChange }: {
       </section>
 
       <ResourcePanel subject={subject} go={go} onChange={onChange} onOpenDoc={openDoc} onCreate={create}
-        onDocsChanged={docs.reload} />
+        onDocsChanged={docs.reload} sel={{ focus, onFocus: setFocus, cloudVisible: showCloud, openId: doc?.id ?? null }} />
 
       {viewing !== null && <ArtifactViewer id={viewing} subject={subject} onClose={() => setViewing(null)} />}
 

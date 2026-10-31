@@ -54,6 +54,9 @@ export interface SearchResult {
   vision_notes: { label: string; vision_notes: string }[];
 }
 /** Chunk embeddings projected to 3D for the home page cloud. Points: [chunk id, document id, x, y, z, label]. */
+/** Display-only folders inside topics, keyed by topic id: the folders and which folder each file (doc id) sits in. */
+export type FolderMap = Record<string, { folders: { id: string; name: string }[]; files: Record<string, string> }>;
+
 export interface EmbeddingMap {
   model: string; total: number;
   points: [number, number, number, number, number, string][];
@@ -123,7 +126,9 @@ export const api = {
   testSettings: () => req<Record<string, { ok: boolean; online?: boolean; model?: string; error?: string; dim?: number; ms?: number; max_model_len?: number; models?: string[] }>>('POST', '/settings/test'),
   previewUrl: (docId: number, idx: number) => `${BASE}/documents/${docId}/units/${idx}/preview`,
   assetUrl: (rel: string) => `${BASE}/assets/${rel}`,
-  embeddingMap: () => req<EmbeddingMap>('GET', '/embeddings/map'),
+  embeddingMap: (subjectId?: number) => req<EmbeddingMap>('GET', `/embeddings/map${subjectId != null ? `?subject_id=${subjectId}` : ''}`),
+  folders: (subjectId: number) => req<FolderMap>('GET', `/subjects/${subjectId}/folders`),
+  saveFolders: (subjectId: number, f: FolderMap) => req<FolderMap>('PUT', `/subjects/${subjectId}/folders`, f),
 
   chats: (subjectId: number) => req<Chat[]>('GET', `/subjects/${subjectId}/chats`),
   createChat: (subjectId: number, topic_id: number | null) => req<Chat>('POST', `/subjects/${subjectId}/chats`, { topic_id }),

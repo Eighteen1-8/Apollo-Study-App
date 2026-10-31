@@ -1,6 +1,6 @@
 import { api, Doc } from '../api';
 import { fmtTokens } from '../hooks';
-import { useOverlay } from './overlay';
+import { MenuItem, useOverlay } from './overlay';
 import { Pill, Progress } from './ui';
 
 const ICON: Record<string, string> = { '.pdf': 'PDF', '.pptx': 'PPT', '.docx': 'DOC' };
@@ -16,9 +16,11 @@ function statusOf(d: Doc): [string, string] {
   return [d.status, d.status];
 }
 
-/** Compact file rows: click opens, drag moves or attaches, hover shows ×, right-click gives more actions. */
-export default function FileList({ docs, onOpen, onDetails, onChange, empty, compact }: {
-  docs: Doc[]; onOpen: (d: Doc) => void; onDetails?: (d: Doc) => void; onChange: () => void; empty?: string; compact?: boolean;
+/** Compact file rows: click opens (or, with `onSelect`, click selects and double-click opens), drag moves or
+ * attaches, hover shows ×, right-click gives more actions (plus `menu`'s). */
+export default function FileList({ docs, onOpen, onSelect, onDetails, onChange, empty, compact, selectedId, openId, menu }: {
+  docs: Doc[]; onOpen: (d: Doc) => void; onSelect?: (d: Doc) => void; onDetails?: (d: Doc) => void; onChange: () => void;
+  empty?: string; compact?: boolean; selectedId?: number | null; openId?: number | null; menu?: (d: Doc) => MenuItem[];
 }) {
   const ov = useOverlay();
   const remove = async (d: Doc) => {
@@ -34,7 +36,8 @@ export default function FileList({ docs, onOpen, onDetails, onChange, empty, com
         const [tone, label] = statusOf(d);
         const busy = BUSY.includes(d.status);
         return (
-          <div key={d.id} className="file" onClick={() => onOpen(d)} draggable
+          <div key={d.id} className={`file${d.id === selectedId ? ' selected' : ''}${d.id === openId ? ' open' : ''}`} data-focus draggable
+            onClick={() => (onSelect ?? onOpen)(d)} onDoubleClick={() => onSelect && onOpen(d)}
             onDragStart={(e) => {
               const payload: DraggedDoc = { id: d.id, filename: d.filename, kind: d.kind, topic_id: d.topic_id };
               e.dataTransfer.setData(DOC_DRAG, JSON.stringify(payload));
@@ -45,6 +48,7 @@ export default function FileList({ docs, onOpen, onDetails, onChange, empty, com
               ...(onDetails ? [{ label: 'View ingested details', onClick: () => onDetails(d) }] : []),
               { label: 'Run / resume vision', onClick: () => api.vision(d.id).then(onChange), disabled: busy || d.vision_total <= d.vision_done },
               { label: 'Re-ingest', onClick: () => api.reingest(d.id).then(onChange), disabled: busy },
+              ...(menu?.(d) ?? []).map((m, i) => (i ? m : { ...m, separatorBefore: true })),
               { label: 'Remove', onClick: () => remove(d), danger: true, separatorBefore: true },
             ])}>
             <span className={`file-icon ext-${d.ext.slice(1)}`}>{ICON[d.ext] ?? d.ext.slice(1).toUpperCase()}</span>

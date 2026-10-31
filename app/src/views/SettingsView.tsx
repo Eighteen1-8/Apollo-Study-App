@@ -173,7 +173,7 @@ function AppearanceSettings() {
         </label>
         <label className="field field-bool">
           <input type="checkbox" checked={a.cloud} onChange={(e) => set({ cloud: e.target.checked })} />
-          <span>Show the 3D knowledge cloud on the home page</span>
+          <span>Show the 3D knowledge cloud (home page background, and each subject's map)</span>
         </label>
       </div>
     </section>

@@ -1,12 +1,22 @@
-/* The home page's knowledge cloud: every embedded chunk projected to 3D (PCA on the backend), drawn as glowing
-   nodes on a canvas. Chunks of one file are threaded in reading order; ambient dust around each node and a far
-   star shell give depth. Drag to orbit, scroll to zoom, double-click to reset, click a node to open its subject.
+/* The knowledge cloud: embedded chunks projected to 3D (PCA on the backend), drawn as glowing nodes on a canvas.
+   On the home page it is the whole library, coloured by subject, behind the page's widgets. In a subject it is
+   that subject's own projection, coloured by topic, and `focus` narrows it to one topic, the textbooks or one
+   file: everything else fades out and the camera glides to frame what is left. Chunks of one file are threaded in
+   reading order; ambient dust around each node and a far star shell give depth. Drag to orbit, scroll to zoom,
+   double-click to reset, click a node to open its subject (home) or its file at that chunk (subject).
    Display only: nothing here feeds retrieval. */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, EmbeddingMap } from '../api';
-import { reducedMotion } from '../theme';
+import { REF_COLOR, reducedMotion, topicColor } from '../theme';
 
 type RGB = [number, number, number];
+
+/** What a subject's cloud is narrowed to: a topic, one file, a sidebar folder's files, or the textbooks. */
+export type CloudFocus =
+  | { kind: 'topic' | 'doc'; id: number; name: string }
+  | { kind: 'folder'; id: string; docs: number[]; name: string }
+  | { kind: 'ref'; name: string }
+  | null;
 
 const hexRgb = (h: string): RGB => {
   let v = h.replace('#', '');
@@ -27,18 +37,22 @@ function rng(seed: number) {
 }
 const gauss = (r: () => number) => Math.sqrt(-2 * Math.log(r() + 1e-9)) * Math.cos(2 * Math.PI * r());
 
-const STAR = -2; // subject index for background stars (neutral colour, never highlighted)
+// group sentinels: a point's group is its subject id (home) or topic id (subject view)
+const STAR = -2; // background stars (neutral colour, never highlighted or filtered)
+const REF = -3; // textbooks in a subject view
 
 interface Scene {
   n: number; real: number; // entries [0, real) are actual chunks; the rest are dust and stars
   pos: Float32Array; phase: Float32Array; size: Float32Array; alpha: Float32Array;
-  colorIdx: Int32Array; colors: RGB[]; subj: Int32Array; doc: Int32Array;
+  colorIdx: Int32Array; colors: RGB[]; grp: Int32Array; doc: Int32Array;
   labels: string[]; threads: [number, number][]; demo: boolean;
 }
 
-function buildScene(map: EmbeddingMap | null): Scene {
+type Topics = { id: number; name: string }[];
+
+function buildScene(map: EmbeddingMap | null, topics: Topics | undefined): Scene {
   const r = rng(7);
-  const P: { x: number; y: number; z: number; size: number; alpha: number; color: number; subj: number; doc: number; phase: number }[] = [];
+  const P: { x: number; y: number; z: number; size: number; alpha: number; color: number; grp: number; doc: number; phase: number }[] = [];
   const colors: RGB[] = [[150, 160, 190]]; // 0 = stars, recoloured from the theme
   const colorKey = new Map<string, number>();
   const colorOf = (c: RGB) => {
@@ -57,13 +71,19 @@ function buildScene(map: EmbeddingMap | null): Scene {
     const lastOfDoc = new Map<number, number>();
     pts.forEach(([, docId, x, y, z, label], i) => {
       const d = map!.documents[String(docId)];
-      const sid = d?.subject_id ?? -1;
+      let g: number, base: RGB;
+      if (topics) {
+        g = d?.kind === 'reference' ? REF : d?.topic_id ?? -1;
+        base = hexRgb(g === REF ? REF_COLOR : topicColor(topics, g));
+      } else {
+        g = d?.subject_id ?? -1;
+        base = subjColor.get(g) ?? [140, 155, 255];
+      }
       if (!docOrder.has(docId)) docOrder.set(docId, docOrder.size);
-      // files of one subject share its colour, each nudged lighter or darker so neighbouring files read apart
-      const base = subjColor.get(sid) ?? [140, 155, 255];
+      // files of one group share its colour, each nudged lighter or darker so neighbouring files read apart
       const k = docOrder.get(docId)! % 5;
       const c = k % 2 ? mix(base, [255, 255, 255], 0.1 * k) : mix(base, [0, 0, 0], 0.06 * k);
-      P.push({ x, y, z, size: 1, alpha: 1, color: colorOf(c), subj: sid, doc: docId, phase: r() * 6.28 });
+      P.push({ x, y, z, size: 1, alpha: 1, color: colorOf(c), grp: g, doc: docId, phase: r() * 6.28 });
       labels.push(label);
       if (lastOfDoc.has(docId)) threads.push([lastOfDoc.get(docId)!, i]);
       lastOfDoc.set(docId, i);
@@ -75,7 +95,7 @@ function buildScene(map: EmbeddingMap | null): Scene {
       for (let j = 0; j < per; j++) {
         const s = 0.05 + r() * 0.09;
         P.push({ x: p.x + gauss(r) * s, y: p.y + gauss(r) * s, z: p.z + gauss(r) * s, size: 0.25 + r() * 0.35,
-          alpha: 0.25 + r() * 0.35, color: p.color, subj: p.subj, doc: p.doc, phase: r() * 6.28 });
+          alpha: 0.25 + r() * 0.35, color: p.color, grp: p.grp, doc: p.doc, phase: r() * 6.28 });
       }
     }
   } else {
@@ -89,26 +109,35 @@ function buildScene(map: EmbeddingMap | null): Scene {
       const spread = 0.04 + t * 0.12;
       P.push({ x: Math.cos(ang) * rad + gauss(r) * spread, y: gauss(r) * (0.05 + (1 - t) * 0.08), z: Math.sin(ang) * rad + gauss(r) * spread,
         size: r() < 0.06 ? 0.9 : 0.25 + r() * 0.35, alpha: 0.3 + r() * 0.5, color: colorOf(mix(arms[arm], [255, 255, 255], (1 - t) * 0.4)),
-        subj: -1, doc: -1, phase: r() * 6.28 });
+        grp: -1, doc: -1, phase: r() * 6.28 });
     }
   }
   const real = demo ? 0 : labels.length;
   for (let i = 0; i < 380; i++) { // far star shell for parallax
     const u = r() * 2 - 1, th = r() * Math.PI * 2, rad = 2.4 + r() * 1.4, q = Math.sqrt(1 - u * u);
     P.push({ x: q * Math.cos(th) * rad, y: u * rad, z: q * Math.sin(th) * rad, size: 0.18 + r() * 0.22, alpha: 0.2 + r() * 0.5,
-      color: 0, subj: STAR, doc: -1, phase: r() * 6.28 });
+      color: 0, grp: STAR, doc: -1, phase: r() * 6.28 });
   }
 
   const n = P.length;
   const s: Scene = {
     n, real, pos: new Float32Array(n * 3), phase: new Float32Array(n), size: new Float32Array(n), alpha: new Float32Array(n),
-    colorIdx: new Int32Array(n), colors, subj: new Int32Array(n), doc: new Int32Array(n), labels, threads, demo,
+    colorIdx: new Int32Array(n), colors, grp: new Int32Array(n), doc: new Int32Array(n), labels, threads, demo,
   };
   P.forEach((p, i) => {
     s.pos[i * 3] = p.x; s.pos[i * 3 + 1] = p.y; s.pos[i * 3 + 2] = p.z;
-    s.phase[i] = p.phase; s.size[i] = p.size; s.alpha[i] = p.alpha; s.colorIdx[i] = p.color; s.subj[i] = p.subj; s.doc[i] = p.doc;
+    s.phase[i] = p.phase; s.size[i] = p.size; s.alpha[i] = p.alpha; s.colorIdx[i] = p.color; s.grp[i] = p.grp; s.doc[i] = p.doc;
   });
   return s;
+}
+
+/** Which points a focus keeps; null keeps everything. */
+function focusTest(f: CloudFocus, grp: Int32Array, doc: Int32Array): ((i: number) => boolean) | null {
+  if (!f) return null;
+  if (f.kind === 'doc') return (i) => doc[i] === f.id;
+  if (f.kind === 'topic') return (i) => grp[i] === f.id;
+  if (f.kind === 'folder') { const ids = new Set(f.docs); return (i) => ids.has(doc[i]); }
+  return (i) => grp[i] === REF;
 }
 
 /** A soft round glow per colour: white-hot core on dark themes, solid ink dot on light ones. */
@@ -133,35 +162,57 @@ function makeSprite([r, g, b]: RGB, light: boolean) {
 }
 
 const easeOut = (t: number) => 1 - (1 - t) ** 3;
-const VIEW = { yaw: -0.6, pitch: 0.32, zoom: 1 };
+const VIEW = { yaw: -0.6, pitch: 0.32 };
+/** Points the cloud's signature changes with; a poll only rebuilds the scene when it differs. */
+const sigOf = (m: EmbeddingMap) => `${m.model}|${m.total}|${m.points.length}|${m.points[m.points.length - 1]?.[0] ?? 0}`;
 
-export default function EmbeddingCloud({ onOpenSubject }: { onOpenSubject?: (subjectId: number) => void }) {
+export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocus, onOpenSubject, onOpenDoc, highlight = null, title, className = '' }: {
+  /** Set for a subject's own cloud (coloured by `topics`); omitted for the whole library. */
+  subjectId?: number; topics?: Topics; focus?: CloudFocus; onFocus?: (f: CloudFocus) => void;
+  onOpenSubject?: (subjectId: number) => void; onOpenDoc?: (docId: number, label: string) => void;
+  /** A group (subject or topic id) to light up from outside, e.g. while its card is hovered. */
+  highlight?: number | null; title?: string; className?: string;
+}) {
   const wrap = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const [map, setMap] = useState<EmbeddingMap | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [hover, setHover] = useState<{ i: number; x: number; y: number } | null>(null);
-  const [focusSubject, setFocusSubject] = useState<number | null>(null);
-  const focusRef = useRef<number | null>(null);
-  focusRef.current = focusSubject;
+  const [hoverGroup, setHoverGroup] = useState<number | null>(null);
+  const groupRef = useRef<number | null>(null);
+  groupRef.current = hoverGroup ?? highlight;
+  const focusRef = useRef<CloudFocus>(focus);
+  focusRef.current = focus;
   const hoverRef = useRef<number>(-1);
-  const pickRef = useRef(onOpenSubject);
-  pickRef.current = onOpenSubject;
+  const cb = useRef({ onOpenSubject, onOpenDoc });
+  cb.current = { onOpenSubject, onOpenDoc };
+  const subjectMode = subjectId != null;
+  const topicKey = topics?.map((t) => t.id).join(',');
 
+  // Load, then poll quietly so new uploads appear (the endpoint is cached server-side until chunks change).
   useEffect(() => {
-    let alive = true;
-    api.embeddingMap().then((m) => alive && setMap(m)).catch(() => {}).finally(() => alive && setLoaded(true));
-    return () => { alive = false; };
-  }, []);
+    let alive = true, sig = '';
+    setMap(null); setLoaded(false);
+    const load = () => api.embeddingMap(subjectId).then((m) => {
+      if (!alive || sigOf(m) === sig) return;
+      sig = sigOf(m);
+      setMap(m);
+    }).catch(() => {}).finally(() => alive && setLoaded(true));
+    load();
+    const t = setInterval(load, 20000);
+    return () => { alive = false; clearInterval(t); };
+  }, [subjectId]);
 
-  const scene = useMemo(() => (loaded ? buildScene(map) : null), [map, loaded]);
+  const scene = useMemo(() => (loaded ? buildScene(map, topics) : null), [map, loaded, topicKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!scene) return;
     const cv = canvas.current!, el = wrap.current!;
     const ctx = cv.getContext('2d')!;
-    const { n, real, pos, phase, size, alpha, colorIdx, subj, doc } = scene;
+    const { n, real, pos, phase, size, alpha, colorIdx, grp, doc } = scene;
     const sx = new Float32Array(n), sy = new Float32Array(n), sz = new Float32Array(n), sc = new Float32Array(n);
+    const vis = new Float32Array(n).fill(1); // eased per-point visibility under the focus filter
+    const want = new Float32Array(n).fill(1);
     const order = new Uint32Array(n).map((_, i) => i);
     let sprites: HTMLCanvasElement[] = [];
     let light = false, ring = 'rgba(255,255,255,0.08)', thread = [255, 255, 255];
@@ -191,9 +242,40 @@ export default function EmbeddingCloud({ onOpenSubject }: { onOpenSubject?: (sub
     ro.observe(el);
 
     const still = reducedMotion();
-    const cam = { ...VIEW, vy: 0, vp: 0, idle: 0 };
+    // dense libraries would saturate to white under additive blending: dim dust most, nodes a little
+    const dens = Math.min(1, Math.sqrt(350 / Math.max(1, real)));
+    // c*/zoom/rad chase their t* targets, so a focus change glides the camera onto the files it keeps
+    const cam = { ...VIEW, vy: 0, vp: 0, idle: 0, cx: 0, cy: 0, cz: 0, zoom: 1, rad: 1, tx: 0, ty: 0, tz: 0, tzoom: 1, trad: 1, fit: 1 };
+    let shownFocus: CloudFocus | undefined; // last focus the targets were computed for
     const t0 = performance.now();
     let last = t0, raf = 0, visible = true, dragging = false, moved = 0, px = 0, py = 0;
+
+    /** Frame the kept points: centroid, and the radius holding 90% of them. */
+    const retarget = (f: CloudFocus) => {
+      shownFocus = f;
+      const test = focusTest(f, grp, doc);
+      let cnt = 0, mx = 0, my = 0, mz = 0;
+      for (let i = 0; i < n; i++) {
+        want[i] = grp[i] === STAR || !test || test(i) ? 1 : 0;
+        if (i < real && want[i]) { cnt++; mx += pos[i * 3]; my += pos[i * 3 + 1]; mz += pos[i * 3 + 2]; }
+      }
+      if (!test || !cnt) { cam.tx = cam.ty = cam.tz = 0; cam.trad = 1; }
+      else {
+        mx /= cnt; my /= cnt; mz /= cnt;
+        const d: number[] = [];
+        for (let i = 0; i < real; i++) if (want[i]) d.push(Math.hypot(pos[i * 3] - mx, pos[i * 3 + 1] - my, pos[i * 3 + 2] - mz));
+        d.sort((a, b) => a - b);
+        cam.tx = mx; cam.ty = my; cam.tz = mz;
+        cam.trad = Math.max(0.18, Math.min(1, (d[Math.floor(d.length * 0.9)] ?? 0) + 0.08));
+      }
+      cam.fit = Math.min(3, 1 / cam.trad);
+      cam.tzoom = cam.fit;
+    };
+    retarget(focusRef.current);
+    if (still || focusRef.current) { // start already framed
+      vis.set(want);
+      Object.assign(cam, { cx: cam.tx, cy: cam.ty, cz: cam.tz, zoom: cam.tzoom, rad: cam.trad });
+    }
 
     const project = (t: number) => {
       const intro = still ? 1 : easeOut(Math.min(1, (t - t0) / 1900));
@@ -202,9 +284,12 @@ export default function EmbeddingCloud({ onOpenSubject }: { onOpenSubject?: (sub
       const breathe = still ? 0 : t / 1000;
       for (let i = 0; i < n; i++) {
         // nodes stream out from the core with a slight per-point delay; stars are already in place
-        const k = subj[i] === STAR ? 1 : easeOut(Math.max(0, Math.min(1, intro * 1.25 - (phase[i] / 6.28) * 0.25)));
+        const star = grp[i] === STAR;
+        const k = star ? 1 : easeOut(Math.max(0, Math.min(1, intro * 1.25 - (phase[i] / 6.28) * 0.25)));
         const wob = 0.012 * Math.sin(breathe * 0.7 + phase[i]);
-        const x = pos[i * 3] * k + wob, y = pos[i * 3 + 1] * k + wob * 0.6, z = pos[i * 3 + 2] * k;
+        // stars stay centred on the camera so the backdrop doesn't swing away when it re-frames
+        const x = pos[i * 3] * k + wob - (star ? 0 : cam.cx), y = pos[i * 3 + 1] * k + wob * 0.6 - (star ? 0 : cam.cy),
+          z = pos[i * 3 + 2] * k - (star ? 0 : cam.cz);
         const x1 = x * cy - z * sy_, z1 = x * sy_ + z * cy;
         const y2 = y * cp - z1 * sp, z2 = y * sp + z1 * cp;
         const zc = z2 + dist;
@@ -219,7 +304,7 @@ export default function EmbeddingCloud({ onOpenSubject }: { onOpenSubject?: (sub
       const dist = 3.1 / cam.zoom, f = Math.min(w, h) * 1.15;
       ctx.beginPath();
       for (let j = 0; j <= 96; j++) {
-        const a = (j / 96) * Math.PI * 2, c = Math.cos(a) * 1.18 * s, d = Math.sin(a) * 1.18 * s;
+        const a = (j / 96) * Math.PI * 2, c = Math.cos(a) * 1.18 * s * cam.rad, d = Math.sin(a) * 1.18 * s * cam.rad;
         const [x, y, z] = axis === 'y' ? [c, 0, d] : axis === 'x' ? [0, c, d] : [c, d, 0];
         const x1 = x * cy - z * sy_, z1 = x * sy_ + z * cy, y2 = y * cp - z1 * sp, zc = y * sp + z1 * cp + dist;
         const X = w / 2 + (x1 * f) / zc, Y = h / 2 - (y2 * f) / zc;
@@ -232,6 +317,7 @@ export default function EmbeddingCloud({ onOpenSubject }: { onOpenSubject?: (sub
       raf = requestAnimationFrame(frame);
       if (!visible || !w) return;
       const dt = Math.min(50, t - last); last = t;
+      if (focusRef.current !== shownFocus) retarget(focusRef.current);
       if (!dragging) {
         cam.idle += dt;
         cam.yaw += cam.vy; cam.pitch += cam.vp;
@@ -239,10 +325,17 @@ export default function EmbeddingCloud({ onOpenSubject }: { onOpenSubject?: (sub
         if (!still && cam.idle > 1200 && hoverRef.current < 0) cam.yaw += dt * 0.00009; // slow drift when untouched
       }
       cam.pitch = Math.max(-1.35, Math.min(1.35, cam.pitch));
+      const ease = still ? 1 : Math.min(1, dt / 260);
+      cam.cx += (cam.tx - cam.cx) * ease; cam.cy += (cam.ty - cam.cy) * ease; cam.cz += (cam.tz - cam.cz) * ease;
+      cam.zoom += (cam.tzoom - cam.zoom) * ease; cam.rad += (cam.trad - cam.rad) * ease;
+      const fade = still ? 1 : Math.min(1, dt / 160);
+      for (let i = 0; i < n; i++) vis[i] += (want[i] - vis[i]) * fade;
       const intro = project(t);
 
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, w, h);
+      // glow size stops growing past a ~560px canvas, so a full-page cloud spreads out instead of blooming white
+      const spriteK = Math.min(1, 560 / Math.max(1, Math.min(w, h))) * Math.min(1.6, cam.zoom ** 0.35);
 
       ctx.globalCompositeOperation = 'source-over';
       ctx.lineWidth = 1;
@@ -250,18 +343,20 @@ export default function EmbeddingCloud({ onOpenSubject }: { onOpenSubject?: (sub
       ctx.globalAlpha = intro;
       drawRing(1, 'y'); drawRing(0.66, 'y'); drawRing(1, 'x');
 
-      const hov = hoverRef.current, fs = focusRef.current;
+      // transient highlight (hovered node's file, or a hovered legend chip) on top of the focus filter
+      const hov = hoverRef.current, hg = groupRef.current;
       const hovDoc = hov >= 0 ? doc[hov] : null;
-      const dim = hovDoc !== null || fs !== null;
-      const lit = (i: number) => (hovDoc !== null ? doc[i] === hovDoc : fs !== null ? subj[i] === fs : true);
+      const dim = hovDoc !== null || hg !== null;
+      const lit = (i: number) => (hovDoc !== null ? doc[i] === hovDoc : hg !== null ? grp[i] === hg : true);
 
       // threads: consecutive chunks of the same file
       ctx.lineWidth = 1;
+      ctx.strokeStyle = `rgb(${thread[0]},${thread[1]},${thread[2]})`;
+      const focused = !!focusRef.current;
       for (const [a, b] of scene.threads) {
-        if (!sc[a] || !sc[b]) continue;
+        if (!sc[a] || !sc[b] || vis[a] < 0.05 || vis[b] < 0.05) continue;
         const on = lit(a);
-        ctx.globalAlpha = intro * (dim ? (on ? 0.55 : 0.04) : 0.16);
-        ctx.strokeStyle = `rgb(${thread[0]},${thread[1]},${thread[2]})`;
+        ctx.globalAlpha = intro * vis[a] * (dim ? (on ? 0.55 : 0.04) : focused ? 0.3 : 0.16);
         ctx.beginPath(); ctx.moveTo(sx[a], sy[a]); ctx.lineTo(sx[b], sy[b]); ctx.stroke();
       }
 
@@ -271,14 +366,17 @@ export default function EmbeddingCloud({ onOpenSubject }: { onOpenSubject?: (sub
         const i = order[k];
         if (!sc[i]) continue;
         const isReal = i < real;
-        const px_ = size[i] * sc[i] * (isReal ? 0.12 : 0.1);
+        if (grp[i] !== STAR && vis[i] < 0.03 && !isReal) continue; // filtered-out dust is gone; nodes keep a faint trace
+        const v = 0.05 + 0.95 * vis[i];
+        const px_ = size[i] * sc[i] * (isReal ? 0.12 : 0.1) * (0.6 + 0.4 * vis[i]) * spriteK;
         const fog = Math.max(0.15, Math.min(1, 1.35 - (sz[i] - 2) * 0.35));
-        let a = alpha[i] * fog * (subj[i] === STAR ? 1 : intro);
-        if (dim && subj[i] !== STAR) a *= lit(i) ? 1.15 : 0.12;
-        if (subj[i] !== STAR && !still) a *= 0.85 + 0.15 * Math.sin(t / 900 + phase[i] * 3); // twinkle
+        const near = Math.min(1, Math.max(0, (sz[i] - 0.3) / 0.5)); // fade what passes the camera
+        let a = alpha[i] * fog * near * (grp[i] === STAR ? 1 : intro * v * (isReal ? 0.45 + 0.55 * dens : dens));
+        if (dim && grp[i] !== STAR) a *= lit(i) ? 1.15 : 0.12;
+        if (grp[i] !== STAR && !still) a *= 0.85 + 0.15 * Math.sin(t / 900 + phase[i] * 3); // twinkle
         ctx.globalAlpha = Math.min(1, a);
         const sp = sprites[colorIdx[i]];
-        const d = i === hov ? px_ * 1.8 : px_;
+        const d = Math.min(64, i === hov ? px_ * 1.8 : px_);
         ctx.drawImage(sp, sx[i] - d / 2, sy[i] - d / 2, d, d);
       }
 
@@ -303,7 +401,7 @@ export default function EmbeddingCloud({ onOpenSubject }: { onOpenSubject?: (sub
     const pick = (cx: number, cy: number) => {
       let best = -1, bd = 16 * 16;
       for (let i = 0; i < real; i++) {
-        if (!sc[i]) continue;
+        if (!sc[i] || want[i] < 1) continue;
         const dx = sx[i] - cx, dy = sy[i] - cy, d = dx * dx + dy * dy;
         if (d < bd || (d === bd && best >= 0 && sz[i] < sz[best])) { bd = d; best = i; }
       }
@@ -312,6 +410,7 @@ export default function EmbeddingCloud({ onOpenSubject }: { onOpenSubject?: (sub
     const local = (e: PointerEvent | MouseEvent) => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
 
     const down = (e: PointerEvent) => {
+      if (e.button !== 0) return;
       dragging = true; moved = 0; px = e.clientX; py = e.clientY; cam.vy = cam.vp = 0;
       cv.setPointerCapture(e.pointerId);
       el.classList.add('grabbing');
@@ -340,16 +439,18 @@ export default function EmbeddingCloud({ onOpenSubject }: { onOpenSubject?: (sub
       if (moved < 4) {
         const [x, y] = local(e);
         const i = pick(x, y);
-        if (i >= 0 && subj[i] >= 0) pickRef.current?.(subj[i]);
+        if (i >= 0 && cb.current.onOpenDoc) cb.current.onOpenDoc(doc[i], scene.labels[i]);
+        else if (i >= 0 && grp[i] >= 0) cb.current.onOpenSubject?.(grp[i]);
       }
     };
     const leave = () => { if (!dragging && hoverRef.current >= 0) { hoverRef.current = -1; setHover(null); } };
     const wheel = (e: WheelEvent) => {
       e.preventDefault();
-      cam.zoom = Math.max(0.55, Math.min(3.2, cam.zoom * Math.exp(-e.deltaY * 0.0012)));
+      cam.tzoom = Math.max(0.55, Math.min(cam.fit * 3.2, cam.tzoom * Math.exp(-e.deltaY * 0.0012)));
+      cam.zoom = cam.tzoom; // wheel zoom is direct, not eased
       cam.idle = 0;
     };
-    const reset = () => { Object.assign(cam, VIEW, { vy: 0, vp: 0 }); };
+    const reset = () => { Object.assign(cam, VIEW, { vy: 0, vp: 0, tzoom: cam.fit }); };
     cv.addEventListener('pointerdown', down);
     cv.addEventListener('pointermove', move);
     cv.addEventListener('pointerup', up);
@@ -372,44 +473,82 @@ export default function EmbeddingCloud({ onOpenSubject }: { onOpenSubject?: (sub
     };
   }, [scene]);
 
-  const subjects = useMemo(() => {
+  /** Legend: subjects on the home page, topics (and textbooks) in a subject, with chunk counts. */
+  const legend = useMemo(() => {
     if (!map) return [];
     const counts = new Map<number, number>();
-    map.points.forEach(([, d]) => { const s = map.documents[String(d)]?.subject_id; if (s != null) counts.set(s, (counts.get(s) ?? 0) + 1); });
-    return map.subjects.filter((s) => counts.has(s.id)).map((s) => ({ ...s, count: counts.get(s.id)! }));
-  }, [map]);
+    map.points.forEach(([, d]) => {
+      const m = map.documents[String(d)];
+      const g = subjectMode ? (m?.kind === 'reference' ? REF : m?.topic_id) : m?.subject_id;
+      if (g != null) counts.set(g, (counts.get(g) ?? 0) + 1);
+    });
+    if (!subjectMode) return map.subjects.filter((s) => counts.has(s.id)).map((s) => ({ id: s.id, name: s.name, color: s.color, count: counts.get(s.id)! }));
+    const rows = (topics ?? []).filter((t) => counts.has(t.id)).map((t) => ({ id: t.id, name: t.name, color: topicColor(topics!, t.id), count: counts.get(t.id)! }));
+    if (counts.has(REF)) rows.push({ id: REF, name: 'Textbooks', color: REF_COLOR, count: counts.get(REF)! });
+    return rows;
+  }, [map, subjectMode, topicKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const fileCount = map ? Object.keys(map.documents).length : 0;
+  const kept = useMemo(() => {
+    if (!map || !focus) return null;
+    let chunks = 0;
+    const files = new Set<number>();
+    for (const [, d] of map.points) {
+      const m = map.documents[String(d)];
+      const ok = focus.kind === 'doc' ? d === focus.id : focus.kind === 'folder' ? focus.docs.includes(d)
+        : focus.kind === 'topic' ? m?.topic_id === focus.id && m.kind !== 'reference' : m?.kind === 'reference';
+      if (ok) { chunks++; files.add(d); }
+    }
+    return { chunks, files: files.size };
+  }, [map, focus]);
+  const chipOn = (id: number) => focus && (id === REF ? focus.kind === 'ref' : focus.kind === 'topic' && focus.id === id);
 
   const tip = hover && map && scene && !scene.demo ? (() => {
     const [, docId] = map.points[hover.i];
     const d = map.documents[String(docId)];
     const s = map.subjects.find((x) => x.id === d?.subject_id);
-    return { label: scene.labels[hover.i], file: d?.filename ?? '', where: [s?.name, d?.kind === 'reference' ? 'Textbook' : d?.topic].filter(Boolean).join(' · '), color: s?.color };
+    const where = subjectMode ? (d?.kind === 'reference' ? 'Textbook' : d?.topic) : [s?.name, d?.kind === 'reference' ? 'Textbook' : d?.topic].filter(Boolean).join(' · ');
+    const color = subjectMode ? (d?.kind === 'reference' ? REF_COLOR : topicColor(topics ?? [], d?.topic_id ?? -1)) : s?.color;
+    return { label: scene.labels[hover.i], file: d?.filename ?? '', where, color };
   })() : null;
 
   return (
-    <div className="cloud" ref={wrap}>
+    <div className={`cloud ${className}`} ref={wrap}>
       <canvas ref={canvas} className="cloud-canvas" />
       <div className="cloud-hud cloud-hud-top">
-        <div className="cloud-kicker"><span className="cloud-live" />Knowledge cloud</div>
+        <div className="cloud-kicker"><span className="cloud-live" />{title ?? 'Knowledge cloud'}</div>
         <div className="cloud-meta">
           {!loaded ? 'Loading vectors…'
-            : scene?.demo ? 'Nothing embedded yet. Upload material and it will appear here.'
+            : scene?.demo ? (subjectMode ? 'Nothing embedded in this subject yet. Upload files to a topic and they will appear here.'
+              : 'Nothing embedded yet. Upload material and it will appear here.')
+            : kept ? (kept.chunks ? <>{kept.chunks.toLocaleString()} of {map!.points.length.toLocaleString()} chunks
+              {focus?.kind !== 'doc' && <> · {kept.files} file{kept.files === 1 ? '' : 's'}</>}</> : 'No embedded chunks here yet.')
             : <>{map!.points.length.toLocaleString()} chunks · {fileCount} file{fileCount === 1 ? '' : 's'} · PCA → 3D</>}
         </div>
+        {focus && (
+          <button className="cloud-focus" onClick={() => onFocus?.(null)} title="Show the whole subject">
+            <span className="cloud-focus-kind">{({ doc: 'File', folder: 'Folder', ref: 'Library', topic: 'Topic' } as const)[focus.kind]}</span>
+            <span className="cloud-focus-name">{focus.name}</span>
+            {onFocus && <span className="cloud-focus-x" aria-hidden>×</span>}
+          </button>
+        )}
+        {legend.length > 0 && (
+          <div className="cloud-legend">
+            {legend.map((s) => (
+              <button key={s.id} className={`cloud-chip${hoverGroup === s.id || highlight === s.id || chipOn(s.id) ? ' on' : ''}`}
+                onMouseEnter={() => setHoverGroup(s.id)} onMouseLeave={() => setHoverGroup(null)}
+                onClick={() => {
+                  if (!subjectMode) onOpenSubject?.(s.id);
+                  else if (chipOn(s.id)) onFocus?.(null);
+                  else onFocus?.(s.id === REF ? { kind: 'ref', name: s.name } : { kind: 'topic', id: s.id, name: s.name });
+                }}>
+                <span className="cloud-chip-dot" style={{ background: s.color, color: s.color }} />{s.name}<span className="cloud-chip-n">{s.count}</span>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
-      {subjects.length > 0 && (
-        <div className="cloud-legend">
-          {subjects.map((s) => (
-            <button key={s.id} className={`cloud-chip${focusSubject === s.id ? ' on' : ''}`}
-              onMouseEnter={() => setFocusSubject(s.id)} onMouseLeave={() => setFocusSubject(null)}
-              onClick={() => onOpenSubject?.(s.id)}>
-              <span className="cloud-chip-dot" style={{ background: s.color, color: s.color }} />{s.name}<span className="cloud-chip-n">{s.count}</span>
-            </button>
-          ))}
-        </div>
-      )}
-      <div className="cloud-hint">Drag to orbit · Scroll to zoom · Double-click to reset</div>
+      <div className="cloud-hint">Drag to orbit · Scroll to zoom · Double-click to reset{subjectMode ? ' · Click a point to open it' : ''}</div>
       {tip && hover && (
         <div className="cloud-tip" style={{ left: hover.x, top: hover.y }}>
           <div className="cloud-tip-label">{tip.label}</div>

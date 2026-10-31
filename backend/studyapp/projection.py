@@ -1,7 +1,9 @@
-"""3D projection of the stored chunk embeddings for the home page's knowledge cloud (display only).
+"""3D projection of the stored chunk embeddings for the knowledge cloud (display only): the whole library on the
+home page, or one subject (`subject_id`) as the default view of its workspace.
 
 PCA via SVD over the current embedding model's vectors; each axis is whitened and the cloud scaled so the
-98th-percentile radius is 1. The result is cached until chunks are added, removed or the model changes."""
+98th-percentile radius is 1. A subject gets its own PCA, so its axes spread its own topics apart rather than
+separating it from other subjects. Results are cached until chunks are added, removed or the model changes."""
 import numpy as np
 from fastapi import APIRouter
 
@@ -14,16 +16,18 @@ _cache: dict = {}
 
 
 @router.get("/embeddings/map")
-def embedding_map(limit: int = MAX_POINTS):
+def embedding_map(limit: int = MAX_POINTS, subject_id: int | None = None):
     limit = max(1, min(limit, MAX_POINTS))
     model = llm.embed_model()
-    sig = db.q1("SELECT COUNT(*) n, COALESCE(MAX(id), 0) m FROM chunks WHERE embedding IS NOT NULL AND embed_model=?", (model,))
-    key = (model, sig["n"], sig["m"], limit)
-    if _cache.get("key") == key:
-        return _cache["value"]
+    scope, args = ("", (model,)) if subject_id is None else (
+        " AND document_id IN (SELECT id FROM documents WHERE subject_id=?)", (model, subject_id))
+    sig = db.q1(f"SELECT COUNT(*) n, COALESCE(MAX(id), 0) m FROM chunks WHERE embedding IS NOT NULL AND embed_model=?{scope}", args)
+    key = (model, subject_id, sig["n"], sig["m"], limit)
+    if key in _cache:
+        return _cache[key]
 
-    rows = db.q("SELECT id, document_id, label, embedding FROM chunks WHERE embedding IS NOT NULL AND embed_model=? ORDER BY id",
-                (model,))
+    rows = db.q(f"SELECT id, document_id, label, embedding FROM chunks WHERE embedding IS NOT NULL AND embed_model=?{scope} "
+                "ORDER BY id", args)
     if len(rows) > limit:  # evenly spaced sample keeps every document represented
         rows = [rows[i] for i in np.linspace(0, len(rows) - 1, limit).astype(int)]
 
@@ -53,5 +57,7 @@ def embedding_map(limit: int = MAX_POINTS):
     subjects = [dict(s) for s in db.q("SELECT id, name, color FROM subjects ORDER BY id")]
 
     value = {"model": model, "total": sig["n"], "points": points, "documents": docs, "subjects": subjects}
-    _cache.update(key=key, value=value)
+    for k in [k for k in _cache if k[:2] == key[:2]]:  # one entry per scope
+        del _cache[k]
+    _cache[key] = value
     return value

@@ -67,6 +67,22 @@ def all_documents(sid: int):
                    LEFT JOIN topics t ON t.id=d.topic_id WHERE d.subject_id=? ORDER BY d.id""", (sid,))
 
 
+# ---------------------------------------------------------------- file folders (display only)
+
+@router.get("/subjects/{sid}/folders")
+def get_folders(sid: int):
+    """Folders inside topics, grouping files in the sidebar. Stored for the UI as-is; nothing else reads them."""
+    r = db.q1("SELECT value FROM ui_state WHERE key=?", (f"folders:{sid}",))
+    return json.loads(r["value"]) if r else {}
+
+
+@router.put("/subjects/{sid}/folders")
+def put_folders(sid: int, body: dict):
+    _subject(sid)
+    db.ex("INSERT OR REPLACE INTO ui_state(key, value) VALUES (?, ?)", (f"folders:{sid}", json.dumps(body)))
+    return body
+
+
 # ---------------------------------------------------------------- generated content library
 
 @router.get("/subjects/{sid}/library")

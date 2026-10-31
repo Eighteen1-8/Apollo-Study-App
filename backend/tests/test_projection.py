@@ -41,3 +41,24 @@ def test_only_current_model_vectors(library):
     library(7, model="other-model")
     m = TestClient(app).get("/embeddings/map").json()
     assert m["model"] == llm.embed_model() == "test-embed" and len(m["points"]) == 5
+
+
+def test_subject_scope(library):
+    library(6)
+    sid = db.q1("SELECT id FROM subjects WHERE name='Proj'")["id"]
+    other = db.ex("INSERT INTO subjects(name, created_at) VALUES ('Other', ?)", (time.time(),))
+    try:
+        c = TestClient(app)
+        assert len(c.get(f"/embeddings/map?subject_id={sid}").json()["points"]) == 6
+        assert c.get(f"/embeddings/map?subject_id={other}").json()["points"] == []
+    finally:
+        db.ex("DELETE FROM subjects WHERE id=?", (other,))
+
+
+def test_folders_roundtrip(library):
+    sid = db.q1("SELECT id FROM subjects WHERE name='Proj'")["id"]
+    c = TestClient(app)
+    assert c.get(f"/subjects/{sid}/folders").json() == {}
+    body = {"3": {"folders": [{"id": "a", "name": "Week 1"}], "files": {"9": "a"}}}
+    c.put(f"/subjects/{sid}/folders", json=body)
+    assert c.get(f"/subjects/{sid}/folders").json() == body
