@@ -47,3 +47,8 @@ logs/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# --- Packaging output ---
+app/release/
+backend/dist/
+backend/build/

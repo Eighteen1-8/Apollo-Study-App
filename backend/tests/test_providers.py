@@ -160,6 +160,22 @@ def test_gives_up_after_retries(monkeypatch, settings):
         llm.chat([{"role": "user", "content": "x"}])
 
 
+def test_daily_cap_is_not_retried(monkeypatch, settings):
+    settings(llm_provider="openrouter")
+    calls = []
+
+    def handler(req):
+        calls.append(1)
+        return httpx.Response(429, json={"error": {"message": "Rate limit exceeded: free-models-per-day"}})
+
+    mock_transport(monkeypatch, handler)
+    with pytest.raises(RuntimeError, match="free-models-per-day"):
+        llm.chat([{"role": "user", "content": "x"}])
+    with pytest.raises(RuntimeError, match="free-models-per-day"):
+        list(llm.chat_stream([{"role": "user", "content": "x"}]))
+    assert len(calls) == 2
+
+
 def test_error_inside_200_is_raised(monkeypatch, settings):
     settings(llm_provider="openrouter")
     mock_transport(monkeypatch, lambda req: httpx.Response(200, json={"error": {"message": "Provider returned error"}}))

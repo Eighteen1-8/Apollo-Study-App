@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { api, inElectron, Subject } from '../api';
 import type { Route } from '../App';
+import logo from '../../assets/icon.svg';
 import { useLibraryActions } from './actions';
 import JobsPanel from './JobsPanel';
 import { Modal, useOverlay } from './overlay';
@@ -39,7 +40,7 @@ export default function Minibar({ subjects, route, go, onChange, online }: {
 
   return (
     <nav className="minibar">
-      <img className={`mini-home${route.name === 'home' ? ' active' : ''}`} src="../../assets/icon.svg" alt="All subjects" title="All subjects" width={35} height={35}
+      <img className={`mini-home${route.name === 'home' ? ' active' : ''}`} src={logo} alt="All subjects" title="All subjects" width={35} height={35}
         role="button" tabIndex={0} onClick={() => go({ name: 'home' })}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go({ name: 'home' }); } }} />
       <div className="mini-sep" />

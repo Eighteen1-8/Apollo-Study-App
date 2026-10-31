@@ -60,7 +60,10 @@ async function startBackend() {
   const port = isDev ? DEV_PORT : await freePort();
   const dataDir = path.join(app.getPath('userData'), 'data');
   const { cmd, args, cwd } = backendCommand(port, dataDir);
-  backend = spawn(cmd, args, { cwd, windowsHide: true });
+  // The portable exe unpacks to a temp folder; a .env next to the exe itself can seed endpoints and keys.
+  const exeDir = process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath);
+  const env = app.isPackaged ? { ...process.env, STUDY_ENV_FILE: path.join(exeDir, '.env') } : process.env;
+  backend = spawn(cmd, args, { cwd, windowsHide: true, env });
   backend.stdout.on('data', (d) => process.stdout.write(`[backend] ${d}`));
   backend.stderr.on('data', (d) => process.stderr.write(`[backend] ${d}`));
   backend.on('exit', (code) => { console.log(`[backend] exited ${code}`); backend = null; });
@@ -130,7 +133,7 @@ ipcMain.handle('dialog:saveFile', async (_e, opts = {}) => {
 ipcMain.handle('shell:showItem', (_e, p) => { shell.showItemInFolder(p); });
 
 app.whenReady().then(async () => {
-  app.setAppUserModelId('com.local.studyapp'); // needed for Windows notifications later
+  app.setAppUserModelId('com.apollo.study'); // needed for Windows notifications later
   lockToLocalhost();
   try {
     backendPort = await startBackend();

@@ -25,6 +25,15 @@ npm start        # production build of the UI + Electron
 ```
 Electron starts the backend itself and stops it on exit. App data (database, copied files, vision images) lives in `%APPDATA%\Apollo Study\data`.
 
+## Portable exe
+```
+cd app
+npm run dist     # UI build + PyInstaller backend + electron-builder → app/release/ApolloStudy-<version>-portable.exe
+```
+One self-contained exe (no install). Data still lives in `%APPDATA%\Apollo Study\data`. A `.env` placed next to the exe seeds endpoints and keys on first run; don't share that file. The exe is unsigned, so Windows SmartScreen may warn on first launch ("More info" → "Run anyway").
+
+If electron-builder fails with "Cannot create symbolic link" while unpacking `winCodeSign`, either turn on Windows Developer Mode or unpack that archive manually into `%LOCALAPPDATA%\electron-builder\Cache\winCodeSign\winCodeSign-2.6.0` (the two failing files are macOS-only).
+
 ## Tests
 ```
 cd backend

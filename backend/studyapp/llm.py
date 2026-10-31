@@ -70,12 +70,17 @@ def _retry_wait(r, attempt: int) -> float:
     return min(30.0, float(r.headers.get("retry-after") or 2 * 2 ** attempt))
 
 
+def _retryable(r) -> bool:
+    """Brief rate limits and overloads are retried; a used-up daily allowance ("free-models-per-day") is not."""
+    return r.status_code in RETRY_STATUS and "per-day" not in r.text
+
+
 def _post(cfg: dict, path: str, body: dict, timeout=1800) -> dict:
     """POST with a few backoff retries on rate limits / overload (free online models hit these often)."""
     for attempt in range(RETRIES + 1):
         with _client(cfg, timeout) as c:
             r = c.post(path, json=body)
-        if r.status_code in RETRY_STATUS and attempt < RETRIES:
+        if _retryable(r) and attempt < RETRIES:
             time.sleep(_retry_wait(r, attempt))
             continue
         if r.status_code != 200:
@@ -96,7 +101,7 @@ def _stream(cfg: dict, body: dict):
                 yield r
                 return
             r.read()
-            if r.status_code not in RETRY_STATUS or attempt == RETRIES:
+            if not _retryable(r) or attempt == RETRIES:
                 raise RuntimeError(f"{'OpenRouter' if cfg['online'] else 'LLM'} HTTP {r.status_code}: {r.text[:300]}")
             wait = _retry_wait(r, attempt)
         time.sleep(wait)

@@ -3,14 +3,16 @@
   "productName": "Apollo Study",
   "version": "0.1.0",
   "private": true,
-  "description": "Apollo, the offline, private AI study app",
+  "description": "Apollo Study: private AI study app (local models by default)",
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "concurrently -k -n ui,app \"vite --port 5173 --strictPort\" \"wait-on tcp:5173 && electron . --dev\"",
     "ui": "vite --port 5173 --strictPort",
     "build": "tsc --noEmit && vite build",
     "start": "vite build && electron .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:backend": "cd ../backend && uv run pyinstaller studyapp-backend.spec --noconfirm",
+    "dist": "npm run build && npm run build:backend && electron-builder --win portable"
   },
   "dependencies": {
     "dompurify": "^3.2.3",
@@ -27,8 +29,46 @@
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.0",
     "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
     "typescript": "^5.6.3",
     "vite": "^5.4.11",
     "wait-on": "^8.0.1"
+  },
+  "author": "Apollo Study",
+  "build": {
+    "appId": "com.apollo.study",
+    "productName": "Apollo Study",
+    "copyright": "Apollo Study",
+    "directories": {
+      "output": "release",
+      "buildResources": "assets"
+    },
+    "files": [
+      "dist/**",
+      "electron/**",
+      "assets/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../backend/dist/studyapp-backend",
+        "to": "backend"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "portable": {
+      "artifactName": "ApolloStudy-${version}-portable.exe"
+    },
+    "asar": true
   }
 }

@@ -4,8 +4,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Dev convenience: seed endpoints/keys from the repo's gitignored .env on first run.
-load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+# Seed endpoints/keys on first run from a .env: the packaged app passes the one beside the portable exe
+# (STUDY_ENV_FILE); in dev it is the repo's gitignored .env.
+load_dotenv(os.environ.get("STUDY_ENV_FILE") or Path(__file__).resolve().parents[2] / ".env")
 
 DATA_DIR = Path(os.environ.get("STUDY_DATA_DIR") or Path(os.environ.get("APPDATA", Path.home())) / "StudyApp")
 
