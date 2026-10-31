@@ -1,7 +1,7 @@
 [project]
-name = "studyapp"
+name = "Apollo Study"
 version = "0.1.0"
-description = "Offline AI study app - local backend sidecar"
+description = "Apollo Study - Offline AI app (local backend sidecar)"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi>=0.115",

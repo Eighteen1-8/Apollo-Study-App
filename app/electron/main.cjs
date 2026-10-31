@@ -88,8 +88,9 @@ async function createWindow() {
     height: 900,
     minWidth: 960,
     minHeight: 640,
+    icon: path.join(__dirname, '..', 'assets', 'icon.ico'),
     backgroundColor: '#0e0f13',
-    title: 'Study',
+    title: 'Apollo Study',
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -134,7 +135,7 @@ app.whenReady().then(async () => {
   try {
     backendPort = await startBackend();
   } catch (e) {
-    dialog.showErrorBox('Study', `Could not start the local backend.\n\n${e.message}`);
+    dialog.showErrorBox('Apollo Study', `Could not start the local backend.\n\n${e.message}`);
     app.quit();
     return;
   }

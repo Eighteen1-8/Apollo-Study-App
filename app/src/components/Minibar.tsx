@@ -39,7 +39,9 @@ export default function Minibar({ subjects, route, go, onChange }: {
 
   return (
     <nav className="minibar">
-      <button className={`mini-home${route.name === 'home' ? ' active' : ''}`} title="All subjects" onClick={() => go({ name: 'home' })}>◆</button>
+      <img className={`mini-home${route.name === 'home' ? ' active' : ''}`} src="../../assets/icon.svg" alt="All subjects" title="All subjects" width={35} height={35}
+        role="button" tabIndex={0} onClick={() => go({ name: 'home' })}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go({ name: 'home' }); } }} />
       <div className="mini-sep" />
       <div className="mini-subjects">
         {subjects.map((s) => (
