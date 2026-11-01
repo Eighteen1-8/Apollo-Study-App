@@ -516,7 +516,8 @@ def asset(rel: str):
 
 @app.get("/jobs")
 def list_jobs(active: bool = False):
-    where = "WHERE j.status IN ('queued','running')" if active else "WHERE j.updated_at > ?"
+    where = ("WHERE j.status IN ('queued','running')" if active else
+             "WHERE j.updated_at > ? AND (j.dismissed=0 OR j.status IN ('queued','running'))")
     args = () if active else (time.time() - 3600,)
     return db.q(f"""SELECT j.*, COALESCE(d.filename, a.title, aa.title || ' (marking)') AS filename FROM jobs j
                     LEFT JOIN documents d ON d.id=j.document_id
@@ -528,6 +529,14 @@ def list_jobs(active: bool = False):
 @app.post("/jobs/{jid}/cancel")
 def cancel_job(jid: int):
     jobs.cancel(jid)
+    return {"ok": True}
+
+
+@app.post("/jobs/dismiss")
+def dismiss_jobs(job_id: int | None = None):
+    """Hide a finished job (or every finished job) from the jobs list. Queued and running jobs can't be dismissed."""
+    sql = "UPDATE jobs SET dismissed=1 WHERE status NOT IN ('queued','running')"
+    db.ex(sql + (" AND id=?" if job_id else ""), (job_id,) if job_id else ())
     return {"ok": True}
 
 

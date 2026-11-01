@@ -129,6 +129,35 @@ def rate_card(aid: int, idx: int, body: Rating):
     return {"ok": True}
 
 
+class CardIndices(BaseModel):
+    indices: list[int]
+
+
+@router.post("/artifacts/{aid}/cards/delete")
+def delete_cards(aid: int, body: CardIndices):
+    """Remove flashcards from a deck. Ratings are keyed by card index, so the remaining ones are renumbered."""
+    a = db.q1("SELECT content FROM artifacts WHERE id=? AND type='flashcards'", (aid,))
+    if a is None:
+        raise HTTPException(404, "Flashcard deck not found")
+    content = json.loads(a["content"] or "{}")
+    cards = content.get("cards", [])
+    drop = {i for i in body.indices if 0 <= i < len(cards)}
+    remap = {}
+    for i in range(len(cards)):
+        if i not in drop:
+            remap[i] = len(remap)
+    content["cards"] = [c for i, c in enumerate(cards) if i not in drop]
+    with db.tx() as c:
+        c.execute("UPDATE artifacts SET content=? WHERE id=?", (json.dumps(content), aid))
+        rows = c.execute("SELECT card_index, rating, updated_at FROM card_ratings WHERE artifact_id=?", (aid,)).fetchall()
+        c.execute("DELETE FROM card_ratings WHERE artifact_id=?", (aid,))
+        for r in rows:
+            if r["card_index"] in remap:
+                c.execute("INSERT INTO card_ratings(artifact_id, card_index, rating, updated_at) VALUES (?,?,?,?)",
+                          (aid, remap[r["card_index"]], r["rating"], r["updated_at"]))
+    return {"ok": True, "count": len(content["cards"])}
+
+
 def struggling_cards(subject_id: int, topic_id: int | None, limit=20) -> list[dict]:
     """Flashcards the student marked 'I need more revision on this', newest first, within the scope."""
     sql = """SELECT a.content, a.topic_id, r.card_index FROM card_ratings r JOIN artifacts a ON a.id=r.artifact_id

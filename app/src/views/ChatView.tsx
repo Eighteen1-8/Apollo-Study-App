@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, AreaSource, ArtifactSummary, Chat, ChatEvent, ChatFileCheck, inElectron, Message, Quote, Reasoning, Subject, ToolName } from '../api';
 import type { Launch } from '../App';
-import { DOC_DRAG, DraggedDoc } from '../components/FileList';
+import { DOC_DRAG, DraggedDoc, draggedDocs } from '../components/FileList';
 import Markdown, { RESOLVED } from '../components/Markdown';
 import { useOverlay } from '../components/overlay';
 import { Progress } from '../components/ui';
@@ -239,8 +239,8 @@ export default function ChatView({ subject, launch, floating, collapsed, full, o
     setDropping(false);
     if (!isDocDrag(e)) return;
     e.preventDefault();
-    const d: DraggedDoc = JSON.parse(e.dataTransfer.getData(DOC_DRAG));
-    setAttached((a) => (a.some((x) => x.id === d.id) ? a : [...a, d]));
+    const ds = draggedDocs(e);
+    setAttached((a) => [...a, ...ds.filter((d) => !a.some((x) => x.id === d.id))]);
     if (collapsed) onToggleCollapse();
     setTimeout(() => textarea.current?.focus(), 50);
   };

@@ -1,4 +1,5 @@
 /* App-wide context menus and dialogs. (Electron has no window.prompt, so all text input goes through here.) */
+import { createPortal } from 'react-dom';
 import { createContext, ReactNode, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 export interface MenuItem {
@@ -110,7 +111,8 @@ export function Modal({ title, children, footer, onClose, wide }: {
     window.addEventListener('keydown', k);
     return () => window.removeEventListener('keydown', k);
   }, [onClose]);
-  return (
+  // portalled: a modal opened from a sidebar would otherwise be positioned and clipped by that panel
+  return createPortal(
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className={`modal${wide ? ' modal-wide' : ''}`}>
         <div className="modal-head">
@@ -120,7 +122,8 @@ export function Modal({ title, children, footer, onClose, wide }: {
         {children && <div className="modal-body">{children}</div>}
         {footer && <div className="modal-foot">{footer}</div>}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

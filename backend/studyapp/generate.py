@@ -104,6 +104,26 @@ class MCQs(BaseModel):
     questions: list[MCQ]
 
 
+# Fronts/backs/questions are rendered as Markdown with LaTeX; spell out the forms that otherwise come back broken
+ITEM_FORMAT = ("\n\nFormatting (all text fields are Markdown): write any table as a GitHub-flavoured Markdown table with a "
+               "header row and a |---| separator row, on its own lines after a blank line; use $...$ for inline maths and "
+               "$$...$$ for display maths; use - for bullet lists. Never write a table as plain lines of values.")
+_OPTS_IN_Q = re.compile(r"\n\s*\(?A[.)]\s")
+
+
+def _tidy_mcq(q: "MCQ") -> "MCQ":
+    """Drop an A-D option list the model repeated at the end of the question text (the options are shown separately).
+    Only cut when that tail really starts with the first option, so a question that merely mentions "A." is kept."""
+    m = None
+    for m in _OPTS_IN_Q.finditer(q.question):
+        pass
+    if m:
+        tail = " ".join(q.question[m.end():].split()).lower()
+        if tail.startswith(" ".join(q.options[0].split()).lower()[:30]):
+            q.question = q.question[:m.start()].rstrip()
+    return q
+
+
 def _per_section(art, params, groups, total, prog, make_task, schema, pick):
     """Allocate `total` items across every section in scope (proportional to size) and generate each share."""
     sections = [(gi, s) for gi, g in enumerate(groups) for s in g["sections"]]
@@ -128,7 +148,7 @@ def gen_flashcards(art, params, groups, prog):
         ex = ("\nAlready created (do not repeat): " + json.dumps(existing)) if existing else ""
         return (f"Create exactly {k} high-quality flashcards from the document section '{sec['title']}' in the material. "
                 "Cover its most important definitions, laws, formulas, relationships and facts. Fronts are clear questions or "
-                "prompts; backs are concise, complete answers." + ex)
+                "prompts; backs are concise, complete answers." + ITEM_FORMAT + ex)
     cards = _per_section(art, params, groups, n, prog, task, Cards, lambda c: c.front)
     return {"cards": [c.model_dump() for c in cards]}
 
@@ -139,9 +159,10 @@ def gen_quiz(art, params, groups, prog):
         ex = ("\nAlready asked (do not repeat): " + json.dumps(existing)) if existing else ""
         return (f"Write exactly {k} multiple-choice questions from the document section '{sec['title']}' in the material. "
                 "Each has 4 plausible options, exactly one correct, and an explanation of why it is right and why the "
-                "others are wrong." + ex)
+                "others are wrong. Put the options only in 'options', never listed inside the question text."
+                + ITEM_FORMAT + ex)
     qs = _per_section(art, params, groups, n, prog, task, MCQs, lambda q: q.question)
-    return {"questions": [q.model_dump() for q in qs]}
+    return {"questions": [_tidy_mcq(q).model_dump() for q in qs]}
 
 
 # ---------------------------------------------------------------- notes & cheat sheet

@@ -4,7 +4,7 @@ import type { Route } from '../App';
 import { usePoll } from '../hooks';
 import { useLibraryActions } from '../components/actions';
 import type { CloudFocus } from '../components/EmbeddingCloud';
-import FileList, { DOC_DRAG, DraggedDoc } from '../components/FileList';
+import FileList, { asDragged, DOC_DRAG, DraggedDoc, draggedDocs, isPickClick, Picker } from '../components/FileList';
 import { MenuItem, useOverlay } from '../components/overlay';
 import StaleBadge from '../components/StaleBadge';
 import SubjectIcon from '../components/SubjectIcon';
@@ -39,6 +39,22 @@ export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCrea
 
   useEffect(() => { api.folders(subject.id).then(setFolders).catch(() => setFolders({})); }, [subject.id]);
 
+  // Shift/Ctrl multi-selection of files (`d:<id>`) and folders (`f:<id>`). Rows register what they show, so a
+  // selection can be acted on even after its rows collapse away.
+  const asideRef = useRef<HTMLElement>(null);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const anchor = useRef<string | null>(null);
+  const seenDocs = useRef(new Map<number, Doc>());
+  const seenFolders = useRef(new Map<string, { folder: Folder; topicId: number }>());
+  const clearPicked = () => setPicked((p) => (p.size ? new Set() : p));
+  useEffect(() => { setPicked(new Set()); anchor.current = null; }, [subject.id]);
+  useEffect(() => {
+    if (!picked.size) return;
+    const k = (e: KeyboardEvent) => { if (e.key === 'Escape' && !document.querySelector('.modal-backdrop')) setPicked(new Set()); };
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  }, [picked.size]);
+
   /** Folders are display only: saved as one blob per subject, never read by the backend. */
   const saveFolders = (topicId: number, f: TopicFolders) => {
     const next = { ...foldersRef.current, [topicId]: f };
@@ -49,27 +65,134 @@ export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCrea
   };
 
   const refresh = () => { refs.reload(); onChange(); onDocsChanged(); };
+  const editFolders = (topicId: number, fn: (f: TopicFolders) => TopicFolders) =>
+    saveFolders(topicId, fn(foldersRef.current[topicId] ?? EMPTY_FOLDERS));
+  /** Take a file out of whatever folder it was in (in its current topic). */
+  const unfile = (d: { id: number; topic_id: number | null; kind: string }) => {
+    if (d.kind === 'topic' && d.topic_id !== null && foldersRef.current[d.topic_id]?.files[d.id])
+      editFolders(d.topic_id, (f) => ({ ...f, files: without(f.files, d.id) }));
+  };
+  const dropFolder = (topicId: number, fid: string) => editFolders(topicId, (f) => ({
+    folders: f.folders.filter((x) => x.id !== fid), files: Object.fromEntries(Object.entries(f.files).filter(([, v]) => v !== fid)) }));
   const toggle = (id: number) => setOpen((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const uploadRef = (paths?: string[]) =>
     setUpload({ title: `Add textbooks to ${subject.name}`, target: { subject_id: subject.id }, mode: 'all', paths });
-  /** A file row dropped on a topic (topicId) or on the reference library (null). Resolves false if the move failed. */
-  const moveTo = async (d: DraggedDoc, topicId: number | null) => {
-    if (topicId === null ? d.kind === 'reference' : d.kind === 'topic' && d.topic_id === topicId) return true;
-    try {
-      await api.moveDocument(d.id, topicId);
-      refresh();
-      if (topicId !== null) setOpen((s) => new Set(s).add(topicId));
-      return true;
-    } catch (e) {
-      await ov.confirm({ title: `Couldn't move ${d.filename}`, body: String(e).replace(/^Error: /, ''), confirmText: 'OK' });
-      return false;
+  /** Move files to a topic (topicId) or the reference library (null); a file that changes topic leaves its folder.
+   * Resolves to the ids that are now there (failures are reported). */
+  const moveTo = async (ds: DraggedDoc[], topicId: number | null) => {
+    const ok: number[] = [], failed: string[] = [];
+    for (const d of ds) {
+      if (topicId === null ? d.kind === 'reference' : d.kind === 'topic' && d.topic_id === topicId) { ok.push(d.id); continue; }
+      try {
+        await api.moveDocument(d.id, topicId);
+        unfile(d);
+        ok.push(d.id);
+      } catch (e) {
+        failed.push(`${d.filename}: ${String(e).replace(/^Error: /, '')}`);
+      }
     }
+    if (ok.length) refresh();
+    if (ok.length && topicId !== null) setOpen((s) => new Set(s).add(topicId));
+    if (failed.length) await ov.confirm({ title: `Couldn't move ${failed.length === 1 ? 'a file' : `${failed.length} files`}`, body: failed.join('\n'), confirmText: 'OK' });
+    return ok;
   };
-  /** Drop handler for a topic or the reference library: moves a dragged file row, or uploads files from the OS. */
+  /** Drop handler for a topic or the reference library: moves dragged file rows, or uploads files from the OS. */
   const dropOn = (topicId: number | null, upload: (paths: string[]) => void) => (e: React.DragEvent) => {
     e.preventDefault();
-    if (e.dataTransfer.types.includes(DOC_DRAG)) moveTo(JSON.parse(e.dataTransfer.getData(DOC_DRAG)), topicId);
+    if (e.dataTransfer.types.includes(DOC_DRAG)) moveTo(draggedDocs(e), topicId);
     else upload(droppedPaths(e));
+  };
+
+  /* ------------------------------------------------ bulk actions on the multi-selection */
+  const folderDocs = (fid: string, topicId: number) =>
+    [...seenDocs.current.values()].filter((d) => d.kind === 'topic' && d.topic_id === topicId && foldersRef.current[topicId]?.files[d.id] === fid);
+  /** The picked folders, and the picked files not already inside a picked folder. */
+  const pickedItems = () => {
+    const fs = [...picked].filter((k) => k.startsWith('f:')).map((k) => seenFolders.current.get(k.slice(2)))
+      .filter((x): x is { folder: Folder; topicId: number } => !!x && !!foldersRef.current[x.topicId]?.folders.some((f) => f.id === x.folder.id));
+    const inFolders = new Set(fs.flatMap((f) => folderDocs(f.folder.id, f.topicId).map((d) => d.id)));
+    const ds = [...picked].filter((k) => k.startsWith('d:')).map((k) => seenDocs.current.get(Number(k.slice(2))))
+      .filter((d): d is Doc => !!d && !inFolders.has(d.id));
+    return { docs: ds, folders: fs, allDocs: [...ds, ...fs.flatMap((f) => folderDocs(f.folder.id, f.topicId))] };
+  };
+  const moveTopic = async (topicId: number | null) => {
+    const { docs, folders: fs } = pickedItems();
+    clearPicked();
+    await moveTo(docs.map(asDragged), topicId);
+    for (const { folder, topicId: from } of fs) {
+      if (from === topicId) continue;
+      const moved = await moveTo(folderDocs(folder.id, from).map(asDragged), topicId);
+      dropFolder(from, folder.id);
+      if (topicId !== null) { // the folder goes along, under the same name
+        const id = newId();
+        editFolders(topicId, (f) => ({ folders: [...f.folders, { id, name: folder.name }], files: { ...f.files, ...Object.fromEntries(moved.map((m) => [m, id])) } }));
+      }
+    }
+  };
+  const moveToFolder = async (fid: string, topicId: number) => {
+    const docs = pickedItems().docs;
+    clearPicked();
+    const moved = await moveTo(docs.map(asDragged), topicId);
+    editFolders(topicId, (f) => ({ ...f, files: { ...f.files, ...Object.fromEntries(moved.map((m) => [m, fid])) } }));
+  };
+  const deletePicked = async () => {
+    const { docs, folders: fs } = pickedItems();
+    const parts = [docs.length && `${docs.length} file${docs.length === 1 ? '' : 's'}`, fs.length && `${fs.length} folder${fs.length === 1 ? '' : 's'}`].filter(Boolean);
+    if (!parts.length) return clearPicked();
+    const ok = await ov.confirm({ title: `Delete ${parts.join(' and ')}?`, confirmText: 'Delete', danger: true,
+      body: `${docs.length ? 'Files lose their extracted text, embeddings and vision notes. ' : ''}${fs.length ? 'Files inside the deleted folders stay in their topic.' : ''}` });
+    if (!ok) return;
+    clearPicked();
+    for (const d of docs) { await api.deleteDocument(d.id).catch(() => undefined); unfile(d); }
+    for (const { folder, topicId } of fs) dropFolder(topicId, folder.id);
+    if (docs.some((d) => sel.focus?.kind === 'doc' && sel.focus.id === d.id)) sel.onFocus(null);
+    refresh();
+  };
+  const moveItems = (): MenuItem[] => {
+    const { docs, folders: fs } = pickedItems();
+    const allFolders = subject.topics.flatMap((t) => [...(foldersRef.current[t.id]?.folders ?? [])]
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })).map((f) => ({ f, t })));
+    return [
+      ...subject.topics.map((t) => ({ label: `Move to topic “${t.name}”`, onClick: () => moveTopic(t.id) })),
+      ...(!fs.length ? [{ label: 'Move to reference library', onClick: () => moveTopic(null) }] : []),
+      ...(!fs.length ? allFolders.map(({ f, t }, i) => ({ label: `Move to folder “${t.name} › ${f.name}”`, onClick: () => moveToFolder(f.id, t.id), separatorBefore: i === 0 })) : []),
+      ...(docs.some((d) => d.topic_id !== null && foldersRef.current[d.topic_id]?.files[d.id])
+        ? [{ label: 'Remove from folder', onClick: () => { docs.forEach(unfile); clearPicked(); }, separatorBefore: true }] : []),
+    ];
+  };
+  const bulkMenu = (): MenuItem[] => [
+    ...moveItems(),
+    { label: 'Clear selection', onClick: clearPicked, separatorBefore: true },
+    { label: `Delete ${picked.size} selected`, onClick: deletePicked, danger: true },
+  ];
+  const picker: SidePicker = {
+    has: (k) => picked.has(k),
+    click: (key, e) => {
+      const focusKey = sel.focus?.kind === 'doc' ? `d:${sel.focus.id}` : sel.focus?.kind === 'folder' ? `f:${sel.focus.id}` : null;
+      const from = anchor.current ?? focusKey;
+      if (e.shiftKey && from && asideRef.current) {
+        const keys = [...asideRef.current.querySelectorAll<HTMLElement>('[data-pick]')].map((el) => el.dataset.pick!);
+        const a = keys.indexOf(from), b = keys.indexOf(key);
+        if (a >= 0 && b >= 0) {
+          const range = keys.slice(Math.min(a, b), Math.max(a, b) + 1);
+          setPicked((p) => new Set([...(e.ctrlKey || e.metaKey ? p : []), ...range]));
+          anchor.current = from;
+          return;
+        }
+      }
+      // Ctrl/⌘ toggles; the first one also takes in the file or folder that was already selected
+      setPicked((p) => {
+        const n = new Set(p.size || !focusKey || !document.querySelector(`[data-pick="${focusKey}"]`) ? p : [focusKey]);
+        if (n.has(key) && key !== focusKey) n.delete(key); else n.add(key);
+        return n;
+      });
+      anchor.current = key;
+    },
+    register: (d) => { seenDocs.current.set(d.id, d); },
+    registerFolder: (folder, topicId) => { seenFolders.current.set(folder.id, { folder, topicId }); },
+    setAnchor: (key) => { anchor.current = key; },
+    menu: (k) => (picked.has(k) && picked.size > 1 ? bulkMenu() : null),
+    drag: (d) => (picked.has(`d:${d.id}`) && picked.size > 1 ? pickedItems().allDocs.map(asDragged) : null),
   };
   const subjectMenu: MenuItem[] = [
     { label: 'New topic…', onClick: () => act.newTopic(subject) },
@@ -79,15 +202,19 @@ export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCrea
   ];
   /** A file click: narrow the cloud to it, and open it straight away unless the cloud is what's showing. */
   const selectDoc = (d: Doc) => {
+    anchor.current = `d:${d.id}`;
     sel.onFocus({ kind: 'doc', id: d.id, name: d.filename });
     if (!sel.cloudVisible) onOpenDoc(d.id);
   };
-  const files: FileProps = { onSelect: selectDoc, selectedId: sel.focus?.kind === 'doc' ? sel.focus.id : null, openId: sel.openId };
+  const files: FileProps = { onSelect: selectDoc, selectedId: sel.focus?.kind === 'doc' ? sel.focus.id : null, openId: sel.openId, picker };
 
   return (
-    <aside className="side side-right" onClick={(e) => {
+    <aside ref={asideRef} className="side side-right" onClick={(e) => {
+      const t = e.target as Element;
+      if (t.closest('.modal-backdrop, .pick-bar')) return;
+      if (!isPickClick(e)) clearPicked(); // a plain click anywhere ends a multi-selection
       // anything that isn't a topic name, folder or file (or inside a dialog opened from here) shows the whole subject
-      if (!(e.target as Element).closest('[data-focus], .modal-backdrop')) sel.onFocus(null);
+      if (!t.closest('[data-focus]')) sel.onFocus(null);
     }}>
       <div className="side-head" onContextMenu={(e) => ov.menu(e, subjectMenu)}>
         <SubjectIcon s={subject} size={30} />
@@ -133,6 +260,15 @@ export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCrea
         </section>
       </div>
 
+      {picked.size > 0 && (
+        <div className="pick-bar" role="toolbar" aria-label="Selected files and folders">
+          <span className="pick-count">{picked.size} selected</span>
+          <button className="btn btn-sm" onClick={(e) => ov.menu(e, moveItems(), { anchor: e.currentTarget, place: 'above' })}>Move to…</button>
+          <button className="btn btn-sm btn-danger" onClick={deletePicked}>Delete</button>
+          <button className="icon-btn" title="Clear selection (Esc)" onClick={clearPicked}>×</button>
+        </div>
+      )}
+
       {upload && (
         <UploadDialog title={upload.title} target={upload.target} defaultMode={upload.mode} initialPaths={upload.paths}
           onClose={() => setUpload(null)} onDone={() => {
@@ -144,12 +280,11 @@ export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCrea
   );
 }
 
-type FileProps = { onSelect: (d: Doc) => void; selectedId: number | null; openId: number | null };
+type SidePicker = Picker & { registerFolder: (f: Folder, topicId: number) => void; setAnchor: (key: string) => void };
+type FileProps = { onSelect: (d: Doc) => void; selectedId: number | null; openId: number | null; picker: SidePicker };
 type Folder = TopicFolders['folders'][number];
 const EMPTY_FOLDERS: TopicFolders = { folders: [], files: {} };
 const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-const draggedDoc = (e: React.DragEvent): DraggedDoc | null =>
-  e.dataTransfer.types.includes(DOC_DRAG) ? JSON.parse(e.dataTransfer.getData(DOC_DRAG)) : null;
 const without = (files: Record<string, string>, docId: number) => Object.fromEntries(Object.entries(files).filter(([k]) => k !== String(docId)));
 
 function TopicRow({ topic, color, open, focused, onToggle, onFocus, onUpload, onCreate, onOpenDoc, onDetails, onDrop, onMoveHere,
@@ -157,7 +292,7 @@ function TopicRow({ topic, color, open, focused, onToggle, onFocus, onUpload, on
   topic: Topic; color: string; open: boolean; focused: boolean; onToggle: () => void; onFocus: () => void;
   onUpload: (paths?: string[]) => void; onCreate: (tool: ToolName) => void;
   onOpenDoc: (d: Doc) => void; onDetails: (d: Doc) => void; onDrop: (e: React.DragEvent) => void;
-  onMoveHere: (d: DraggedDoc) => Promise<boolean>; folders: TopicFolders; onFolders: (f: TopicFolders) => void;
+  onMoveHere: (ds: DraggedDoc[]) => Promise<number[]>; folders: TopicFolders; onFolders: (f: TopicFolders) => void;
   files: FileProps; sel: Selection; onRename: () => void; onDelete: () => void; onChange: () => void;
 }) {
   const ov = useOverlay();
@@ -182,12 +317,15 @@ function TopicRow({ topic, color, open, focused, onToggle, onFocus, onUpload, on
       onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
       onDrop={(e) => {
         setDrag(false);
-        // a file of this topic dropped outside its folders leaves its folder
-        const d = draggedDoc(e);
-        if (d && d.kind === 'topic' && d.topic_id === topic.id) {
-          e.preventDefault();
-          if (folders.files[d.id]) onFolders({ ...folders, files: without(folders.files, d.id) });
-        } else onDrop(e);
+        // files of this topic dropped outside its folders leave their folder; others move here
+        const ds = draggedDocs(e);
+        if (!ds.length) return onDrop(e);
+        e.preventDefault();
+        const mine = ds.filter((d) => d.kind === 'topic' && d.topic_id === topic.id);
+        if (mine.some((d) => folders.files[d.id]))
+          onFolders({ ...folders, files: Object.fromEntries(Object.entries(folders.files).filter(([k]) => !mine.some((d) => String(d.id) === k))) });
+        const rest = ds.filter((d) => !mine.includes(d));
+        if (rest.length) onMoveHere(rest);
       }}>
       <div className="topic-row" data-focus onClick={() => { onToggle(); onFocus(); }} onContextMenu={(e) => ov.menu(e, fullMenu)}>
         <span className="topic-caret">{open ? '▾' : '▸'}</span>
@@ -219,7 +357,7 @@ function FolderIcon() {
 /** A topic's files: its folders (collapsible, display only) first, then the files in no folder. */
 function TopicFiles({ topicId, onOpen, onDetails, onChange, folders, onFolders, onMoveHere, files, sel }: {
   topicId: number; onOpen: (d: Doc) => void; onDetails: (d: Doc) => void; onChange: () => void;
-  folders: TopicFolders; onFolders: (f: TopicFolders) => void; onMoveHere: (d: DraggedDoc) => Promise<boolean>;
+  folders: TopicFolders; onFolders: (f: TopicFolders) => void; onMoveHere: (ds: DraggedDoc[]) => Promise<number[]>;
   files: FileProps; sel: Selection;
 }) {
   const ov = useOverlay();
@@ -227,6 +365,7 @@ function TopicFiles({ topicId, onOpen, onDetails, onChange, folders, onFolders, 
   const [closed, setClosed] = useState<Set<string>>(new Set());
   const [over, setOver] = useState<string | null>(null);
   const list = docs.data ?? [];
+  list.forEach(files.picker.register); // so a picked, collapsed folder still knows its files
   const sorted = [...folders.folders].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   const known = new Set(sorted.map((f) => f.id));
   const folderOf = (d: Doc) => (known.has(folders.files[d.id]) ? folders.files[d.id] : null);
@@ -249,6 +388,7 @@ function TopicFiles({ topicId, onOpen, onDetails, onChange, folders, onFolders, 
   };
   const toggle = (id: string) => setClosed((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const props = { onOpen, onDetails, onChange: reload, menu, ...files };
+  const pk = files.picker;
 
   return (
     <div className="topic-files">
@@ -256,23 +396,30 @@ function TopicFiles({ topicId, onOpen, onDetails, onChange, folders, onFolders, 
         const inside = list.filter((d) => folderOf(d) === f.id);
         const isOpen = !closed.has(f.id);
         const focused = sel.focus?.kind === 'folder' && sel.focus.id === f.id;
+        const key = `f:${f.id}`;
+        pk.registerFolder(f, topicId);
         return (
           <div key={f.id} className={`folder${isOpen ? ' open' : ''}${over === f.id ? ' drag' : ''}`}
             onDragOver={(e) => { if (e.dataTransfer.types.includes(DOC_DRAG)) { e.preventDefault(); e.stopPropagation(); setOver(f.id); } }}
             onDragLeave={() => setOver(null)}
             onDrop={async (e) => {
-              const d = draggedDoc(e);
-              if (!d) return;
+              const ds = draggedDocs(e);
+              if (!ds.length) return;
               e.preventDefault(); e.stopPropagation(); setOver(null);
-              if (await onMoveHere(d)) place(d.id, f.id);
+              const moved = await onMoveHere(ds);
+              if (moved.length) onFolders({ ...folders, files: { ...folders.files, ...Object.fromEntries(moved.map((m) => [m, f.id])) } });
             }}>
-            <div className={`folder-row${focused ? ' focused' : ''}`} data-focus
-              onClick={() => { toggle(f.id); sel.onFocus({ kind: 'folder', id: f.id, docs: inside.map((d) => d.id), name: f.name }); }}
-              onContextMenu={(e) => ov.menu(e, [
+            <div className={`folder-row${focused ? ' focused' : ''}${pk.has(key) ? ' picked' : ''}`} data-focus data-pick={key}
+              onClick={(e) => {
+                if (isPickClick(e)) return pk.click(key, e);
+                pk.setAnchor(key);
+                toggle(f.id); sel.onFocus({ kind: 'folder', id: f.id, docs: inside.map((d) => d.id), name: f.name });
+              }}
+              onContextMenu={(e) => { const bulk = pk.menu(key); if (bulk) return ov.menu(e, bulk); ov.menu(e, [
                 { label: isOpen ? 'Collapse' : 'Expand', onClick: () => toggle(f.id) },
                 { label: 'Rename…', onClick: () => rename(f), separatorBefore: true },
                 { label: 'Delete folder', onClick: () => remove(f), danger: true },
-              ])}>
+              ]); }}>
               <span className="topic-caret">{isOpen ? '▾' : '▸'}</span>
               <span className="folder-icon"><FolderIcon /></span>
               <span className="folder-name">{f.name}</span>

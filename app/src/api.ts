@@ -119,6 +119,7 @@ export const api = {
   vision: (id: number, mode?: VisionMode) => req<{ job_id: number | null }>('POST', `/documents/${id}/vision`, { mode }),
   jobs: (active = false) => req<Job[]>('GET', `/jobs${active ? '?active=true' : ''}`),
   cancelJob: (id: number) => req('POST', `/jobs/${id}/cancel`),
+  dismissJob: (id?: number) => req('POST', `/jobs/dismiss${id ? `?job_id=${id}` : ''}`),
   search: (query: string, topic_id: number, include_reference: boolean) =>
     req<{ results: SearchResult[]; warning: string | null }>('POST', '/search', { query, topic_id, include_reference }),
   settings: () => req<Settings>('GET', '/settings'),
@@ -152,6 +153,7 @@ export const api = {
   library: (subjectId: number) => req<LibraryItem[]>('GET', `/subjects/${subjectId}/library`),
   renameArtifact: (id: number, title: string) => req('PATCH', `/artifacts/${id}`, { title }),
   deleteArtifact: (id: number) => req('DELETE', `/artifacts/${id}`),
+  deleteCards: (artifactId: number, indices: number[]) => req<{ ok: boolean; count: number }>('POST', `/artifacts/${artifactId}/cards/delete`, { indices }),
   rateCard: (artifactId: number, index: number, rating: 'confident' | 'struggling' | 'none') =>
     req('PUT', `/artifacts/${artifactId}/cards/${index}/rating`, { rating }),
   quizReview: (artifactId: number, answers: Record<string, number>) => req<QuizReview>('POST', `/artifacts/${artifactId}/quiz-review`, { answers }),

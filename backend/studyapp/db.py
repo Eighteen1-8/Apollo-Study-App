@@ -120,6 +120,8 @@ MIGRATIONS = [
     # Opaque UI state stored for the frontend and never read by the backend, e.g. 'folders:<subject id>' (file
     # folders inside topics, display only)
     "CREATE TABLE IF NOT EXISTS ui_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    # Finished jobs the student cleared from the jobs list
+    "ALTER TABLE jobs ADD COLUMN dismissed INTEGER NOT NULL DEFAULT 0",
 ]
 
 _lock = threading.RLock()

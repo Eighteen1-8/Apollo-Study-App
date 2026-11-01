@@ -4,7 +4,6 @@ import ctypes
 import os
 import threading
 import time
-
 import uvicorn
 
 from . import config, db, jobs

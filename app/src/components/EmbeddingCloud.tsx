@@ -163,6 +163,7 @@ function makeSprite([r, g, b]: RGB, light: boolean) {
 
 const easeOut = (t: number) => 1 - (1 - t) ** 3;
 const VIEW = { yaw: -0.6, pitch: 0.32 };
+const DIST = 3.1; // camera distance from the orbit centre; fixed, see project()
 /** Points the cloud's signature changes with; a poll only rebuilds the scene when it differs. */
 const sigOf = (m: EmbeddingMap) => `${m.model}|${m.total}|${m.points.length}|${m.points[m.points.length - 1]?.[0] ?? 0}`;
 
@@ -280,7 +281,9 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
     const project = (t: number) => {
       const intro = still ? 1 : easeOut(Math.min(1, (t - t0) / 1900));
       const cy = Math.cos(cam.yaw), sy_ = Math.sin(cam.yaw), cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
-      const dist = 3.1 / cam.zoom, f = Math.min(w, h) * 1.15, ox = w / 2, oy = h / 2;
+      // zoom scales the image (focal length), it never dollies the camera in: the perspective stays the same at every
+      // zoom, so the cloud doesn't warp as you zoom. The star shell keeps the base focal length (it's a backdrop).
+      const f0 = Math.min(w, h) * 1.15, f = f0 * cam.zoom, ox = w / 2, oy = h / 2;
       const breathe = still ? 0 : t / 1000;
       for (let i = 0; i < n; i++) {
         // nodes stream out from the core with a slight per-point delay; stars are already in place
@@ -292,8 +295,8 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
           z = pos[i * 3 + 2] * k - (star ? 0 : cam.cz);
         const x1 = x * cy - z * sy_, z1 = x * sy_ + z * cy;
         const y2 = y * cp - z1 * sp, z2 = y * sp + z1 * cp;
-        const zc = z2 + dist;
-        const s = zc > 0.1 ? f / zc : 0;
+        const zc = z2 + DIST;
+        const s = zc > 0.1 ? (star ? f0 : f) / zc : 0;
         sx[i] = ox + x1 * s; sy[i] = oy - y2 * s; sz[i] = zc; sc[i] = s;
       }
       return intro;
@@ -301,12 +304,12 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
 
     const drawRing = (s: number, axis: 'x' | 'y' | 'z') => {
       const cy = Math.cos(cam.yaw), sy_ = Math.sin(cam.yaw), cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
-      const dist = 3.1 / cam.zoom, f = Math.min(w, h) * 1.15;
+      const f = Math.min(w, h) * 1.15 * cam.zoom;
       ctx.beginPath();
       for (let j = 0; j <= 96; j++) {
         const a = (j / 96) * Math.PI * 2, c = Math.cos(a) * 1.18 * s * cam.rad, d = Math.sin(a) * 1.18 * s * cam.rad;
         const [x, y, z] = axis === 'y' ? [c, 0, d] : axis === 'x' ? [0, c, d] : [c, d, 0];
-        const x1 = x * cy - z * sy_, z1 = x * sy_ + z * cy, y2 = y * cp - z1 * sp, zc = y * sp + z1 * cp + dist;
+        const x1 = x * cy - z * sy_, z1 = x * sy_ + z * cy, y2 = y * cp - z1 * sp, zc = y * sp + z1 * cp + DIST;
         const X = w / 2 + (x1 * f) / zc, Y = h / 2 - (y2 * f) / zc;
         if (j) ctx.lineTo(X, Y); else ctx.moveTo(X, Y);
       }
@@ -334,8 +337,9 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
 
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, w, h);
-      // glow size stops growing past a ~560px canvas, so a full-page cloud spreads out instead of blooming white
-      const spriteK = Math.min(1, 560 / Math.max(1, Math.min(w, h))) * Math.min(1.6, cam.zoom ** 0.35);
+      // glow size stops growing past a ~560px canvas, so a full-page cloud spreads out instead of blooming white;
+      // zooming spreads points apart faster than it enlarges them (size grows ~zoom^0.4), so clusters open up
+      const spriteK = Math.min(1, 560 / Math.max(1, Math.min(w, h))) * cam.zoom ** -0.6;
 
       ctx.globalCompositeOperation = 'source-over';
       ctx.lineWidth = 1;
@@ -368,7 +372,7 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
         const isReal = i < real;
         if (grp[i] !== STAR && vis[i] < 0.03 && !isReal) continue; // filtered-out dust is gone; nodes keep a faint trace
         const v = 0.05 + 0.95 * vis[i];
-        const px_ = size[i] * sc[i] * (isReal ? 0.12 : 0.1) * (0.6 + 0.4 * vis[i]) * spriteK;
+        const px_ = size[i] * sc[i] * (grp[i] === STAR ? cam.zoom ** 0.6 : 1) * (isReal ? 0.12 : 0.1) * (0.6 + 0.4 * vis[i]) * spriteK;
         const fog = Math.max(0.15, Math.min(1, 1.35 - (sz[i] - 2) * 0.35));
         const near = Math.min(1, Math.max(0, (sz[i] - 0.3) / 0.5)); // fade what passes the camera
         let a = alpha[i] * fog * near * (grp[i] === STAR ? 1 : intro * v * (isReal ? 0.45 + 0.55 * dens : dens));

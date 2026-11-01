@@ -1,7 +1,7 @@
 {
   "name": "apollo-study",
   "productName": "Apollo Study",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Apollo Study: private AI study app (local models by default)",
   "main": "electron/main.cjs",

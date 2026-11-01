@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { api, Artifact, ArtifactContent, Attempt, ExamQuestion, QuizReview, Subject } from '../api';
 import Markdown, { RESOLVED } from '../components/Markdown';
 import { useOverlay } from '../components/overlay';
@@ -13,7 +14,8 @@ export default function ArtifactViewer({ id, subject, onClose }: { id: number; s
     window.addEventListener('keydown', k);
     return () => window.removeEventListener('keydown', k);
   }, [onClose]);
-  return (
+  // portalled so it always covers the window, whatever transformed/clipped panel it was opened from
+  return createPortal(
     <div className="fullscreen">
       <div className="fs-top">
         <div className="fs-title">{a?.title ?? 'Loading…'}</div>
@@ -26,7 +28,8 @@ export default function ArtifactViewer({ id, subject, onClose }: { id: number; s
             : <div className="fs-doc">{a.type === 'exam' ? <Exam artifact={a} /> : <Sections content={a.content} />}</div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -67,7 +70,7 @@ export function ArtifactPage({ id, onClose, onCite }: { id: number; onClose: () 
 }
 
 function Source({ s }: { s?: string }) {
-  return s ? <div className="source">Source: {s}</div> : null;
+  return s ? <div className="src-note">Source: {s}</div> : null;
 }
 
 /* ---------------------------------------------------------------- flashcards */
@@ -75,7 +78,8 @@ function Source({ s }: { s?: string }) {
 type Rating = 'confident' | 'struggling';
 
 function Flashcards({ artifact }: { artifact: Artifact }) {
-  const cards = artifact.content!.cards ?? [];
+  const ov = useOverlay();
+  const [cards, setCards] = useState(() => artifact.content!.cards ?? []);
   const [order, setOrder] = useState(() => cards.map((_, i) => i));
   const [i, setI] = useState(0);
   const [flipped, setFlipped] = useState(false);
@@ -85,7 +89,25 @@ function Flashcards({ artifact }: { artifact: Artifact }) {
   const [toast, setToast] = useState<string | null>(null);
   const idx = order[i];
   const c = cards[idx];
-  const go = (d: number) => { setFlipped(false); setI((x) => (x + d + cards.length) % cards.length); };
+  const go = (d: number) => { setFlipped(false); setI((x) => (x + d + order.length) % order.length); };
+
+  /** Delete badly generated cards (by deck index). Ratings follow the cards that stay, as the backend renumbers them. */
+  const removeCards = async (idxs: number[]) => {
+    const ok = await ov.confirm({ title: idxs.length === 1 ? 'Delete this card?' : `Delete ${idxs.length} cards?`,
+      body: 'It is removed from the deck for good, along with its ✓/✗ rating.', confirmText: 'Delete', danger: true });
+    if (!ok) return;
+    await api.deleteCards(artifact.id, idxs);
+    const drop = new Set(idxs);
+    const remap = new Map<number, number>();
+    cards.forEach((_, k) => { if (!drop.has(k)) remap.set(k, remap.size); });
+    setCards(cards.filter((_, k) => !drop.has(k)));
+    setRatings((r) => Object.fromEntries(Object.entries(r).filter(([k]) => remap.has(Number(k))).map(([k, v]) => [remap.get(Number(k))!, v])));
+    const kept = order.filter((k) => remap.has(k)).map((k) => remap.get(k)!);
+    const next = kept.length ? kept : [...remap.values()];
+    setOrder(next);
+    setI((x) => Math.min(x, Math.max(0, next.length - 1)));
+    setFlipped(false);
+  };
 
   const rate = async (r: Rating) => {
     const next = ratings[idx] === r ? undefined : r;
@@ -122,12 +144,14 @@ function Flashcards({ artifact }: { artifact: Artifact }) {
         {!list && <button className="btn btn-sm" onClick={() => { setOrder([...order].sort(() => Math.random() - 0.5)); setI(0); setFlipped(false); }}>Shuffle</button>}
         {!list && struggling > 0 && <button className="btn btn-sm" onClick={() => { setOrder(order.filter((k) => ratings[k] === 'struggling')); setI(0); setFlipped(false); }}>Only ✗ cards</button>}
         {!list && order.length !== cards.length && <button className="btn btn-sm" onClick={() => { setOrder(cards.map((_, k) => k)); setI(0); }}>All cards</button>}
+        {!list && <button className="btn btn-sm" data-tip="Delete this card from the deck" onClick={() => removeCards([idx])}>Delete card</button>}
         <button className="btn btn-sm" onClick={() => setList(!list)}>{list ? 'Study mode' : 'List all'}</button>
       </div>
       {list ? (
         <div className="card-list">
           {cards.map((c, k) => (
             <div key={k} className={`card-list-item${ratings[k] ? ` rated-${ratings[k]}` : ''}`}>
+              <button className="x-btn card-x" title="Delete card" onClick={() => removeCards([k])}>×</button>
               <Markdown text={c.front} className="card-list-front" />
               <Markdown text={c.back} />
               <Source s={c.source} />
@@ -160,6 +184,18 @@ function Flashcards({ artifact }: { artifact: Artifact }) {
 
 /* ---------------------------------------------------------------- quiz */
 
+/** Some quizzes repeat the A-D options at the end of the question text; they're already shown as buttons. Cut that
+ * tail only when it really starts with the first option. */
+const OPTS_IN_Q = /\n\s*\(?A[.)]\s/g;
+const WS = /\s+/;
+function questionText(q: { question: string; options: string[] }) {
+  const found = [...q.question.matchAll(OPTS_IN_Q)];
+  const m = found[found.length - 1];
+  if (!m || !q.options.length) return q.question;
+  const norm = (t: string) => t.split(WS).join(' ').trim().toLowerCase();
+  return norm(q.question.slice(m.index! + m[0].length)).startsWith(norm(q.options[0]).slice(0, 30)) ? q.question.slice(0, m.index).trimEnd() : q.question;
+}
+
 function Quiz({ artifact, subject }: { artifact: Artifact; subject: Subject }) {
   const qs = artifact.content!.questions ?? [];
   const [i, setI] = useState(0);
@@ -184,7 +220,7 @@ function Quiz({ artifact, subject }: { artifact: Artifact; subject: Subject }) {
       </div>
       <div className="quiz-card" key={i}>
         <div className="quiz-num">Question {i + 1} of {qs.length}</div>
-        <Markdown text={q.question} className="quiz-prompt" />
+        <Markdown text={questionText(q)} className="quiz-prompt" />
         <div className="options">
           {q.options.map((o, k) => (
             <button key={k} disabled={isChecked}
@@ -260,7 +296,7 @@ function QuizResults({ artifact, subject, picked, onRestart }: {
         {qs.map((q, k) => (
           <div key={k} className={`result-row ${picked[k] === q.answer_index ? 'right' : 'wrong'}`}>
             <span className="result-mark">{picked[k] === q.answer_index ? '✓' : '✗'}</span>
-            <Markdown text={q.question} />
+            <Markdown text={questionText(q)} />
           </div>
         ))}
       </div>
@@ -294,7 +330,7 @@ function QuizResults({ artifact, subject, picked, onRestart }: {
                       <div className="revise-main">
                         <div className="revise-topic">{r.topic}</div>
                         <div className="muted small">{r.reason}</div>
-                        {r.source && <div className="source">Revise from: {r.source}</div>}
+                        {r.source && <div className="src-note">Revise from: {r.source}</div>}
                       </div>
                       <button className={`btn btn-sm${added.has(k) ? '' : ' btn-primary'}`} disabled={added.has(k)} onClick={() => addTodo(k, r)}>
                         {added.has(k) ? '✓ Added' : '+ Add to to-do'}
@@ -441,7 +477,7 @@ function Exam({ artifact }: { artifact: Artifact }) {
                       model={keyText(q.options, q.answer_index, q.model_answer)} />
                   </>
                 )}
-                {(showKey || marked) && q.source && <div className="source">Source: {q.source}</div>}
+                {(showKey || marked) && q.source && <div className="src-note">Source: {q.source}</div>}
               </div>
             );
           })}

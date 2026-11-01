@@ -501,3 +501,57 @@ a.cite:hover { transform: translateY(-1px); background: color-mix(in srgb, var(-
 .folder-files { margin-left: 11px; padding-left: 8px; border-left: 1px solid var(--border); animation: rise 0.25s var(--ease-out); }
 .folder-files .files-empty { padding: 4px 6px; font-size: 12px; }
 .topic-actions .icon-btn svg { display: block; }
+
+/* Upload dialog: long file names truncate instead of widening the dialog */
+.modal, .modal-body { min-width: 0; }
+.pending-file { min-width: 0; gap: 8px; }
+.pending-file > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.modal-body .small { overflow-wrap: anywhere; }
+
+/* Jobs: an hourglass in a progress ring (replaces the vertical bar) */
+.jobs-v-btn { position: relative; width: 42px; height: 42px; padding: 0; justify-content: center; border-radius: 12px; color: var(--text-faint); }
+.jobs-v-btn:hover, .jobs-v-btn.open { color: var(--text-dim); border-color: var(--border-strong); }
+.jobs-v-btn.busy { color: var(--busy); }
+.jobs-v-btn.failed { color: var(--bad); }
+.jobs-ring { position: absolute; inset: 1px; width: calc(100% - 2px); height: calc(100% - 2px); transform: rotate(-90deg); pointer-events: none; }
+.jobs-ring circle { fill: none; stroke-width: 2.2; }
+.jobs-ring-track { stroke: transparent; }
+.jobs-v-btn.busy .jobs-ring-track { stroke: color-mix(in srgb, var(--busy) 16%, transparent); }
+.jobs-ring-fill { stroke: var(--busy); stroke-linecap: round; transition: stroke-dashoffset 0.5s var(--ease-out); }
+.hourglass { width: 15px; height: 19px; overflow: visible; }
+.hg-frame { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.hg-sand-top, .hg-sand-bottom { fill: currentColor; opacity: 0.85; transform-box: fill-box; }
+.hg-sand-top { transform-origin: 50% 100%; }
+.hg-sand-bottom { transform-origin: 50% 100%; }
+.hg-stream { stroke: currentColor; stroke-width: 1; stroke-dasharray: 1.4 1.6; opacity: 0; }
+.jobs-v-btn:not(.busy) .hg-sand-top { opacity: 0; }
+.jobs-v-btn.busy .hg-sand-top { animation: hg-drain 2.4s linear infinite; }
+.jobs-v-btn.busy .hg-sand-bottom { animation: hg-fill 2.4s linear infinite; }
+.jobs-v-btn.busy .hg-stream { opacity: 0.9; animation: hg-stream 0.5s linear infinite; }
+@keyframes hg-drain { from { transform: scaleY(1); } to { transform: scaleY(0.15); } }
+@keyframes hg-fill { from { transform: scaleY(0.2); } to { transform: scaleY(1); } }
+@keyframes hg-stream { to { stroke-dashoffset: -3; } }
+@media (prefers-reduced-motion: reduce) { .jobs-v-btn.busy .hg-sand-top, .jobs-v-btn.busy .hg-sand-bottom, .jobs-v-btn.busy .hg-stream { animation: none; } }
+.jobs-v-count { position: absolute; top: -5px; right: -5px; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: var(--busy);
+  color: var(--bg); font-size: 10.5px; font-weight: 700; line-height: 17px; text-align: center; box-shadow: 0 0 0 2px var(--bg-elev); }
+.jobs-popover-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.job-x { margin-left: -2px; flex: none; width: 20px; height: 20px; font-size: 15px; }
+.job-row-top .job-file { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Sidebar multi-selection (Shift/Ctrl-click) */
+.side .file, .folder-row, .topic-row { user-select: none; }
+.file.picked, .folder-row.picked { background: color-mix(in srgb, var(--accent) 20%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent); }
+.pick-bar { display: flex; align-items: center; gap: 6px; margin: 0 10px 10px; padding: 6px 6px 6px 12px; flex-shrink: 0; border-radius: 12px;
+  background: var(--glass-strong); border: 1px solid var(--border-strong); box-shadow: var(--shadow-lg); backdrop-filter: blur(16px); animation: pop 0.2s var(--ease-out); }
+.pick-count { flex: 1; white-space: nowrap; font-size: 12.5px; font-weight: 600; color: var(--text-dim); }
+
+/* "Double-click to open" hint on a second click of the selected file */
+.side .file { position: relative; }
+.dbl-hint { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); z-index: 3; padding: 3px 9px; border-radius: 7px; pointer-events: none;
+  background: var(--accent); color: var(--bg); font-size: 11.5px; font-weight: 600; white-space: nowrap; box-shadow: var(--shadow-lg); animation: pop 0.2s var(--ease-out); }
+
+/* Tables in generated text (quiz questions, cards, chat): wide ones scroll instead of overflowing the card */
+.md table { display: block; max-width: 100%; overflow-x: auto; }
+.card-list-item { position: relative; }
+.card-x { position: absolute; top: 6px; right: 6px; opacity: 0; transition: opacity 0.15s; }
+.card-list-item:hover .card-x { opacity: 1; }

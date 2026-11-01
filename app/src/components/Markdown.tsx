@@ -17,6 +17,39 @@ const FIGURE = /\[\[\s*figure:\s*([^\]|]+?\.[A-Za-z0-9]{2,5})\s*[·|\-–]\s*([^
 const PLOT_MD = /```plot\s*\n([\s\S]*?)```/g;
 const PLOT_HTML = /<pre class="plot">([\s\S]*?)<\/pre>/gi;
 
+const SEP_ROW = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+const cells = (line: string) => {
+  const t = line.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '');
+  return t.split(/(?<!\\)\|/).length;
+};
+
+/** Generated quizzes/cards often write a table as bare `a | b | c` lines with no `|---|` row, or straight after a
+ * sentence, which Markdown then reads as a paragraph. A run of 2+ lines with the same number (2+) of pipe-separated
+ * cells becomes a proper table: a blank line before it and a separator row after its first line. Code is left alone. */
+export function repairTables(text: string): string {
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let fence = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\s*(```|~~~)/.test(line)) fence = !fence;
+    const n = !fence && line.includes('|') && !SEP_ROW.test(line) ? cells(line) : 0;
+    if (n < 2) { out.push(line); continue; }
+    let j = i + 1;
+    const hasSep = j < lines.length && SEP_ROW.test(lines[j]);
+    if (hasSep) j++;
+    while (j < lines.length && lines[j].includes('|') && !SEP_ROW.test(lines[j]) && cells(lines[j]) === n) j++;
+    if (j - i - (hasSep ? 1 : 0) < 2) { out.push(line); continue; }
+    if (out.length && out[out.length - 1].trim()) out.push('');
+    out.push(line);
+    if (!hasSep) out.push(Array(n).fill('---').join(' | '));
+    out.push(...lines.slice(i + 1, j));
+    if (j < lines.length && lines[j].trim()) out.push('');
+    i = j - 1;
+  }
+  return out.join('\n');
+}
+
 const citeLink = (file: string, label: string) => {
   const short = label.split(' · ')[0];
   return `<a class="cite" data-file="${esc(file.trim())}" data-label="${esc(label.trim())}" title="${esc(`${file} · ${label}`)}">`
@@ -48,7 +81,7 @@ export function renderMarkdown(src: string, opts: { citations?: boolean; figures
     .replace(/\\\[([\s\S]+?)\\\]/g, (_, t) => math(t, true))
     .replace(/\\\((.+?)\\\)/g, (_, t) => math(t, false))
     .replace(/\$([^$\n]+?)\$/g, (_, t) => math(t, false));
-  const body = opts.html ? text : (marked.parse(text, { async: false }) as string);
+  const body = opts.html ? text : (marked.parse(repairTables(text), { async: false }) as string);
   return DOMPurify.sanitize(body.replace(/@@KEEP(\d+)@@/g, (_, i) => keep[Number(i)]));
 }
 

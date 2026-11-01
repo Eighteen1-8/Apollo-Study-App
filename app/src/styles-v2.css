@@ -138,7 +138,7 @@
 .viewer-bar { display: flex; align-items: center; gap: 8px; }
 .viewer-nav { display: flex; align-items: center; gap: 14px; margin-top: 18px; }
 .viewer-nav .progress { flex: 1; margin: 0; }
-.source { font-size: 11.5px; color: var(--text-faint); margin-top: 10px; }
+.src-note { font-size: 11.5px; color: var(--text-faint); margin-top: 10px; }
 
 .flashcard { perspective: 1400px; height: 360px; cursor: pointer; margin-top: 6px; }
 .flashcard-inner { position: relative; width: 100%; height: 100%; transition: transform 0.55s cubic-bezier(0.3, 0.7, 0.2, 1); transform-style: preserve-3d; }
@@ -149,7 +149,7 @@
 .flip-hint { position: absolute; bottom: 14px; font-size: 11.5px; color: var(--text-faint); }
 .card-list { display: flex; flex-direction: column; gap: 8px; }
 .card-list-item { display: grid; grid-template-columns: 1fr 1.4fr; gap: 16px; padding: 12px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; }
-.card-list-item .source { grid-column: 1 / -1; margin-top: 0; }
+.card-list-item .src-note { grid-column: 1 / -1; margin-top: 0; }
 .card-list-front { font-weight: 600; }
 
 .quiz-q { padding: 16px 0; border-bottom: 1px solid var(--border); }

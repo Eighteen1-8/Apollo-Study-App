@@ -321,7 +321,7 @@ a.cite:hover { border-color: var(--accent); }
 .revise-item { display: flex; gap: 14px; align-items: center; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
 .revise-main { flex: 1; min-width: 0; }
 .revise-topic { font-weight: 600; }
-.revise-item .source { margin-top: 4px; }
+.revise-item .src-note { margin-top: 4px; }
 
 /* ---------------------------------------------------------------- chat: resize, full screen, attachments, to-dos */
 .chat-shell.full { border-radius: 0; border-color: transparent; box-shadow: none; }
