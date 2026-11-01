@@ -7,17 +7,17 @@ Electron + React frontend, Python (FastAPI) sidecar backend. Local models by def
 | Home | Subject workspace |
 |:--:|:--:|
 | ![Home](docs/screenshots/01-home.png) | ![Subject workspace](docs/screenshots/02-subject.png) |
-| Vector database projection cloud | Add specific topic or entire subject materials|
+| Vector database projection cloud of all content | Add specific topics or entire subject materials|
 
 | Document viewer | Chat with citations |
 |:--:|:--:|
 | ![Document viewer](docs/screenshots/03-document.png) | ![Chat](docs/screenshots/04-chat.png) |
-| Annotate, markup, note and modify any document like a PDF |Verifiable claims made by an LLM| 
+| Annotate, markup, note and modify any documents like a PDF |Verifiable claims made by an LLM| 
 
 | Settings | Subject menu |
 |:--:|:--:|
 | ![Settings](docs/screenshots/05-settings.png) | ![Subject context menu](docs/screenshots/06-context-menu.png) |
-|Tailor Apollo to suit your needs|Customise to your liking |
+|Tailor Apollo to suit your needs| Customise the app to your liking |
 
 ## Requirements
 - OpenAI compatible API (with vision and embedding enabled)
