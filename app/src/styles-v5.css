@@ -1,0 +1,138 @@
+/* v5: quality-of-life layer. App-wide tooltips (components/Tooltip.tsx), the window's own title strip, the jobs
+   indicator's idle/busy icons, resizable workspace sidebars and small motion touches. Layered last. */
+
+/* ================================================================ tooltips */
+/* the fixed layer replaces the old CSS ::after tips, which panes with overflow: hidden clipped */
+[data-tip]:hover::after, .minibar [data-tip]:hover::after { content: none !important; display: none !important; }
+.tooltip { position: fixed; z-index: 300; pointer-events: none; width: max-content; max-width: 300px; padding: 5px 10px; border-radius: 8px;
+  background: var(--tip-bg); color: #f1f3f9; border: 1px solid color-mix(in srgb, white 10%, transparent); box-shadow: var(--shadow-lg);
+  font-size: 12px; font-weight: 500; line-height: 1.4; white-space: pre-line; overflow-wrap: anywhere; }
+.tooltip-top { transform: translate(-50%, -100%); animation: tt-top 0.18s var(--ease-out); }
+.tooltip-bottom { transform: translate(-50%, 0); animation: tt-bottom 0.18s var(--ease-out); }
+.tooltip-right { transform: translate(0, -50%); animation: tt-right 0.18s var(--ease-out); }
+.tooltip-left { transform: translate(0, -50%); animation: tt-left 0.18s var(--ease-out); }
+@keyframes tt-top { from { opacity: 0; transform: translate(-50%, calc(-100% + 4px)) scale(0.96); } }
+@keyframes tt-bottom { from { opacity: 0; transform: translate(-50%, -4px) scale(0.96); } }
+@keyframes tt-right { from { opacity: 0; transform: translate(-6px, -50%) scale(0.96); } }
+@keyframes tt-left { from { opacity: 0; transform: translate(6px, -50%) scale(0.96); } }
+
+/* ================================================================ window title strip (Electron only) */
+:root { --titlebar-h: 0px; }
+:root.own-titlebar { --titlebar-h: 34px; }
+.app { grid-template-rows: var(--titlebar-h) minmax(0, 1fr); }
+.minibar, .main { grid-row: 2; }
+.titlebar { grid-column: 1 / -1; grid-row: 1; position: relative; z-index: 35; display: flex; align-items: center; gap: 8px;
+  padding: 0 150px 0 18px; background: var(--minibar-bg); color: var(--text-faint); font-size: 12px; user-select: none;
+  -webkit-app-region: drag; app-region: drag; }
+.titlebar::after { content: ''; position: absolute; left: 68px; right: 0; bottom: 0; height: 1px; background: var(--border); }
+.tb-app { font-weight: 600; letter-spacing: 0.02em; color: var(--text-dim); }
+.tb-where { display: inline-flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  animation: tb-in 0.35s var(--ease-out); }
+.tb-where::before { content: ''; width: 4px; height: 4px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent-glow); flex: none; }
+@keyframes tb-in { from { opacity: 0; transform: translateX(-6px); } }
+/* overlays start below the strip so it stays draggable and the window buttons stay clear */
+.fullscreen, .modal-backdrop, .filedrop { top: var(--titlebar-h); }
+
+/* ================================================================ jobs indicator */
+.jobs-idle, .hourglass { position: absolute; left: 50%; top: 50%; transition: opacity 0.3s var(--ease-out), transform 0.45s var(--ease-spring); }
+.jobs-idle { width: 19px; height: 19px; transform: translate(-50%, -50%); fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.hourglass { width: 15px; height: 19px; transform: translate(-50%, -50%); }
+.jobs-v-btn.busy .jobs-idle { opacity: 0; transform: translate(-50%, -50%) scale(0.5) rotate(-45deg); }
+.jobs-v-btn:not(.busy) .hourglass { opacity: 0; transform: translate(-50%, -50%) scale(0.5) rotate(90deg); }
+/* the check draws itself whenever the queue empties */
+.jobs-v-btn:not(.busy) .jobs-idle > * { stroke-dasharray: 48; stroke-dashoffset: 0; animation: jobs-draw 0.7s 0.1s var(--ease-out) backwards; }
+@keyframes jobs-draw { from { stroke-dashoffset: 48; } }
+
+/* busy: sand drains through the neck as grains, then the glass flips and starts again */
+.hg-body { transform-box: fill-box; transform-origin: 50% 50%; }
+.hg-sand-top, .hg-sand-bottom { opacity: 0.9; }
+.hg-grains circle { fill: currentColor; opacity: 0; }
+.jobs-v-btn.busy .hg-body { animation: hg-flip 3.2s var(--ease-out) infinite; }
+.jobs-v-btn.busy .hg-sand-top { animation: hg-drain 3.2s linear infinite; }
+.jobs-v-btn.busy .hg-sand-bottom { animation: hg-fill 3.2s linear infinite; }
+.jobs-v-btn.busy .hg-grains { animation: hg-grains 3.2s linear infinite; }
+.jobs-v-btn.busy .hg-grains circle { animation: hg-grain 0.6s linear infinite; }
+.jobs-v-btn.busy .hg-grains circle:nth-child(2) { animation-delay: 0.2s; }
+.jobs-v-btn.busy .hg-grains circle:nth-child(3) { animation-delay: 0.4s; }
+@keyframes hg-flip { 0%, 80% { transform: rotate(0deg); } 100% { transform: rotate(180deg); } }
+@keyframes hg-drain { 0% { transform: scaleY(1); } 76%, 100% { transform: scaleY(0); } }
+@keyframes hg-fill { 0% { transform: scaleY(0.08); } 76%, 100% { transform: scaleY(1); } }
+@keyframes hg-grains { 0%, 72% { opacity: 1; } 76%, 100% { opacity: 0; } }
+@keyframes hg-grain { 0% { transform: translateY(0); opacity: 0; } 20% { opacity: 1; } 100% { transform: translateY(5.6px); opacity: 0.2; } }
+.jobs-v-count { animation: badge-pop 0.4s var(--ease-spring); }
+@keyframes badge-pop { from { transform: scale(0.3); opacity: 0; } }
+.jobs-v-btn:active { transform: scale(0.93); }
+.jobs-v-btn { transition: border-color 0.2s, box-shadow 0.3s, transform 0.25s var(--ease-spring); }
+
+/* ================================================================ resizable workspace sidebars */
+@property --left-w { syntax: '<length>'; inherits: true; initial-value: 250px; }
+@property --right-w { syntax: '<length>'; inherits: true; initial-value: 300px; }
+.workspace { position: relative; --lw: min(var(--left-w), 34vw); --rw: min(var(--right-w), 38vw);
+  grid-template-columns: var(--lw) minmax(0, 1fr) var(--rw);
+  transition: --left-w 0.4s var(--ease-out), --right-w 0.4s var(--ease-out); }
+.workspace.sizing { transition: none; }
+.workspace > .side { min-width: 0; overflow: hidden; transition: opacity 0.25s; }
+.workspace.left-folded > .side-left, .workspace.right-folded > .side-right { opacity: 0; pointer-events: none; border-width: 0; }
+
+.side-resizer { position: absolute; top: 0; bottom: 0; z-index: 12; width: 10px; cursor: col-resize; touch-action: none; outline: none; }
+.side-resizer-left { left: calc(var(--lw) - 5px); }
+.side-resizer-right { right: calc(var(--rw) - 5px); }
+.side-grip { position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; margin-left: -1px; border-radius: 2px; background: transparent;
+  transition: background 0.2s, box-shadow 0.2s, transform 0.2s; transform: scaleX(0.5); }
+.side-resizer:hover .side-grip, .side-resizer:focus-visible .side-grip { background: color-mix(in srgb, var(--accent) 55%, transparent); transform: none; transition-delay: 0.12s; }
+.side-resizer.active .side-grip { background: var(--accent); box-shadow: 0 0 10px var(--accent-glow); transform: none; transition-delay: 0s; }
+body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-select: none !important; }
+body.col-resizing iframe, body.col-resizing canvas { pointer-events: none; }
+/* folded: a slim tab on the edge brings the sidebar back */
+.side-resizer.folded { width: 16px; cursor: pointer; }
+.side-resizer-left.folded { left: 0; }
+.side-resizer-right.folded { right: 0; }
+.side-resizer.folded .side-grip { display: none; }
+.side-unfold { position: absolute; top: 50%; width: 16px; height: 46px; margin-top: -23px; display: grid; place-items: center;
+  background: var(--glass-strong); border: 1px solid var(--border-strong); color: var(--text-dim); font-size: 14px; backdrop-filter: blur(10px);
+  box-shadow: var(--shadow); transition: color 0.2s, background 0.2s, width 0.25s var(--ease-spring); animation: fade-in 0.3s 0.2s var(--ease-out) backwards; }
+.side-resizer-left .side-unfold { left: 0; border-left: 0; border-radius: 0 9px 9px 0; }
+.side-resizer-right .side-unfold { right: 0; border-right: 0; border-radius: 9px 0 0 9px; }
+.side-resizer.folded:hover .side-unfold { color: var(--accent-strong); background: var(--accent-soft); width: 20px; }
+
+/* ================================================================ motion touches */
+/* workspace panels ease in when a subject opens */
+.workspace > .side-left { animation: side-in-left 0.45s var(--ease-out) backwards; }
+.workspace > .side-right { animation: side-in-right 0.45s var(--ease-out) backwards; }
+.workspace > .center { animation: fade-in 0.4s 0.05s var(--ease-out) backwards; }
+@keyframes side-in-left { from { opacity: 0; transform: translateX(-14px); } }
+@keyframes side-in-right { from { opacity: 0; transform: translateX(14px); } }
+
+/* lists stagger in */
+.mini-subjects > *, .side .topic, .lib-group, .todo { animation: fade-in 0.35s var(--ease-out) backwards; }
+.mini-subjects > :nth-child(2), .side .topic:nth-child(2), .lib-group:nth-child(2), .todo:nth-child(2) { animation-delay: 35ms; }
+.mini-subjects > :nth-child(3), .side .topic:nth-child(3), .lib-group:nth-child(3), .todo:nth-child(3) { animation-delay: 70ms; }
+.mini-subjects > :nth-child(4), .side .topic:nth-child(4), .lib-group:nth-child(4), .todo:nth-child(4) { animation-delay: 105ms; }
+.mini-subjects > :nth-child(5), .side .topic:nth-child(5), .lib-group:nth-child(5), .todo:nth-child(5) { animation-delay: 140ms; }
+.mini-subjects > :nth-child(6), .side .topic:nth-child(6), .lib-group:nth-child(6), .todo:nth-child(6) { animation-delay: 175ms; }
+.mini-subjects > :nth-child(n+7), .side .topic:nth-child(n+7), .lib-group:nth-child(n+7), .todo:nth-child(n+7) { animation-delay: 210ms; }
+.lib-group:not(.folded) .lib-item { animation: fade-in 0.3s var(--ease-out) backwards; }
+
+/* carets turn instead of swapping glyphs */
+.topic-caret { display: inline-block; text-align: center; transition: transform 0.3s var(--ease-spring), color 0.15s; }
+.topic-caret.open { transform: rotate(90deg); }
+.topic-row:hover .topic-caret, .folder-row:hover .topic-caret { color: var(--text-dim); }
+.lib-caret { transition: transform 0.3s var(--ease-spring); }
+
+/* small controls give a little when pressed */
+.icon-btn, .x-btn, .pill-btn, .tool-btn, .close-x, .zoom-val {
+  transition: background 0.15s, color 0.15s, border-color 0.15s, opacity 0.15s, transform 0.25s var(--ease-spring); }
+.icon-btn:active:not(:disabled), .x-btn:active:not(:disabled), .pill-btn:active:not(:disabled), .tool-btn:active:not(:disabled),
+.close-x:active, .mini-icon:active, .mini-home:active { transform: scale(0.88); }
+.x-btn:hover { transform: rotate(90deg); }
+.topic-actions .icon-btn:hover { transform: translateY(-1px); }
+.file-x, .todo-x { transition: opacity 0.15s, transform 0.25s var(--ease-spring), color 0.15s, background 0.15s; }
+
+/* the to-do tick pops */
+.todo input[type="checkbox"] { transition: transform 0.3s var(--ease-spring); }
+.todo input[type="checkbox"]:checked { animation: tick 0.35s var(--ease-spring); }
+@keyframes tick { 50% { transform: scale(1.25); } }
+.todo-text { transition: color 0.25s; }
+
+/* focused sidebar rows glide their highlight */
+.side .topic-row, .folder-row, .side .file { transition: background 0.2s, box-shadow 0.25s var(--ease-out), color 0.15s, transform 0.3s var(--ease-spring); }

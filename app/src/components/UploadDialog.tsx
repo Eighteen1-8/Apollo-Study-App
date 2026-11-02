@@ -61,7 +61,7 @@ export default function UploadDialog({ title, target, defaultMode, initialPaths,
           {paths.map((p) => (
             <div key={p} className="pending-file">
               <span title={p}>{p.split(/[\\/]/).pop()}</span>
-              <button className="x-btn" onClick={() => setPaths(paths.filter((x) => x !== p))}>×</button>
+              <button className="x-btn" title="Remove from the list" onClick={() => setPaths(paths.filter((x) => x !== p))}>×</button>
             </div>
           ))}
         </div>

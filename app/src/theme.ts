@@ -48,6 +48,12 @@ export function applyAppearance(a: Appearance = current) {
   root.style.colorScheme = theme.light ? 'light' : 'dark';
   if (a.accent) root.style.setProperty('--accent', a.accent);
   else root.style.removeProperty('--accent');
+  // the window's own buttons (drawn by Windows over the app's title strip) take the theme's colours
+  if (window.studyApp?.setChrome) {
+    const css = getComputedStyle(root);
+    const v = (name: string) => css.getPropertyValue(name).trim();
+    window.studyApp.setChrome({ color: v('--minibar-bg'), symbol: v('--text-dim'), bg: v('--bg'), dark: !theme.light });
+  }
 }
 
 export function setAppearance(patch: Partial<Appearance>) {

@@ -9,4 +9,6 @@ contextBridge.exposeInMainWorld('studyApp', {
   pathForFile: (file) => webUtils.getPathForFile(file),
   saveFile: (opts) => ipcRenderer.invoke('dialog:saveFile', opts),
   showItem: (p) => ipcRenderer.invoke('shell:showItem', p),
+  setChrome: (c) => ipcRenderer.send('window:chrome', c),
+  titlebar: true,
 });

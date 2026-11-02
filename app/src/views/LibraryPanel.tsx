@@ -67,7 +67,7 @@ export default function LibraryPanel({ subject, onOpen }: { subject: Subject; on
               const date = new Date(it.created_at * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
               return (
                 <button key={it.id} className={`lib-item status-${it.status}`} onClick={() => it.status === 'ready' && onOpen(it.id)}
-                  onContextMenu={(e) => menu(e, it)} title={busy ? it.message : it.status === 'failed' ? 'Failed: right-click to delete' : ''}>
+                  onContextMenu={(e) => menu(e, it)} title={busy ? it.message : it.status === 'failed' ? 'Failed: right-click to delete' : it.title}>
                   <span className={`lib-icon t-${it.type}`}>{TYPE_ICON[it.type]}</span>
                   <span className="lib-main">
                     <span className="lib-title">{title}</span>

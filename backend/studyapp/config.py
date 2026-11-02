@@ -59,6 +59,7 @@ DEFAULT_SETTINGS = {
     "generation_reasoning": "xhigh",
     "marking_reasoning": "xhigh",
     "review_reasoning": "medium",
+    "audit_reasoning": "low",  # the model review of vision notes (vision_audit.py)
     "vision_min_images": 2,
     "vision_big_image_area": 0.40,
     "vision_low_text_words": 15,

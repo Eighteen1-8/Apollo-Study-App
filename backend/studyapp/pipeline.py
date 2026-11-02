@@ -1,4 +1,5 @@
-"""Ingest pipeline: parse -> exact dedupe -> select vision units -> chunk -> embed; then (separate lane) vision notes."""
+"""Ingest pipeline: parse -> exact dedupe -> select vision units -> chunk -> embed; then (separate lane) vision notes,
+which get chunks of their own (source='vision') so pages that are only images (scans, diagrams) can be found."""
 import json
 import re
 import shutil
@@ -6,8 +7,8 @@ import time
 
 import numpy as np
 
-from . import config, db, dedupe, llm, render
-from .chunker import chunk_units
+from . import config, db, dedupe, llm, render, vision_audit
+from .chunker import _split_long, chunk_units
 from .parsers import PARSER_VERSION, approx_tokens, parse, render_for_vision, render_pdf_page
 
 
@@ -53,6 +54,7 @@ def clear_document(doc_id):
     with db.tx() as c:
         c.execute("DELETE FROM chunks_fts WHERE rowid IN (SELECT id FROM chunks WHERE document_id=?)", (doc_id,))
         c.execute("DELETE FROM chunks WHERE document_id=?", (doc_id,))
+        c.execute("DELETE FROM vision_flags WHERE document_id=?", (doc_id,))
         c.execute("DELETE FROM units WHERE document_id=?", (doc_id,))
     shutil.rmtree(config.assets_dir() / str(doc_id), ignore_errors=True)
 
@@ -155,20 +157,86 @@ def ingest(doc_id, job, keep_vision=False):
              stripped_lines=meta.get("stripped_lines", 0), vision_total=vision_total, vision_done=vision_done,
              parser_version=PARSER_VERSION)
 
-    # Embed only the real extracted text.
-    model, batch = llm.embed_model(), int(s["embed_batch"])
-    for i in range(0, len(chunks), batch):
-        job.check()
-        part = chunks[i:i + batch]
-        vecs = llm.embed([c["text"] for c in part])
-        with db.tx() as c:
-            for ch, v in zip(part, vecs):
-                c.execute("UPDATE chunks SET embedding=?, embed_model=? WHERE id=?", (v.astype(np.float32).tobytes(), model, ch["id"]))
-        job.update(0.1 + 0.9 * min(i + batch, len(chunks)) / max(len(chunks), 1),
-                   f"Embedding {min(i + batch, len(chunks))}/{len(chunks)} chunks")
+    # Vision notes kept from before are checked and indexed beside the text, then everything is embedded.
+    if vision_done:
+        vision_audit.rule_scan([doc_id])
+    index_vision(doc_id, embed=False)
+    embed_chunks(doc_id, job, start=0.1)
     pending = vision_total - vision_done
-    _set_doc(doc_id, embed_model=model, status="vision" if pending else "ready", annotations_ingested=annotated_at)
+    _set_doc(doc_id, status="vision" if pending else "ready", annotations_ingested=annotated_at)
     return pending
+
+
+def index_vision(doc_id, idxs: list[int] | None = None, embed=True):
+    """(Re)build a document's vision chunks (all units, or units `idxs`): finished, relevant notes, split like long
+    text. Dedupe is unaffected (it hashes the file's own content). Notes the audit's rules flagged as malformed are
+    left out. With `embed`, a failed embedding leaves the vectors empty for the maintenance re-embed to fill."""
+    where, args = "document_id=? AND source='vision'", [doc_id]
+    unit_where, unit_args = "", []
+    if idxs is not None:
+        if not idxs:
+            return
+        marks = ",".join("?" * len(idxs))
+        where += f" AND unit_start IN ({marks})"
+        args += idxs
+        unit_where, unit_args = f" AND u.idx IN ({marks})", list(idxs)
+    units = db.q(f"""SELECT u.idx, u.label, u.vision_notes FROM units u WHERE u.document_id=? AND u.vision_status='done'
+                     AND u.vision_relevant=1 AND u.vision_notes IS NOT NULL AND u.duplicate_of IS NULL{unit_where}
+                     AND NOT EXISTS (SELECT 1 FROM vision_flags f WHERE f.unit_id=u.id AND f.source='rule'
+                                     AND f.kind='malformed' AND f.dismissed=0) ORDER BY u.idx""", (doc_id, *unit_args))
+    target = int(db.setting("chunk_target_tokens"))
+    with db.tx() as c:
+        c.execute(f"DELETE FROM chunks_fts WHERE rowid IN (SELECT id FROM chunks WHERE {where})", args)
+        c.execute(f"DELETE FROM chunks WHERE {where}", args)
+        for u in units:
+            pieces = _split_long(u["vision_notes"].strip(), target)
+            for k, piece in enumerate(pieces, 1):
+                label = f"{u['label']} (visual{f', part {k}' if len(pieces) > 1 else ''})"
+                text = f"[{u['label']} · visual content]\n{piece}"
+                cid = c.execute("INSERT INTO chunks(document_id, unit_start, unit_end, label, text, token_count, source) "
+                                "VALUES (?,?,?,?,?,?,'vision')", (doc_id, u["idx"], u["idx"], label, text, approx_tokens(text))).lastrowid
+                c.execute("INSERT INTO chunks_fts(rowid, text) VALUES (?, ?)", (cid, text))
+        # vision_indexed only after a whole-document pass: a single page doesn't mean the others have chunks
+        c.execute(f"UPDATE documents SET {'vision_indexed=1, ' if idxs is None else ''}"
+                  "chunk_count=(SELECT COUNT(*) FROM chunks WHERE document_id=?) WHERE id=?", (doc_id, doc_id))
+    if embed and units:
+        try:
+            embed_chunks(doc_id)
+        except Exception:  # e.g. the embedding server is offline; the notes themselves are saved
+            pass
+
+
+def embed_chunks(doc_id, job=None, start=0.0) -> int:
+    """Embed the document's chunks that have no vector from the current model: new chunks, or all of them after
+    the embedding model changed (the stored chunk text is all that's needed, no re-parse)."""
+    model, batch = llm.embed_model(), int(db.setting("embed_batch"))
+    rows = db.q("SELECT id, text FROM chunks WHERE document_id=? AND (embedding IS NULL OR embed_model IS NOT ?) ORDER BY id",
+                (doc_id, model))
+    for i in range(0, len(rows), batch):
+        if job:
+            job.check()
+        part = rows[i:i + batch]
+        vecs = llm.embed([r["text"] for r in part])
+        with db.tx() as c:
+            for r, v in zip(part, vecs):
+                c.execute("UPDATE chunks SET embedding=?, embed_model=? WHERE id=?", (v.astype(np.float32).tobytes(), model, r["id"]))
+        if job:
+            done = min(i + batch, len(rows))
+            job.update(start + (1 - start) * done / len(rows), f"Embedding {done}/{len(rows)} chunks")
+    _set_doc(doc_id, embed_model=model)
+    return len(rows)
+
+
+def reembed(doc_id, job):
+    """Maintenance: index vision notes that have no chunks yet (databases from before vision chunks), then embed
+    whatever lacks a current vector."""
+    doc = db.q1("SELECT vision_indexed FROM documents WHERE id=?", (doc_id,))
+    if doc is None:
+        return
+    if not doc["vision_indexed"]:
+        job.update(0.02, "Indexing vision notes")
+        index_vision(doc_id, embed=False)
+    embed_chunks(doc_id, job, start=0.05)
 
 
 VISION_SYSTEM = """You transcribe the visual content of study material so a student (and Apollo, their tutor) can learn from it without seeing the image.
@@ -179,6 +247,18 @@ Rules:
 - Transcribe any text that appears inside images. Write equations in LaTeX between $...$.
 - Do NOT repeat the extracted text you are given unless needed to explain a visual. Never invent details you cannot see.
 - If the visuals are purely decorative (logos, stock photos, backgrounds, icons) with no learning content, reply with exactly: IRRELEVANT"""
+
+
+TRUNCATED = "[truncated: output limit reached]"
+
+
+def clean_vision_output(text: str) -> str:
+    """The description without the model's reasoning: closed <think> blocks, a reply whose opening tag was in the
+    chat template (only </think> appears), and an unclosed block where the reply ran out mid-thought."""
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
+    if "</think>" in text:
+        text = text.rsplit("</think>", 1)[1]
+    return text.split("<think>", 1)[0].strip()
 
 
 def run_vision(doc_id, job):
@@ -201,18 +281,29 @@ def run_vision(doc_id, job):
                 (config.assets_dir() / asset).write_bytes(images[0])
             content = [{"type": "text", "text": f"Source: {doc['filename']}, {u['label']}\n\nExtracted text:\n{u['text'] or '(none)'}"}]
             content += [llm.image_part(img, "image/png" if img[:4] == b"\x89PNG" else "image/jpeg") for img in images]
-            res = llm.chat([{"role": "system", "content": VISION_SYSTEM}, {"role": "user", "content": content}],
-                           max_tokens=8000, reasoning=reasoning, temperature=0.2)
-            notes = re.sub(r"<think>.*?</think>", "", res["content"], flags=re.S).strip()
+            msgs = [{"role": "system", "content": VISION_SYSTEM}, {"role": "user", "content": content}]
+            res = llm.chat(msgs, max_tokens=8000, reasoning=reasoning, temperature=0.2)
+            notes = clean_vision_output(res["content"])
+            if (res["finish"] == "length" or not notes) and reasoning != "off":
+                # Usually the reasoning used up the output budget: one more try without it.
+                job.update(k / max(len(pending), 1), f"Vision: {u['label']} (retrying without reasoning)")
+                res = llm.chat(msgs, max_tokens=8000, reasoning="off", temperature=0.2)
+                notes = clean_vision_output(res["content"])
+            if not notes:
+                raise RuntimeError("the model returned no description")
             relevant = notes.upper().strip(" .") != "IRRELEVANT"
             if res["finish"] == "length":
-                notes += "\n\n[truncated: output limit reached]"
-            db.ex("UPDATE units SET vision_status='done', vision_notes=?, vision_relevant=?, vision_image=? WHERE id=?",
-                  (notes if relevant else None, int(relevant), asset, u["id"]))
+                notes += "\n\n" + TRUNCATED
+            with db.tx() as c:
+                c.execute("UPDATE units SET vision_status='done', vision_notes=?, vision_relevant=?, vision_image=?, "
+                          "vision_audited=0 WHERE id=?", (notes if relevant else None, int(relevant), asset, u["id"]))
+                c.execute("DELETE FROM vision_flags WHERE unit_id=? AND dismissed=0", (u["id"],))
+            vision_audit.rule_scan([doc_id], [u["id"]])
         except Cancelled:
             raise
         except Exception as e:
-            db.ex("UPDATE units SET vision_status='failed', vision_notes=? WHERE id=?", (f"[vision error] {e}", u["id"]))
+            db.ex("UPDATE units SET vision_status='failed', vision_notes=?, vision_audited=0 WHERE id=?", (f"[vision error] {e}", u["id"]))
+        index_vision(doc_id, [u["idx"]])
         done = db.q1("SELECT COUNT(*) n FROM units WHERE document_id=? AND vision_status='done'", (doc_id,))["n"]
         _set_doc(doc_id, vision_done=done)
     failed = db.q1("SELECT COUNT(*) n FROM units WHERE document_id=? AND vision_status='failed'", (doc_id,))["n"]

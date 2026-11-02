@@ -64,7 +64,8 @@ uv run pytest --online   # also live OpenRouter checks (sends synthetic test tex
 1. **Create a subject** — `+` on the left minibar (or *New subject* on the home screen). Right click to customise.
 2. **Create a topic** —  Create a topic within a subject to group material and everything you generate.
 3. **Upload study material** — Drag files in (PPTX, DOCX, PDF, text, images), or click on `+` to upload reference material. Each file is parsed into units (slides/pages/sections), exactly deduplicated, chunked and embedded.
-4. **Vision notes** — a second pass has a vision model annotate slides/pages (auto mode: units with images or little text). Progress shows on the jobs bar at the bottom of the rail (note that this is very slow).
+4. **Vision notes** — a second pass has a vision model annotate slides/pages (auto mode: units with images or little text). Progress shows on the jobs bar at the bottom of the rail (note that this is very slow). The notes are embedded too, so scanned pages and diagrams turn up in search.
+   Right-click a subject, topic or file → **Check vision notes** to flag broken or wrong notes (quick checks, then Apollo compares each page with its image); **Settings → Maintenance** lists the flags with the reason, re-runs vision on just those pages, and shows disk use, leftovers to clean up and files that need re-embedding.
 5. **Reference library** — Upload entire textbooks and other entire subject materials into the reference libary. All data stays locally on your device (unless an online API is used).
 
 ### Chat Window

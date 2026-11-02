@@ -20,6 +20,8 @@ export default function Minibar({ subjects, route, go, onChange, online }: {
   const menu = (e: React.MouseEvent, s: Subject) => ov.menu(e, [
     { label: 'Open', onClick: () => go({ name: 'subject', id: s.id }) },
     { label: 'New topic…', onClick: () => act.newTopic(s) },
+    { label: 'Check vision notes', onClick: () => act.checkVision({ subject_id: s.id }, s.name, s.id), separatorBefore: true },
+    { label: 'Maintenance…', onClick: () => go({ name: 'settings', tab: 'maintenance', subjectId: s.id }) },
     { label: 'Rename…', onClick: () => act.renameSubject(s), separatorBefore: true },
     { label: 'Change colour…', onClick: () => setColorFor(s) },
     { label: 'Change letters…', onClick: async () => {

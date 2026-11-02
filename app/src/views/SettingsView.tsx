@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, Settings } from '../api';
+import type { SettingsTab } from '../App';
+import MaintenanceView from './MaintenanceView';
 import { useOverlay } from '../components/overlay';
 import { Button } from '../components/ui';
 import { ACCENTS, THEMES, useAppearance } from '../theme';
@@ -30,6 +32,7 @@ const GROUPS: { title: string; fields: Field[] }[] = [
       { key: 'generation_reasoning', label: 'Generating flashcards, quizzes, exams, notes', type: 'reasoning' },
       { key: 'marking_reasoning', label: 'Marking exams', type: 'reasoning' },
       { key: 'review_reasoning', label: 'Quiz review', type: 'reasoning' },
+      { key: 'audit_reasoning', label: 'Checking vision notes (Maintenance)', type: 'reasoning' },
     ],
   },
   {
@@ -228,8 +231,9 @@ function TutorSettings({ s, set }: { s: Settings; set: (k: string, v: string | n
 /** The embedding model new vectors are made with, given the provider choice (mirrors llm.embed_model()). */
 const effectiveEmbedModel = (s: Settings) => String(s.embed_provider === 'openrouter' ? s.openrouter_embed_model : s.embed_model);
 
-export default function SettingsView({ onSaved }: { onSaved: () => void }) {
+export default function SettingsView({ onSaved, tab: initialTab, subjectId }: { onSaved: () => void; tab?: SettingsTab; subjectId?: number }) {
   const ov = useOverlay();
+  const [tab, setTab] = useState<SettingsTab>(initialTab ?? 'general');
   const [s, setS] = useState<Settings | null>(null);
   const [savedModel, setSavedModel] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -257,6 +261,21 @@ export default function SettingsView({ onSaved }: { onSaved: () => void }) {
     setSaved(true);
     onSaved();
   };
+  const tabs = (
+    <div className="seg settings-tabs">
+      <button className={tab === 'general' ? 'active' : ''} onClick={() => setTab('general')}>General</button>
+      <button className={tab === 'maintenance' ? 'active' : ''} onClick={() => setTab('maintenance')}>Maintenance</button>
+    </div>
+  );
+  if (tab === 'maintenance') return (
+    <div className="page settings">
+      <header className="page-head">
+        <div><h1>Settings</h1><p className="muted">Storage, the search index and vision notes for every subject, topic and file.</p></div>
+        <div className="head-actions">{tabs}</div>
+      </header>
+      <MaintenanceView subjectId={subjectId} />
+    </div>
+  );
   if (!s) return <div className="page" />;
 
   const set = (k: string, v: string | number | boolean | string[]) => { setS({ ...s, [k]: v }); setSaved(false); };
@@ -269,6 +288,7 @@ export default function SettingsView({ onSaved }: { onSaved: () => void }) {
           ? 'Some models run online through OpenRouter. See Model provider below.'
           : 'All endpoints are local. Nothing leaves this computer.'}</p></div>
         <div className="head-actions">
+          {tabs}
           <Button onClick={async () => { setTesting(true); try { setTest(await api.testSettings()); } finally { setTesting(false); } }}>
             {testing ? 'Testing…' : 'Test connections'}
           </Button>

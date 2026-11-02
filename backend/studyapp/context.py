@@ -77,7 +77,7 @@ def material_groups(subject_id: int, topic_id: int | None, budget: int) -> list[
 
 
 def retrieved_material(subject_id: int, topic_id: int | None, query: str, k: int = 12) -> str:
-    """Retrieval fallback when the scope doesn't fit in context: top chunks + their vision notes."""
+    """Retrieval fallback when the scope doesn't fit in context: top chunks (text or vision notes) + their vision notes."""
     ids = [d["id"] for d in topic_documents(subject_id, topic_id)]
     return _format_hits(search.search(query, ids, k))
 
@@ -92,7 +92,7 @@ def textbook_passages(subject_id: int, query: str, k: int = 5) -> str:
 def _format_hits(hits: list[dict]) -> str:
     out = []
     for h in hits:
-        block = f"[{h['filename']} · {h['label']}]\n{h['text']}"
+        block = f"[{h['filename']} · {h['label']}]" + (f"\n{h['text']}" if h["text"].strip() else "")
         for n in h["vision_notes"]:
             block += f"\n[Visual content on {n['label']}]\n{n['vision_notes']}"
         out.append(block)

@@ -1,5 +1,6 @@
 // Electron main process: starts the Python sidecar, locks the app to localhost, opens the window.
-const { app, BrowserWindow, ipcMain, dialog, session, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, nativeTheme, screen, session, shell } = require('electron');
+const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const net = require('net');
@@ -9,6 +10,16 @@ const isDev = process.argv.includes('--dev');
 const DEV_PORT = 47615; // fixed in dev so the UI can also be opened in a plain browser
 let backend = null;
 let backendPort = null;
+
+// Window chrome: the native title bar is replaced by the app's own strip; the min/max/close buttons are drawn by
+// Windows on top of it in the theme's colours. The renderer reports the colours on every theme change and the last
+// ones are kept so the next launch opens in them.
+const TITLEBAR_H = 34;
+const chromeFile = () => path.join(app.getPath('userData'), 'window-chrome.json');
+function loadChrome() {
+  try { return { color: '#080a10', symbol: '#9ca4ba', bg: '#0b0d14', dark: true, ...JSON.parse(fs.readFileSync(chromeFile(), 'utf8')) }; }
+  catch { return { color: '#080a10', symbol: '#9ca4ba', bg: '#0b0d14', dark: true }; }
+}
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -85,15 +96,38 @@ function lockToLocalhost() {
   });
 }
 
+// Size, position and maximised state come back on the next launch (if that spot is still on a screen).
+const stateFile = () => path.join(app.getPath('userData'), 'window-state.json');
+function loadBounds() {
+  try {
+    const st = JSON.parse(fs.readFileSync(stateFile(), 'utf8'));
+    const b = st.bounds;
+    const visible = screen.getAllDisplays().some(({ workArea: a }) =>
+      b.x < a.x + a.width - 80 && b.x + b.width > a.x + 80 && b.y >= a.y - 10 && b.y < a.y + a.height - 80);
+    return visible ? st : { bounds: { width: b.width, height: b.height }, maximized: st.maximized };
+  } catch { return { bounds: { width: 1400, height: 900 }, maximized: false }; }
+}
+function trackBounds(win) {
+  const save = () => {
+    try { fs.writeFileSync(stateFile(), JSON.stringify({ bounds: win.getNormalBounds(), maximized: win.isMaximized() })); }
+    catch { /* not persisted */ }
+  };
+  win.on('close', save);
+}
+
 async function createWindow() {
+  const chrome = loadChrome();
+  const state = loadBounds();
+  nativeTheme.themeSource = chrome.dark ? 'dark' : 'light'; // the 1px window border and native menus
   const win = new BrowserWindow({
-    width: 1400,
-    height: 900,
+    ...state.bounds,
     minWidth: 960,
     minHeight: 640,
     icon: path.join(__dirname, '..', 'assets', 'icon.ico'),
-    backgroundColor: '#0e0f13',
+    backgroundColor: chrome.bg,
     title: 'Apollo Study',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: { color: chrome.color, symbolColor: chrome.symbol, height: TITLEBAR_H },
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -103,6 +137,8 @@ async function createWindow() {
       additionalArguments: [`--backend-port=${backendPort}`],
     },
   });
+  if (state.maximized) win.maximize();
+  trackBounds(win);
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (e, url) => {
     if (!url.startsWith('http://localhost:5173') && !url.startsWith('file://')) e.preventDefault();
@@ -131,6 +167,17 @@ ipcMain.handle('dialog:saveFile', async (_e, opts = {}) => {
 });
 
 ipcMain.handle('shell:showItem', (_e, p) => { shell.showItemInFolder(p); });
+
+ipcMain.on('window:chrome', (e, c) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (!win || !c || typeof c.color !== 'string') return;
+  try {
+    win.setTitleBarOverlay({ color: c.color, symbolColor: c.symbol, height: TITLEBAR_H });
+    win.setBackgroundColor(c.bg);
+    nativeTheme.themeSource = c.dark ? 'dark' : 'light';
+    fs.writeFileSync(chromeFile(), JSON.stringify({ color: c.color, symbol: c.symbol, bg: c.bg, dark: !!c.dark }));
+  } catch (err) { console.warn('[chrome]', err.message); }
+});
 
 app.whenReady().then(async () => {
   app.setAppUserModelId('com.apollo.study'); // needed for Windows notifications later

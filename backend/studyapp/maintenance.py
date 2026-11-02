@@ -1,0 +1,232 @@
+"""Settings → Maintenance: what each subject, topic and file takes on disk and in the index, leftovers to clean up,
+re-embedding, and the vision notes audit (vision_audit.py) with re-running vision on the units it flags.
+
+Scopes are a subject, a topic or one document (`ScopeBody`); a subject includes its reference library."""
+import os
+import time
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
+from . import config, db, jobs, llm, pipeline, render, vision_audit
+
+router = APIRouter()
+
+
+class ScopeBody(BaseModel):
+    subject_id: int | None = None
+    topic_id: int | None = None
+    document_id: int | None = None
+
+
+def _scope_docs(b: ScopeBody) -> list[int]:
+    if b.document_id is not None:
+        rows = db.q("SELECT id FROM documents WHERE id=?", (b.document_id,))
+    elif b.topic_id is not None:
+        rows = db.q("SELECT id FROM documents WHERE topic_id=?", (b.topic_id,))
+    elif b.subject_id is not None:
+        rows = db.q("SELECT id FROM documents WHERE subject_id=?", (b.subject_id,))
+    else:
+        rows = db.q("SELECT id FROM documents")
+    return [r["id"] for r in rows]
+
+
+def _tree_size(p: Path) -> int:
+    if p.is_file():
+        return p.stat().st_size
+    total = 0
+    for root, _, files in os.walk(p):
+        for f in files:
+            try:
+                total += os.stat(os.path.join(root, f)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def _orphans() -> dict:
+    """Files left behind on disk that no document uses any more."""
+    docs = db.q("SELECT id, sha256, ext FROM documents")
+    names, shas, ids = {f"{d['sha256']}{d['ext']}" for d in docs}, {d["sha256"] for d in docs}, {str(d["id"]) for d in docs}
+    out = {"files": [], "renders": [], "assets": []}
+    if config.files_dir().exists():
+        out["files"] = [p for p in config.files_dir().iterdir() if p.is_file() and p.name not in names]
+    out["renders"] = [p for p in render.renders_dir().iterdir() if p.is_file() and p.stem not in shas]
+    if config.assets_dir().exists():  # per-document folders are named by document id; chat/, figures/ etc. are shared
+        out["assets"] = [p for p in config.assets_dir().iterdir() if p.is_dir() and p.name.isdigit() and p.name not in ids]
+    return out
+
+
+@router.get("/maintenance/overview")
+def overview():
+    model = llm.embed_model()
+    docs = db.q("""SELECT d.id, d.subject_id, d.topic_id, d.kind, d.filename, d.ext, d.sha256, d.size, d.status, d.error,
+                          d.unit_count, d.vision_total, d.vision_done, d.embed_model, d.updated_at FROM documents d ORDER BY d.filename COLLATE NOCASE""")
+    per = lambda sql: {r["document_id"]: r for r in db.q(sql, (model,) if "?" in sql else ())}
+    chunks = per("""SELECT document_id, SUM(source='text') text_chunks, SUM(source='vision') vision_chunks,
+                    SUM(embedding IS NULL OR embed_model IS NOT ?) unembedded,
+                    SUM(LENGTH(text) + COALESCE(LENGTH(embedding), 0)) bytes FROM chunks GROUP BY document_id""")
+    units = per("""SELECT document_id, SUM(vision_status='failed') vision_failed,
+                   SUM(LENGTH(text) + COALESCE(LENGTH(vision_notes), 0)) bytes FROM units GROUP BY document_id""")
+    flags = per("SELECT document_id, COUNT(*) flags FROM vision_flags WHERE dismissed=0 GROUP BY document_id")
+    reviewing = {r["document_id"] for r in db.q("SELECT document_id FROM jobs WHERE type='audit' AND status IN ('queued','running')")}
+
+    out = []
+    for d in docs:
+        c, u = chunks.get(d["id"], {}), units.get(d["id"], {})
+        path = pipeline.doc_path(d)
+        rendered = render.renders_dir() / f"{d['sha256']}.pdf"
+        file_size = path.stat().st_size if path.exists() else 0
+        render_size = rendered.stat().st_size if d["ext"] in render.OFFICE_EXTS and rendered.exists() else 0
+        assets = config.assets_dir() / str(d["id"])
+        asset_size = _tree_size(assets) if assets.exists() else 0
+        index = (c.get("bytes") or 0) + (u.get("bytes") or 0)
+        out.append({
+            "id": d["id"], "subject_id": d["subject_id"], "topic_id": d["topic_id"], "kind": d["kind"], "filename": d["filename"],
+            "status": d["status"], "error": d["error"], "path": str(path), "missing": not path.exists(),
+            "size": {"file": file_size, "render": render_size, "assets": asset_size, "index": index,
+                     "total": file_size + render_size + asset_size + index},
+            "units": d["unit_count"], "text_chunks": c.get("text_chunks") or 0, "vision_chunks": c.get("vision_chunks") or 0,
+            "unembedded": c.get("unembedded") or 0, "stale": bool(d["embed_model"]) and d["embed_model"] != model,
+            "vision_total": d["vision_total"], "vision_done": d["vision_done"], "vision_failed": u.get("vision_failed") or 0,
+            "flags": (flags.get(d["id"]) or {}).get("flags", 0), "reviewing": d["id"] in reviewing,
+        })
+
+    db_size = sum(p.stat().st_size for p in config.DATA_DIR.glob("study.db*") if p.is_file())
+    orphans = _orphans()
+    return {
+        "data_dir": str(config.DATA_DIR), "db_path": str(config.db_path()), "embed_model": model,
+        "disk": {"database": db_size, "files": _tree_size(config.files_dir()), "renders": _tree_size(render.renders_dir()),
+                 "assets": _tree_size(config.assets_dir())},
+        "orphans": {k: {"count": len(v), "bytes": sum(_tree_size(p) for p in v)} for k, v in orphans.items()},
+        "subjects": db.q("SELECT id, name, color FROM subjects ORDER BY name COLLATE NOCASE"),
+        "topics": db.q("SELECT id, subject_id, name FROM topics ORDER BY name COLLATE NOCASE"),
+        "documents": out,
+    }
+
+
+class CleanupBody(BaseModel):
+    compact: bool = False  # also VACUUM the database (returns the space deleted rows leave behind)
+
+
+@router.post("/maintenance/cleanup")
+def cleanup(body: CleanupBody):
+    import shutil
+    freed = 0
+    for paths in _orphans().values():
+        for p in paths:
+            size = _tree_size(p)
+            try:
+                shutil.rmtree(p) if p.is_dir() else p.unlink()
+                freed += size
+            except OSError:
+                pass
+    if body.compact:
+        before = sum(p.stat().st_size for p in config.DATA_DIR.glob("study.db*") if p.is_file())
+        db.ex("VACUUM")
+        db.ex("PRAGMA wal_checkpoint(TRUNCATE)")
+        freed += max(0, before - sum(p.stat().st_size for p in config.DATA_DIR.glob("study.db*") if p.is_file()))
+    return {"freed": freed}
+
+
+@router.post("/maintenance/reembed")
+def reembed(body: ScopeBody):
+    """Embed the chunks without a vector from the current model (and index vision notes not indexed yet). Cheaper
+    than re-ingesting after an embedding model change: nothing is parsed again."""
+    model = llm.embed_model()
+    queued = 0
+    for did in _scope_docs(body):
+        if db.q1("""SELECT 1 FROM documents d WHERE d.id=? AND d.status IN ('ready','vision') AND (d.vision_indexed=0 OR EXISTS
+                    (SELECT 1 FROM chunks c WHERE c.document_id=d.id AND (c.embedding IS NULL OR c.embed_model IS NOT ?)))""", (did, model)):
+            jobs.enqueue("embed", did)
+            queued += 1
+    return {"queued": queued}
+
+
+class ScanBody(ScopeBody):
+    review: bool = True  # also queue the model review (one vision-lane job per document)
+    recheck: bool = False  # review units the model already reviewed
+
+
+@router.post("/maintenance/vision-scan")
+def vision_scan(body: ScanBody):
+    ids = _scope_docs(body)
+    flagged = vision_audit.rule_scan(ids)
+    queued, units = 0, 0
+    if body.review:
+        for did in ids:
+            n = len(vision_audit.review_candidates(did, body.recheck))
+            if n:
+                jobs.enqueue("audit", did, ref_id=jobs.RECHECK if body.recheck else None)
+                queued, units = queued + 1, units + n
+    return {"rule_flags": flagged, "queued": queued, "units": units}
+
+
+@router.get("/maintenance/vision-flags")
+def vision_flags(subject_id: int | None = None, topic_id: int | None = None, document_id: int | None = None,
+                 dismissed: bool = False):
+    ids = _scope_docs(ScopeBody(subject_id=subject_id, topic_id=topic_id, document_id=document_id))
+    if not ids:
+        return []
+    marks = ",".join("?" * len(ids))
+    return db.q(f"""SELECT f.id, f.document_id, f.kind, f.reason, f.source, f.created_at, f.dismissed, u.idx unit, u.label,
+                           SUBSTR(COALESCE(u.vision_notes, ''), 1, 1200) notes, LENGTH(COALESCE(u.vision_notes, '')) notes_length,
+                           u.vision_status, d.filename, d.subject_id, d.topic_id, t.name topic
+                    FROM vision_flags f JOIN units u ON u.id=f.unit_id JOIN documents d ON d.id=f.document_id
+                    LEFT JOIN topics t ON t.id=d.topic_id
+                    WHERE f.document_id IN ({marks}) AND f.dismissed=?
+                    ORDER BY d.filename COLLATE NOCASE, u.idx, f.source DESC""", (*ids, int(dismissed)))
+
+
+class FlagIds(BaseModel):
+    ids: list[int]
+    restore: bool = False
+
+
+@router.post("/maintenance/vision-flags/dismiss")
+def dismiss_flags(body: FlagIds):
+    if not body.ids:
+        return {"ok": True}
+    marks = ",".join("?" * len(body.ids))
+    rows = db.q(f"SELECT f.document_id, f.kind, f.source, u.idx FROM vision_flags f JOIN units u ON u.id=f.unit_id WHERE f.id IN ({marks})", body.ids)
+    db.ex(f"UPDATE vision_flags SET dismissed=? WHERE id IN ({marks})", (int(not body.restore), *body.ids))
+    # A malformed rule flag keeps the unit's notes out of search; dismissing (or restoring) it changes that.
+    by_doc: dict[int, list[int]] = {}
+    for r in rows:
+        if r["source"] == "rule" and r["kind"] == "malformed":
+            by_doc.setdefault(r["document_id"], []).append(r["idx"])
+    for did, idxs in by_doc.items():
+        pipeline.index_vision(did, idxs)
+    return {"ok": True}
+
+
+class RerunBody(ScopeBody):
+    flag_ids: list[int] | None = None  # these flags' units; otherwise every unit with an open flag in the scope
+
+
+@router.post("/maintenance/vision-rerun")
+def vision_rerun(body: RerunBody):
+    """Re-run vision on flagged units only. Their flags go; the new notes are checked by the rules again."""
+    if body.flag_ids is not None:
+        if not body.flag_ids:
+            return {"units": 0, "queued": 0}
+        rows = db.q(f"SELECT DISTINCT unit_id, document_id FROM vision_flags WHERE id IN ({','.join('?' * len(body.flag_ids))})",
+                    body.flag_ids)
+    else:
+        ids = _scope_docs(body)
+        if not ids:
+            return {"units": 0, "queued": 0}
+        rows = db.q(f"SELECT DISTINCT unit_id, document_id FROM vision_flags WHERE dismissed=0 AND document_id IN "
+                    f"({','.join('?' * len(ids))})", ids)
+    if not rows:
+        raise HTTPException(400, "Nothing flagged to re-run")
+    with db.tx() as c:
+        for r in rows:
+            c.execute("UPDATE units SET vision_status='pending', vision_audited=0 WHERE id=? AND needs_vision=1", (r["unit_id"],))
+            c.execute("DELETE FROM vision_flags WHERE unit_id=? AND dismissed=0", (r["unit_id"],))
+    docs = sorted({r["document_id"] for r in rows})
+    for did in docs:
+        db.ex("UPDATE documents SET updated_at=? WHERE id=?", (time.time(), did))
+        jobs.enqueue("vision", did)
+    return {"units": len(rows), "queued": len(docs)}

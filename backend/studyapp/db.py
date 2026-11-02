@@ -122,6 +122,20 @@ MIGRATIONS = [
     "CREATE TABLE IF NOT EXISTS ui_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
     # Finished jobs the student cleared from the jobs list
     "ALTER TABLE jobs ADD COLUMN dismissed INTEGER NOT NULL DEFAULT 0",
+    # 'text' (extracted text) or 'vision' (a unit's vision notes, embedded so image-only pages can be found)
+    "ALTER TABLE chunks ADD COLUMN source TEXT NOT NULL DEFAULT 'text'",
+    # vision_indexed: the document's vision notes have chunks (0 on databases from before vision chunks: backfilled)
+    "ALTER TABLE documents ADD COLUMN vision_indexed INTEGER NOT NULL DEFAULT 0",
+    # vision_audited: the model review has checked these notes (reset whenever the notes change)
+    "ALTER TABLE units ADD COLUMN vision_audited INTEGER NOT NULL DEFAULT 0",
+    # Problems found in vision notes (vision_audit.py). source: 'rule' (deterministic) | 'model' (Qwen's review);
+    # kind: malformed | incomplete | misleading | failed. Dismissed flags stay so a rescan doesn't re-raise them.
+    """CREATE TABLE IF NOT EXISTS vision_flags (
+        id INTEGER PRIMARY KEY, document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        unit_id INTEGER NOT NULL REFERENCES units(id) ON DELETE CASCADE, kind TEXT NOT NULL, reason TEXT NOT NULL,
+        source TEXT NOT NULL, created_at REAL NOT NULL, dismissed INTEGER NOT NULL DEFAULT 0
+    )""",
+    "CREATE INDEX IF NOT EXISTS vision_flags_doc ON vision_flags(document_id, unit_id)",
 ]
 
 _lock = threading.RLock()

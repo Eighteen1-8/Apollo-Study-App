@@ -1,11 +1,12 @@
-"""Persistent job queue with three lanes: 'ingest' (CPU parsing + embedding), 'vision' and 'generate' (content + marking).
+"""Persistent job queue with three lanes: 'ingest' (CPU parsing + embedding, and 'embed': re-embedding stored chunks),
+'vision' (vision notes, and 'audit': the model review of them) and 'generate' (content + marking).
 Both Qwen lanes share llm's concurrency gate, so the server still sees at most `llm_concurrency` requests.
 Jobs survive restarts (running -> queued on startup) and can be cancelled between steps."""
 import threading
 import time
 import traceback
 
-from . import db, generate, pipeline
+from . import db, generate, pipeline, vision_audit
 
 _wake = threading.Event()
 
@@ -24,7 +25,8 @@ class Job:
             raise pipeline.Cancelled()
 
 
-LANES = {"ingest": ("ingest",), "vision": ("vision",), "generate": ("generate", "mark")}
+LANES = {"ingest": ("ingest", "embed"), "vision": ("vision", "audit"), "generate": ("generate", "mark")}
+RECHECK = 1  # audit job ref_id: review units that were reviewed before too
 
 
 def enqueue(type_, document_id=None, ref_id=None):
@@ -65,6 +67,10 @@ def _run(lane):
                     enqueue("vision", row["document_id"])
             elif row["type"] == "vision":
                 pipeline.run_vision(row["document_id"], job)
+            elif row["type"] == "embed":
+                pipeline.reembed(row["document_id"], job)
+            elif row["type"] == "audit":
+                vision_audit.review_document(row["document_id"], job, recheck=row["ref_id"] == RECHECK)
             elif row["type"] == "generate":
                 generate.run_artifact(row["ref_id"], job)
             elif row["type"] == "mark":
@@ -91,6 +97,14 @@ def _mark_owner(row, status, error):
         db.ex("UPDATE attempts SET status=?, message=?, updated_at=? WHERE id=?", (status, error or status, now, row["ref_id"]))
 
 
+def backfill_vision_chunks():
+    """Databases from before vision notes were embedded: queue the documents whose notes have no chunks yet."""
+    db.ex("UPDATE documents SET vision_indexed=1 WHERE vision_indexed=0 AND vision_done=0")
+    for d in db.q("SELECT id FROM documents WHERE vision_indexed=0 AND status IN ('ready','vision')"):
+        enqueue("embed", d["id"])
+
+
 def start_workers():
+    backfill_vision_chunks()
     for lane in LANES:
         threading.Thread(target=_run, args=(lane,), daemon=True, name=f"jobs-{lane}").start()

@@ -1,4 +1,4 @@
-import { api, Subject, Topic } from '../api';
+import { api, MaintScope, Subject, Topic } from '../api';
 import type { Route } from '../App';
 import { useOverlay } from './overlay';
 
@@ -36,6 +36,19 @@ export function useLibraryActions(subjects: Subject[], go: (r: Route) => void, o
     async renameTopic(t: Topic) {
       const name = await ov.prompt({ title: 'Rename topic', initial: t.name });
       if (name) { await api.renameTopic(t.id, name); onChange(); }
+    },
+    /** Flag vision notes that are malformed, cut off or (by Apollo's review against the image) wrong. */
+    async checkVision(scope: MaintScope, name: string, subjectId: number) {
+      const r = await api.visionScan(scope);
+      const open = await ov.confirm({
+        title: `Checking vision notes: ${name}`, confirmText: 'Open Maintenance',
+        body: <>
+          {r.rule_flags ? `${r.rule_flags} problem${r.rule_flags === 1 ? '' : 's'} found by the quick checks.` : 'The quick checks found no problems.'}{' '}
+          {r.units ? `Apollo is now comparing ${r.units} page${r.units === 1 ? '' : 's'} with ${r.units === 1 ? 'its image' : 'their images'} in the background (see the jobs list); anything it flags shows up in Settings → Maintenance with the reason.`
+            : 'Every page has already been reviewed by Apollo.'}
+        </>,
+      });
+      if (open) go({ name: 'settings', tab: 'maintenance', subjectId });
     },
     async deleteTopic(t: Topic) {
       const ok = await ov.confirm({

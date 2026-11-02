@@ -6,6 +6,7 @@ import EmbeddingCloud, { CloudFocus } from '../components/EmbeddingCloud';
 import { FileDropOverlay, TopicAssignDialog } from '../components/FileDrop';
 import { useOverlay } from '../components/overlay';
 import { Empty } from '../components/ui';
+import SideResizer, { SideLimits, SidePanel } from '../components/SideResizer';
 import UploadDialog from '../components/UploadDialog';
 import ChatView from './ChatView';
 import DocumentView from './DocumentView';
@@ -33,6 +34,11 @@ const norm = (s: string) => s.toLowerCase().replace(/\.(pdf|pptx|docx|txt|md|png
 const MARGIN = 18;
 const MIN_W = 320;
 const MIN_H = 240;
+const LEFT: SideLimits = { def: 250, min: 190, max: 460 };
+const RIGHT: SideLimits = { def: 300, min: 230, max: 540 };
+const CENTER_MIN = 380;
+type Sides = { left: SidePanel; right: SidePanel };
+const DEFAULT_SIDES: Sides = { left: { width: LEFT.def, open: true }, right: { width: RIGHT.def, open: true } };
 
 function loadPref<T>(key: string, parse: (v: string) => T, fallback: T): T {
   try { const v = localStorage.getItem(key); return v == null ? fallback : parse(v); } catch { return fallback; }
@@ -72,6 +78,9 @@ export default function SubjectView({ route, subjects, go, onChange }: {
   const [upload, setUpload] = useState<Upload | null>(null);
   const [assign, setAssign] = useState<string[] | null>(null);
   const [incoming, setIncoming] = useState<{ paths: string[]; nonce: number } | null>(null);
+  const [sides, setSides] = useState<Sides>(() => loadPref('sides', (v) => ({ ...DEFAULT_SIDES, ...JSON.parse(v) }), DEFAULT_SIDES));
+  const [sizing, setSizing] = useState(false);
+  const workspace = useRef<HTMLDivElement>(null);
   const center = useRef<HTMLElement>(null);
   const shell = useRef<HTMLDivElement>(null);
   const docs = usePoll(() => api.allDocuments(route.id), 10000, [route.id]);
@@ -243,12 +252,26 @@ export default function SubjectView({ route, subjects, go, onChange }: {
   };
   const inner = side === 'right' ? -1 : 1; // the inner side faces the middle of the screen
 
+  /** Sidebar widths are shared by every subject. */
+  const sideProps = (which: 'left' | 'right') => {
+    const other = which === 'left' ? sides.right : sides.left;
+    return {
+      side: which, panel: sides[which], limits: which === 'left' ? LEFT : RIGHT, onSizing: setSizing,
+      room: () => (workspace.current?.clientWidth ?? 1600) - (other.open ? other.width : 0) - CENTER_MIN,
+      onChange: (p: SidePanel) => setSides((s) => ({ ...s, [which]: p })),
+      onCommit: (p: SidePanel) => setSides((s) => { const n = { ...s, [which]: p }; savePref('sides', JSON.stringify(n)); return n; }),
+    };
+  };
+
   const closeDoc = () => { setDoc(null); setPage(null); setChatFull(false); if (!look.cloud) setChatCollapsed(false); };
   const docsChanged = () => { docs.reload(); onChange(); };
 
   return (
-    <div className="workspace">
+    <div ref={workspace} className={`workspace${sizing ? ' sizing' : ''}${sides.left.open ? '' : ' left-folded'}${sides.right.open ? '' : ' right-folded'}`}
+      style={{ '--left-w': `${sides.left.open ? sides.left.width : 0}px`, '--right-w': `${sides.right.open ? sides.right.width : 0}px` } as React.CSSProperties}>
       <LibraryPanel subject={subject} onOpen={openArtifact} />
+      <SideResizer {...sideProps('left')} />
+      <SideResizer {...sideProps('right')} />
 
       <section ref={center} className={`center${floating ? ' has-doc' : ''}`}>
         {showCloud && (

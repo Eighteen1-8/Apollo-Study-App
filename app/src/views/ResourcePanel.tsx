@@ -197,6 +197,8 @@ export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCrea
   const subjectMenu: MenuItem[] = [
     { label: 'New topic…', onClick: () => act.newTopic(subject) },
     { label: 'Add textbook…', onClick: () => uploadRef() },
+    { label: 'Check vision notes', onClick: () => act.checkVision({ subject_id: subject.id }, subject.name, subject.id), separatorBefore: true },
+    { label: 'Maintenance…', onClick: () => go({ name: 'settings', tab: 'maintenance', subjectId: subject.id }) },
     { label: 'Rename subject…', onClick: () => act.renameSubject(subject), separatorBefore: true },
     { label: 'Delete subject', onClick: () => act.deleteSubject(subject), danger: true },
   ];
@@ -206,7 +208,8 @@ export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCrea
     sel.onFocus({ kind: 'doc', id: d.id, name: d.filename });
     if (!sel.cloudVisible) onOpenDoc(d.id);
   };
-  const files: FileProps = { onSelect: selectDoc, selectedId: sel.focus?.kind === 'doc' ? sel.focus.id : null, openId: sel.openId, picker };
+  const files: FileProps = { onSelect: selectDoc, selectedId: sel.focus?.kind === 'doc' ? sel.focus.id : null, openId: sel.openId, picker,
+    menu: (d) => [{ label: 'Check vision notes', onClick: () => act.checkVision({ document_id: d.id }, d.filename, subject.id) }] };
 
   return (
     <aside ref={asideRef} className="side side-right" onClick={(e) => {
@@ -218,7 +221,7 @@ export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCrea
     }}>
       <div className="side-head" onContextMenu={(e) => ov.menu(e, subjectMenu)}>
         <SubjectIcon s={subject} size={30} />
-        <div className="side-title">{subject.name}</div>
+        <div className="side-title" data-tip={subject.name}>{subject.name}</div>
         <button className="icon-btn" title="Subject options" onClick={(e) => ov.menu(e, subjectMenu)}>⋯</button>
       </div>
 
@@ -255,7 +258,8 @@ export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCrea
               onMoveHere={(d) => moveTo(d, t.id)}
               folders={folders[t.id] ?? EMPTY_FOLDERS} onFolders={(f) => saveFolders(t.id, f)}
               files={files} sel={sel}
-              onRename={() => act.renameTopic(t)} onDelete={() => act.deleteTopic(t)} onChange={refresh} />
+              onRename={() => act.renameTopic(t)} onDelete={() => act.deleteTopic(t)} onChange={refresh}
+              onCheckVision={() => act.checkVision({ topic_id: t.id }, t.name, subject.id)} />
           ))}
         </section>
       </div>
@@ -281,19 +285,19 @@ export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCrea
 }
 
 type SidePicker = Picker & { registerFolder: (f: Folder, topicId: number) => void; setAnchor: (key: string) => void };
-type FileProps = { onSelect: (d: Doc) => void; selectedId: number | null; openId: number | null; picker: SidePicker };
+type FileProps = { onSelect: (d: Doc) => void; selectedId: number | null; openId: number | null; picker: SidePicker; menu: (d: Doc) => MenuItem[] };
 type Folder = TopicFolders['folders'][number];
 const EMPTY_FOLDERS: TopicFolders = { folders: [], files: {} };
 const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 const without = (files: Record<string, string>, docId: number) => Object.fromEntries(Object.entries(files).filter(([k]) => k !== String(docId)));
 
 function TopicRow({ topic, color, open, focused, onToggle, onFocus, onUpload, onCreate, onOpenDoc, onDetails, onDrop, onMoveHere,
-  folders, onFolders, files, sel, onRename, onDelete, onChange }: {
+  folders, onFolders, files, sel, onRename, onDelete, onChange, onCheckVision }: {
   topic: Topic; color: string; open: boolean; focused: boolean; onToggle: () => void; onFocus: () => void;
   onUpload: (paths?: string[]) => void; onCreate: (tool: ToolName) => void;
   onOpenDoc: (d: Doc) => void; onDetails: (d: Doc) => void; onDrop: (e: React.DragEvent) => void;
   onMoveHere: (ds: DraggedDoc[]) => Promise<number[]>; folders: TopicFolders; onFolders: (f: TopicFolders) => void;
-  files: FileProps; sel: Selection; onRename: () => void; onDelete: () => void; onChange: () => void;
+  files: FileProps; sel: Selection; onRename: () => void; onDelete: () => void; onChange: () => void; onCheckVision: () => void;
 }) {
   const ov = useOverlay();
   const [drag, setDrag] = useState(false);
@@ -309,6 +313,7 @@ function TopicRow({ topic, color, open, focused, onToggle, onFocus, onUpload, on
     { label: 'Upload files…', onClick: () => onUpload() },
     { label: 'New folder…', onClick: newFolder },
     ...createMenu.map((m, i) => ({ ...m, label: `Create ${m.label.toLowerCase()}`, separatorBefore: i === 0 })),
+    { label: 'Check vision notes', onClick: onCheckVision, separatorBefore: true },
     { label: 'Rename…', onClick: onRename, separatorBefore: true },
     { label: 'Delete topic', onClick: onDelete, danger: true },
   ];
@@ -328,12 +333,12 @@ function TopicRow({ topic, color, open, focused, onToggle, onFocus, onUpload, on
         if (rest.length) onMoveHere(rest);
       }}>
       <div className="topic-row" data-focus onClick={() => { onToggle(); onFocus(); }} onContextMenu={(e) => ov.menu(e, fullMenu)}>
-        <span className="topic-caret">{open ? '▾' : '▸'}</span>
+        <span className={`topic-caret${open ? ' open' : ''}`}>▸</span>
         <span className="topic-dot" aria-hidden />
-        <span className="topic-name">{topic.name}</span>
+        <span className="topic-name" data-tip={topic.name}>{topic.name}</span>
         <StaleBadge count={topic.stale_docs} where={topic.name}
           onReingest={async () => { await api.reingestStale(topic.subject_id, { topic_id: topic.id }); onChange(); }} />
-        <span className="topic-count">{topic.doc_count ?? 0}</span>
+        <span className="topic-count" data-tip={`${topic.doc_count ?? 0} file${topic.doc_count === 1 ? '' : 's'}`}>{topic.doc_count ?? 0}</span>
         <span className="topic-actions" onClick={(e) => e.stopPropagation()}>
           <button className="icon-btn" data-tip="New folder" onClick={newFolder}><FolderIcon /></button>
           <button className="icon-btn" data-tip="Upload files" onClick={() => onUpload()}>⇪</button>
@@ -376,6 +381,7 @@ function TopicFiles({ topicId, onOpen, onDetails, onChange, folders, onFolders, 
   const menu = (d: Doc): MenuItem[] => [
     ...sorted.filter((f) => f.id !== folderOf(d)).map((f) => ({ label: `Move to folder “${f.name}”`, onClick: () => place(d.id, f.id) })),
     ...(folderOf(d) ? [{ label: 'Remove from folder', onClick: () => place(d.id, null) }] : []),
+    ...files.menu(d),
   ];
   const rename = async (f: Folder) => {
     const name = (await ov.prompt({ title: 'Rename folder', initial: f.name }))?.trim();
@@ -387,7 +393,7 @@ function TopicFiles({ topicId, onOpen, onDetails, onChange, folders, onFolders, 
       files: Object.fromEntries(Object.entries(folders.files).filter(([, v]) => v !== f.id)) });
   };
   const toggle = (id: string) => setClosed((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const props = { onOpen, onDetails, onChange: reload, menu, ...files };
+  const props = { onOpen, onDetails, onChange: reload, ...files, menu };
   const pk = files.picker;
 
   return (
@@ -420,10 +426,10 @@ function TopicFiles({ topicId, onOpen, onDetails, onChange, folders, onFolders, 
                 { label: 'Rename…', onClick: () => rename(f), separatorBefore: true },
                 { label: 'Delete folder', onClick: () => remove(f), danger: true },
               ]); }}>
-              <span className="topic-caret">{isOpen ? '▾' : '▸'}</span>
+              <span className={`topic-caret${isOpen ? ' open' : ''}`}>▸</span>
               <span className="folder-icon"><FolderIcon /></span>
-              <span className="folder-name">{f.name}</span>
-              <span className="topic-count">{inside.length}</span>
+              <span className="folder-name" data-tip={f.name}>{f.name}</span>
+              <span className="topic-count" data-tip={`${inside.length} file${inside.length === 1 ? '' : 's'}`}>{inside.length}</span>
             </div>
             {isOpen && <div className="folder-files"><FileList compact docs={inside} {...props} empty="Drag files here." /></div>}
           </div>

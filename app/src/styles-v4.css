@@ -555,3 +555,58 @@ a.cite:hover { transform: translateY(-1px); background: color-mix(in srgb, var(-
 .card-list-item { position: relative; }
 .card-x { position: absolute; top: 6px; right: 6px; opacity: 0; transition: opacity 0.15s; }
 .card-list-item:hover .card-x { opacity: 1; }
+
+/* ---------------------------------------------------------------- Settings → Maintenance */
+.settings-tabs button { padding: 6px 14px; }
+.maint { max-width: 1100px; }
+.maint-help { font-size: 13px; margin: -4px 0 12px; max-width: 820px; }
+.maint-line { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 10px 0; font-size: 13.5px; color: var(--text-dim); }
+.maint-line b { color: var(--text); }
+.maint-line .grow { flex: 1; }
+.maint-line select { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 5px 8px; font: inherit; font-size: 13px; }
+.maint-path { font-family: var(--mono); font-size: 12px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 640px; }
+.maint-check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.maint-disk-bar { display: flex; height: 10px; border-radius: 6px; overflow: hidden; background: var(--bg-elev); gap: 2px; }
+.maint-disk-bar span { min-width: 3px; }
+.maint-disk-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; font-size: 12.5px; color: var(--text-dim); }
+.maint-disk-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.maint-disk-legend b { color: var(--text); font-weight: 600; margin-left: 4px; }
+.maint-disk-total { margin-left: auto; }
+.seg-database { background: var(--accent); }
+.seg-files { background: var(--ok); }
+.seg-renders { background: var(--warn); }
+.seg-assets { background: var(--busy); }
+
+.maint-tree { display: flex; flex-direction: column; gap: 8px; }
+.maint-subject { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elev); overflow: hidden; }
+.maint-row { display: flex; align-items: center; gap: 10px; padding: 7px 12px; min-height: 36px; font-size: 13.5px; }
+.maint-subject-row { cursor: pointer; padding: 10px 12px; }
+.maint-subject-row:hover, .maint-doc:hover { background: var(--bg-hover); }
+.maint-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--tint); flex: none; }
+.maint-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.maint-subject-row .maint-name { font-weight: 600; }
+.maint-stats, .maint-doc-meta { display: flex; align-items: center; gap: 12px; color: var(--text-faint); font-size: 12.5px; white-space: nowrap; }
+.maint-size { min-width: 64px; text-align: right; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.maint-actions { display: flex; align-items: center; gap: 6px; }
+.maint-group { border-top: 1px solid var(--border); }
+.maint-group-row { padding-left: 34px; color: var(--text-dim); font-weight: 600; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.03em; min-height: 32px; }
+.maint-doc { padding-left: 46px; }
+.maint-empty { padding: 4px 46px 10px; font-size: 12.5px; }
+.maint-warn { color: var(--warn); }
+.maint-flags { background: var(--warn-soft); color: var(--warn); border: none; border-radius: 10px; padding: 2px 8px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.maint-flags:hover { filter: brightness(1.15); }
+
+.flag-list { display: flex; flex-direction: column; gap: 10px; }
+.flag-card { display: flex; gap: 14px; align-items: flex-start; padding: 12px; border: 1px solid var(--border); border-left: 3px solid var(--warn); border-radius: var(--radius); background: var(--bg-elev); }
+.flag-card.flag-misleading, .flag-card.flag-failed { border-left-color: var(--bad); }
+.flag-thumb { width: 120px; max-height: 90px; object-fit: contain; border-radius: 6px; background: var(--bg); flex: none; }
+.flag-body { flex: 1; min-width: 0; }
+.flag-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13.5px; }
+.flag-kind, .flag-source { font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 10px; }
+.flag-kind { background: var(--warn-soft); color: var(--warn); }
+.flag-kind.kind-misleading, .flag-kind.kind-failed { background: var(--bad-soft); color: var(--bad); }
+.flag-source { background: var(--bg-hover); color: var(--text-faint); }
+.flag-reason { margin: 6px 0 4px; font-size: 13.5px; color: var(--text); line-height: 1.45; }
+.flag-notes summary { cursor: pointer; font-size: 12.5px; color: var(--text-faint); }
+.flag-notes pre { white-space: pre-wrap; font-family: var(--mono); font-size: 12px; color: var(--text-dim); max-height: 260px; overflow: auto; background: var(--bg); padding: 8px 10px; border-radius: 6px; margin-top: 6px; }
+.flag-actions { display: flex; flex-direction: column; gap: 6px; flex: none; }

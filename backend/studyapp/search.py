@@ -1,5 +1,6 @@
 """Hybrid retrieval: FTS5 BM25 + cosine over stored embeddings, fused with reciprocal rank fusion.
-Results carry the vision notes of the units they span (not embedded, but shown/fed alongside)."""
+Chunks are extracted text or a unit's vision notes (source='vision'). Every result carries the vision notes of the
+units it spans; a vision hit becomes its unit (extracted text + notes). Each unit's notes appear once per search."""
 import re
 
 import numpy as np
@@ -50,14 +51,23 @@ def search(query: str, doc_ids: list[int], k=10):
 
     for cid, d in ranks.items():
         d["score"] = sum(1 / (RRF_K + d[key]) for key in ("bm25_rank", "vector_rank") if key in d)
-    top = sorted(ranks.items(), key=lambda kv: -kv[1]["score"])[:k]
-
-    out = []
-    for cid, d in top:
+    out, shown = [], set()  # shown: (document, unit) whose notes are already in a result
+    for cid, d in sorted(ranks.items(), key=lambda kv: -kv[1]["score"]):
+        if len(out) >= k:
+            break
         c = db.q1("SELECT c.*, d.filename, d.kind AS doc_kind FROM chunks c JOIN documents d ON d.id=c.document_id WHERE c.id=?", (cid,))
-        notes = db.q("SELECT label, vision_notes FROM units WHERE document_id=? AND idx BETWEEN ? AND ? "
+        vision = c["source"] == "vision"
+        if vision and (c["document_id"], c["unit_start"]) in shown:
+            continue  # an earlier result already carries this unit's notes
+        notes = db.q("SELECT idx, label, vision_notes FROM units WHERE document_id=? AND idx BETWEEN ? AND ? "
                      "AND vision_status='done' AND vision_relevant=1 ORDER BY idx", (c["document_id"], c["unit_start"], c["unit_end"]))
+        notes = [n for n in notes if (c["document_id"], n["idx"]) not in shown]
+        shown.update((c["document_id"], n["idx"]) for n in notes)
+        text, label = c["text"], c["label"]
+        if vision:
+            u = db.q1("SELECT label, text FROM units WHERE document_id=? AND idx=?", (c["document_id"], c["unit_start"]))
+            text, label = u["text"] if u else "", u["label"] if u else label
         out.append({"chunk_id": cid, "document_id": c["document_id"], "filename": c["filename"], "doc_kind": c["doc_kind"],
-                    "label": c["label"], "text": c["text"], "unit_start": c["unit_start"], "unit_end": c["unit_end"],
-                    "vision_notes": notes, **d})
+                    "label": label, "text": text, "source": c["source"], "unit_start": c["unit_start"], "unit_end": c["unit_end"],
+                    "vision_notes": [{"label": n["label"], "vision_notes": n["vision_notes"]} for n in notes], **d})
     return out

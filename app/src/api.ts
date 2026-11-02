@@ -6,6 +6,9 @@ declare global {
       pathForFile: (file: File) => string;
       saveFile: (opts?: { defaultName?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>;
       showItem: (path: string) => Promise<void>;
+      /** Present when the window has no native title bar (the app draws it; see Titlebar). */
+      titlebar?: boolean;
+      setChrome?: (c: { color: string; symbol: string; bg: string; dark: boolean }) => void;
     };
   }
 }
@@ -42,10 +45,34 @@ export interface Unit {
 }
 export interface DocDetail extends Doc {
   units: Unit[];
-  chunks: { id: number; unit_start: number; unit_end: number; label: string; token_count: number; embedded: number }[];
+  chunks: { id: number; unit_start: number; unit_end: number; label: string; token_count: number; source: 'text' | 'vision'; embedded: number }[];
+}
+
+/** A subject, topic or single file for maintenance actions; a subject includes its reference library. */
+export type MaintScope = { subject_id?: number; topic_id?: number; document_id?: number };
+export interface MaintDoc {
+  id: number; subject_id: number; topic_id: number | null; kind: 'topic' | 'reference'; filename: string; status: string;
+  error: string | null; path: string; missing: boolean;
+  size: { file: number; render: number; assets: number; index: number; total: number };
+  units: number; text_chunks: number; vision_chunks: number; unembedded: number; stale: boolean;
+  vision_total: number; vision_done: number; vision_failed: number; flags: number; reviewing: boolean;
+}
+export interface MaintOverview {
+  data_dir: string; db_path: string; embed_model: string;
+  disk: { database: number; files: number; renders: number; assets: number };
+  orphans: Record<'files' | 'renders' | 'assets', { count: number; bytes: number }>;
+  subjects: { id: number; name: string; color: string }[];
+  topics: { id: number; subject_id: number; name: string }[];
+  documents: MaintDoc[];
+}
+export type FlagKind = 'malformed' | 'incomplete' | 'misleading' | 'failed';
+export interface VisionFlag {
+  id: number; document_id: number; kind: FlagKind; reason: string; source: 'rule' | 'model'; created_at: number; dismissed: number;
+  unit: number; label: string; notes: string; notes_length: number; vision_status: string;
+  filename: string; subject_id: number; topic_id: number | null; topic: string | null;
 }
 export interface Job {
-  id: number; type: 'ingest' | 'vision'; document_id: number; filename: string | null; status: string;
+  id: number; type: 'ingest' | 'vision' | 'embed' | 'audit' | 'generate' | 'mark'; document_id: number; filename: string | null; status: string;
   progress: number; message: string; error: string | null;
 }
 export interface SearchResult {
@@ -117,6 +144,16 @@ export const api = {
   defaultPrompt: () => req<{ prompt: string }>('GET', '/chat/default-prompt'),
   reingest: (id: number) => req('POST', `/documents/${id}/reingest`),
   vision: (id: number, mode?: VisionMode) => req<{ job_id: number | null }>('POST', `/documents/${id}/vision`, { mode }),
+  maintenance: () => req<MaintOverview>('GET', '/maintenance/overview'),
+  cleanup: (compact: boolean) => req<{ freed: number }>('POST', '/maintenance/cleanup', { compact }),
+  reembed: (scope: MaintScope) => req<{ queued: number }>('POST', '/maintenance/reembed', scope),
+  /** The rules run now; with `review`, Apollo checks each page against its image in the background. */
+  visionScan: (scope: MaintScope, review = true, recheck = false) =>
+    req<{ rule_flags: number; queued: number; units: number }>('POST', '/maintenance/vision-scan', { ...scope, review, recheck }),
+  visionFlags: (scope: MaintScope, dismissed = false) => req<VisionFlag[]>('GET', `/maintenance/vision-flags?${new URLSearchParams(
+    Object.entries({ ...scope, dismissed }).filter(([, v]) => v !== undefined).map(([k, v]) => [k, String(v)]))}`),
+  dismissFlags: (ids: number[], restore = false) => req('POST', '/maintenance/vision-flags/dismiss', { ids, restore }),
+  rerunFlagged: (body: MaintScope & { flag_ids?: number[] }) => req<{ units: number; queued: number }>('POST', '/maintenance/vision-rerun', body),
   jobs: (active = false) => req<Job[]>('GET', `/jobs${active ? '?active=true' : ''}`),
   cancelJob: (id: number) => req('POST', `/jobs/${id}/cancel`),
   dismissJob: (id?: number) => req('POST', `/jobs/dismiss${id ? `?job_id=${id}` : ''}`),

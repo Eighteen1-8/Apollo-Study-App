@@ -3,6 +3,7 @@ import { api, ToolName } from './api';
 import { usePoll } from './hooks';
 import { OverlayProvider } from './components/overlay';
 import Minibar from './components/Minibar';
+import TooltipLayer from './components/Tooltip';
 import Home from './views/Home';
 import SubjectView from './views/SubjectView';
 import SettingsView from './views/SettingsView';
@@ -13,7 +14,8 @@ export type Launch = { tool: ToolName; topicId: number | null; nonce: number };
 export type Route =
   | { name: 'home' }
   | { name: 'subject'; id: number; launch?: Launch }
-  | { name: 'settings' };
+  | { name: 'settings'; tab?: SettingsTab; subjectId?: number };
+export type SettingsTab = 'general' | 'maintenance';
 
 export default function App() {
   const [route, setRoute] = useState<Route>({ name: 'home' });
@@ -56,7 +58,8 @@ export default function App() {
       view = <SubjectView key={route.id} route={route} subjects={list} go={go} onChange={refresh} />;
       break;
     case 'settings':
-      view = <SettingsView key="settings" onSaved={refresh} />;
+      view = <SettingsView key={`settings-${route.tab ?? ''}-${route.subjectId ?? ''}`} tab={route.tab} subjectId={route.subjectId}
+        onSaved={refresh} />;
       break;
   }
 
@@ -64,6 +67,7 @@ export default function App() {
     <OverlayProvider>
       <div className="app">
         <div className="app-backdrop" aria-hidden />
+        {window.studyApp?.titlebar && <Titlebar route={route} subjects={list} />}
         <Minibar subjects={list} route={route} go={go} onChange={refresh} online={online} />
         <main className={`main${route.name === 'subject' ? ' main-subject' : ''}`}>
           {backendUp === false && (
@@ -71,7 +75,21 @@ export default function App() {
           )}
           {view}
         </main>
+        <TooltipLayer />
       </div>
     </OverlayProvider>
+  );
+}
+
+/** The window's title strip (Electron draws no native one): drag to move, double-click to maximise. Windows draws
+ * the min/max/close buttons over its right end. */
+function Titlebar({ route, subjects }: { route: Route; subjects: { id: number; name: string }[] }) {
+  const where = route.name === 'subject' ? subjects.find((s) => s.id === route.id)?.name
+    : route.name === 'settings' ? (route.tab === 'maintenance' ? 'Maintenance' : 'Settings') : 'All subjects';
+  return (
+    <header className="titlebar">
+      <span className="tb-app">Apollo Study</span>
+      {where && <span key={where} className="tb-where">{where}</span>}
+    </header>
   );
 }
