@@ -4,9 +4,11 @@ import { usePoll } from '../hooks';
 import { Pill, Progress } from './ui';
 
 const ACTIVE = ['running', 'queued'];
+const USES: Record<'llm' | 'embed', string[]> = { llm: ['vision', 'audit', 'generate', 'mark'], embed: ['ingest', 'embed'] };
 
 /** Jobs indicator for the mini sidebar: a check while idle; while anything is queued, an hourglass that drains and
- * flips inside a ring that fills with the running job's progress. Click for the full list; finished jobs can be dismissed from it. */
+ * flips inside a ring that fills with the running job's progress. Click for the full list; finished jobs can be dismissed from it.
+ * The list also pauses the language and embedding models separately (e.g. to unload Qwen and free VRAM). */
 export default function JobsPanel() {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
@@ -17,6 +19,13 @@ export default function JobsPanel() {
   const finished = list.length - active.length;
   const failed = list.some((j) => j.status === 'failed');
   const pct = running?.progress ?? 0;
+  const pause = usePoll(api.pauseState, 3000);
+  const paused = { llm: !!pause.data?.llm, embed: !!pause.data?.embed };
+  const anyPaused = paused.llm || paused.embed;
+  // a job already mid-request keeps the model busy until that request ends; after that it waits
+  const finishing = (k: 'llm' | 'embed') => paused[k] && list.some((j) => j.status === 'running' && USES[k].includes(j.type) && !j.message.startsWith('Paused'));
+  const togglePause = (k: 'llm' | 'embed') => api.setPause({ [k]: !paused[k] }).then(() => { pause.reload(); jobs.reload(); });
+  const pausedLabel = [paused.llm && 'LLM', paused.embed && 'embeddings'].filter(Boolean).join(' and ');
 
   // a press anywhere outside the button and the list closes it (a backdrop can't: the sidebar's blur traps it)
   useEffect(() => {
@@ -33,9 +42,10 @@ export default function JobsPanel() {
 
   return (
     <div className="jobs-v" ref={root}>
-      <button className={`jobs-v-btn${active.length ? ' busy' : ''}${failed && !active.length ? ' failed' : ''}${open ? ' open' : ''}`}
+      <button className={`jobs-v-btn${active.length ? ' busy' : ''}${failed && !active.length ? ' failed' : ''}${open ? ' open' : ''}${anyPaused ? ' paused' : ''}`}
         onClick={() => setOpen(!open)} aria-expanded={open}
-        data-tip={running ? `${running.message || running.filename || 'Working'} · ${Math.round(pct * 100)}%` : active.length ? `${active.length} queued` : failed ? 'Background jobs · a job failed' : 'Background jobs · all done'}>
+        data-tip={(anyPaused ? `Paused: ${pausedLabel}
+` : '') + (running ? `${running.message || running.filename || 'Working'} · ${Math.round(pct * 100)}%` : active.length ? `${active.length} queued` : failed ? 'Background jobs · a job failed' : 'Background jobs · all done')}>
         <svg className="jobs-ring" viewBox="0 0 40 40" aria-hidden>
           <circle cx="20" cy="20" r={R} className="jobs-ring-track" />
           {active.length > 0 && <circle cx="20" cy="20" r={R} className="jobs-ring-fill" strokeDasharray={C} strokeDashoffset={C * (1 - pct)} />}
@@ -57,6 +67,7 @@ export default function JobsPanel() {
           </g>
         </svg>
         {active.length > 0 && <span key={active.length} className="jobs-v-count">{active.length}</span>}
+        {anyPaused && <span className="jobs-v-paused" aria-label="Paused">❚❚</span>}
       </button>
       {open && (
         <div className="jobs-popover jobs-popover-side" role="dialog" aria-label="Background jobs">
@@ -64,6 +75,26 @@ export default function JobsPanel() {
             <span>Background jobs <span className="muted">(last hour)</span></span>
             {finished > 0 && <button className="link-btn" onClick={() => dismiss()}>Clear finished</button>}
           </div>
+          <div className="pause-row" role="group" aria-label="Pause models">
+            {(['llm', 'embed'] as const).map((k) => (
+              <button key={k} className={`pause-chip${paused[k] ? ' on' : ''}`} aria-pressed={paused[k]} onClick={() => togglePause(k)}
+                data-tip={paused[k] ? 'Resume: queued jobs carry on' : k === 'llm'
+                  ? 'Pause the language model: chat, vision and generation stop using it so it can be unloaded'
+                  : 'Pause the embedding model: uploads wait before embedding; search uses keywords only'}>
+                <span className="pause-icon" aria-hidden>{paused[k] ? '▶' : '❚❚'}</span>
+                {paused[k] ? 'Resume' : 'Pause'} {k === 'llm' ? 'LLM' : 'embeddings'}
+              </button>
+            ))}
+          </div>
+          {(paused.llm || paused.embed) && (
+            <div className="pause-note small">
+              {(['llm', 'embed'] as const).filter((k) => paused[k]).map((k) => (
+                <div key={k}>
+                  {k === 'llm' ? 'LLM' : 'Embeddings'}: {finishing(k) ? 'finishing the request in progress…' : <b>idle, safe to unload</b>}
+                </div>
+              ))}
+            </div>
+          )}
           {list.length === 0 && <div className="muted small">Nothing yet.</div>}
           {list.map((j) => {
             const live = ACTIVE.includes(j.status);

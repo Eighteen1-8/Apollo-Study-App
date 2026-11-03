@@ -230,3 +230,37 @@ def vision_rerun(body: RerunBody):
         db.ex("UPDATE documents SET updated_at=? WHERE id=?", (time.time(), did))
         jobs.enqueue("vision", did)
     return {"units": len(rows), "queued": len(docs)}
+
+
+# ---------------------------------------------------------------- database backups (db.backup)
+
+@router.get("/backups")
+def backups():
+    return {"backups": db.list_backups(), "pending_restore": db.pending_restore(), "folder": str(config.backups_dir()),
+            "keep": db.KEEP}
+
+
+@router.post("/backups")
+def backup_now():
+    return db.backup("manual")
+
+
+class RestoreBody(BaseModel):
+    name: str | None = None  # None cancels a pending restore
+
+
+@router.post("/backups/restore")
+def restore_backup(body: RestoreBody):
+    """Takes effect at the next start: the current data is backed up, then replaced by this copy."""
+    try:
+        db.request_restore(body.name)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return {"pending_restore": db.pending_restore()}
+
+
+@router.delete("/backups/{name}")
+def delete_backup(name: str):
+    if not db.delete_backup(name):
+        raise HTTPException(404, "No such backup")
+    return {"ok": True}

@@ -1,5 +1,10 @@
-"""HTTP API used by the Electron renderer (localhost only)."""
+"""HTTP API used by the Electron renderer (localhost only).
+
+Every request needs the backend's per-launch token (`require_token`): the X-Apollo-Token header, or for plain GETs a
+`token` query parameter (images and pdf.js can't send headers). Binding to 127.0.0.1 alone isn't enough: any web page
+open in a browser on this computer can send requests to localhost, and several endpoints read or write local files."""
 import hashlib
+import hmac
 import io
 import json
 import re
@@ -8,9 +13,9 @@ import time
 from pathlib import Path
 
 import pymupdf
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from PIL import Image
 from pydantic import BaseModel
 
@@ -18,6 +23,7 @@ from . import config, db, jobs, llm, pipeline, render, search, viewer
 from .annotations import router as annotations_router
 from .chat_api import router as chat_router
 from .maintenance import router as maintenance_router
+from .packages import router as packages_router
 from .projection import router as projection_router
 from .study_api import router as study_router
 from .parsers import IMAGE_EXTS, SUPPORTED, TEXT_EXTS
@@ -28,10 +34,32 @@ app.include_router(annotations_router)
 app.include_router(study_router)
 app.include_router(projection_router)
 app.include_router(maintenance_router)
-app.add_middleware(CORSMiddleware, allow_origin_regex=r"^(http://(localhost|127\.0\.0\.1)(:\d+)?|file://.*|null)$",
+app.include_router(packages_router)
+
+
+OPEN_PATHS = ("/health",)
+
+
+@app.middleware("http")
+async def require_token(request: Request, call_next):
+    """Reject requests without the token. CORS preflights pass (the browser sends no custom headers on them) and
+    the real request is then checked. Compared in constant time."""
+    token = config.API_TOKEN
+    if token and request.method != "OPTIONS" and request.url.path not in OPEN_PATHS:
+        given = request.headers.get("x-apollo-token") or (request.query_params.get("token") if request.method == "GET" else None)
+        if not given or not hmac.compare_digest(given.encode(), token.encode()):
+            return JSONResponse({"detail": "Missing or wrong backend token"}, status_code=401)
+    return await call_next(request)
+
+
+# Origins: the Vite dev server, and "null", which is what Chromium sends for the packaged app's file:// page. A
+# sandboxed iframe on any website also sends "null", so the token above, not CORS, is what keeps other pages out.
+# Added after the token check so it wraps it: a 401 still carries CORS headers and the UI can read the reason.
+app.add_middleware(CORSMiddleware, allow_origin_regex=r"^(http://(localhost|127\.0\.0\.1)(:\d+)?|null)$",
                    allow_methods=["*"], allow_headers=["*"])
 
 SECRET_KEYS = ("llm_api_key", "embed_api_key", "openrouter_api_key")
+PAUSE_KEYS = ("pause_llm", "pause_embed")  # changed only through /jobs/pause (a settings save must not undo them)
 
 
 def _404(row, what="Not found"):
@@ -44,7 +72,7 @@ def _404(row, what="Not found"):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "data_dir": str(config.DATA_DIR)}
+    return {"ok": True, "data_dir": str(config.DATA_DIR), "auth": bool(config.API_TOKEN)}
 
 
 @app.get("/settings")
@@ -57,7 +85,7 @@ def get_settings():
 
 @app.put("/settings")
 def put_settings(values: dict):
-    values = {k: v for k, v in values.items() if not (k in SECRET_KEYS and v == "••••••••")}
+    values = {k: v for k, v in values.items() if not (k in SECRET_KEYS and v == "••••••••") and k not in PAUSE_KEYS}
     db.put_settings(values)
     return get_settings()
 
@@ -301,7 +329,9 @@ class MoveBody(BaseModel):
 @app.post("/documents/{did}/move")
 def move_document(did: int, body: MoveBody):
     """Move a file between topics and the reference library (same subject). Dedupe is scoped per topic / per reference
-    library, so every document whose exact-duplicate links change is re-ingested; finished vision notes are kept."""
+    library, so the exact-duplicate links of every affected document are recomputed from the stored units
+    (pipeline.relink): nothing is re-parsed, and only chunks whose text really changed are embedded again. A file still
+    being ingested is simply re-ingested in its new place."""
     d = _404(db.q1("SELECT * FROM documents WHERE id=?", (did,)))
     if body.topic_id is not None:
         t = _404(db.q1("SELECT * FROM topics WHERE id=?", (body.topic_id,)), "Topic not found")
@@ -324,10 +354,16 @@ def move_document(did: int, body: MoveBody):
     later = [r["document_id"] for r in db.q(
         f"""SELECT DISTINCT document_id FROM units WHERE document_id IN (SELECT id FROM documents WHERE {scope_sql} AND id>?)
             AND content_hash IN (SELECT content_hash FROM units WHERE document_id=?)""", (scope_arg, did, did))]
-    for doc_id in dict.fromkeys([did, *old_dependents, *later]):
+    affected = list(dict.fromkeys([did, *old_dependents, *later]))
+    ingesting = {r["document_id"] for r in db.q(
+        f"SELECT document_id FROM jobs WHERE type='ingest' AND status IN ('queued','running') "
+        f"AND document_id IN ({','.join('?' * len(affected))})", tuple(affected))}
+    for doc_id in ingesting:  # mid-ingest: its units aren't final yet, so it is ingested again in the new place
         jobs.cancel_for_document(doc_id)
         db.ex("UPDATE documents SET status='queued', updated_at=? WHERE id=?", (time.time(), doc_id))
         jobs.enqueue("ingest", doc_id, ref_id=pipeline.KEEP_VISION)
+    for doc_id in pipeline.relink([i for i in affected if i not in ingesting]):
+        jobs.enqueue("embed", doc_id)
     return db.q1("SELECT * FROM documents WHERE id=?", (did,))
 
 
@@ -526,6 +562,21 @@ def list_jobs(active: bool = False):
                     LEFT JOIN artifacts a ON j.type='generate' AND a.id=j.ref_id
                     LEFT JOIN attempts t ON j.type='mark' AND t.id=j.ref_id LEFT JOIN artifacts aa ON aa.id=t.artifact_id {where}
                     ORDER BY CASE j.status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END, j.id DESC LIMIT 100""", args)
+
+
+class PauseBody(BaseModel):
+    llm: bool | None = None
+    embed: bool | None = None
+
+
+@app.get("/jobs/pause")
+def get_pause():
+    return jobs.pause_state()
+
+
+@app.post("/jobs/pause")
+def set_pause(body: PauseBody):
+    return jobs.set_paused(body.llm, body.embed)
 
 
 @app.post("/jobs/{jid}/cancel")

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, ToolName } from './api';
+import { api, hasToken, ToolName } from './api';
 import { usePoll } from './hooks';
 import { OverlayProvider } from './components/overlay';
 import Minibar from './components/Minibar';
@@ -15,12 +15,13 @@ export type Route =
   | { name: 'home' }
   | { name: 'subject'; id: number; launch?: Launch }
   | { name: 'settings'; tab?: SettingsTab; subjectId?: number };
-export type SettingsTab = 'general' | 'maintenance';
+export type SettingsTab = 'general' | 'maintenance' | 'share';
 
 export default function App() {
   const [route, setRoute] = useState<Route>({ name: 'home' });
   const subjects = usePoll(api.subjects, 0);
   const [backendUp, setBackendUp] = useState<boolean | null>(null);
+  const [needsToken, setNeedsToken] = useState(false);
   /** Which parts run on OpenRouter (shown as a warning badge in the minibar; data leaves the computer). */
   const [online, setOnline] = useState<string[]>([]);
   const loadProvider = () => api.settings()
@@ -29,7 +30,8 @@ export default function App() {
 
   useEffect(() => {
     let alive = true;
-    const check = () => api.health().then(() => alive && setBackendUp(true)).catch(() => alive && setBackendUp(false));
+    const check = () => api.health().then((h) => { if (alive) { setBackendUp(true); setNeedsToken(h.auth && !hasToken); } })
+      .catch(() => alive && setBackendUp(false));
     check();
     const t = setInterval(check, 5000);
     return () => { alive = false; clearInterval(t); };
@@ -70,6 +72,10 @@ export default function App() {
         {window.studyApp?.titlebar && <Titlebar route={route} subjects={list} />}
         <Minibar subjects={list} route={route} go={go} onChange={refresh} online={online} />
         <main className={`main${route.name === 'subject' ? ' main-subject' : ''}`}>
+          {needsToken && (
+            <div className="banner banner-bad">This backend needs its token: open the page with <code>?backend=PORT&amp;token=…</code> (the
+              token is in the <code>backend-token</code> file in the data folder).</div>
+          )}
           {backendUp === false && (
             <div className="banner banner-bad">Local backend is not responding. Restart the app if this persists.</div>
           )}
@@ -85,7 +91,7 @@ export default function App() {
  * the min/max/close buttons over its right end. */
 function Titlebar({ route, subjects }: { route: Route; subjects: { id: number; name: string }[] }) {
   const where = route.name === 'subject' ? subjects.find((s) => s.id === route.id)?.name
-    : route.name === 'settings' ? (route.tab === 'maintenance' ? 'Maintenance' : 'Settings') : 'All subjects';
+    : route.name === 'settings' ? ({ maintenance: 'Maintenance', share: 'Share', general: 'Settings' }[route.tab ?? 'general']) : 'All subjects';
   return (
     <header className="titlebar">
       <span className="tb-app">Apollo Study</span>

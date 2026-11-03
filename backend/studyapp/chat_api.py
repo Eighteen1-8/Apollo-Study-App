@@ -463,7 +463,7 @@ def _respond(cid: int, user_msg: dict, reasoning: str, announce_user: bool):
                 extra += "\n\n" + QUOTE_RULES
             if not full:
                 extra += "\n\n[Relevant excerpts from the study material]\n" + context.retrieved_material(chat["subject_id"], chat["topic_id"], query)
-            tb = context.textbook_passages(chat["subject_id"], query, k=4)
+            tb = "" if context.uses_reference_material(chat["subject_id"], chat["topic_id"]) else                 context.textbook_passages(chat["subject_id"], query, k=4)
             if tb:
                 extra += "\n\n[Relevant textbook passages, authoritative reference]\n" + tb
             if extra:
@@ -673,6 +673,9 @@ def submit_tool(mid: int, body: Submit):
             raise HTTPException(400, "Choose a difficulty")
         if not args.get("practice_exam_path") or not Path(args["practice_exam_path"]).is_file():
             raise HTTPException(400, "Upload a practice exam")
+    problem = context.material_problem(chat["subject_id"], body.topic_id)
+    if problem:  # say so on the form instead of failing in the queue
+        raise HTTPException(400, problem)
     scope = context.scope_label(chat["subject_id"], body.topic_id)
     title = f"{generate.TYPE_TITLES[kind]}: {scope.split(' › ')[-1]}" + (f" ({args['difficulty'].title()})" if kind == "exam" else "")
     now = time.time()

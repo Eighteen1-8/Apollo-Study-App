@@ -60,7 +60,9 @@ def _focus_text(params):
     return f"\nFocus on: {f}. Still stay within the material." if f else ""
 
 
-def _textbook(subject_id, query):
+def _textbook(subject_id, query, topic_id=None):
+    if context.uses_reference_material(subject_id, topic_id):
+        return ""  # the textbooks are the material already
     tb = context.textbook_passages(subject_id, query, k=4)
     return f"\n\nRelevant textbook passages (authoritative reference, use to check facts and add depth):\n{tb}" if tb else ""
 
@@ -133,7 +135,7 @@ def _per_section(art, params, groups, total, prog, make_task, schema, pick):
     for k, (gi, sec, n) in enumerate(calls):
         prog(0.05 + 0.9 * k / len(calls), f"Section {k + 1}/{len(calls)}: {sec['title']}")
         system = _system(art["scope"], groups[gi])
-        task = make_task(sec, n, [pick(i) for i in items][-60:]) + _focus_text(params) + _textbook(art["subject_id"], sec["title"])
+        task = make_task(sec, n, [pick(i) for i in items][-60:]) + _focus_text(params) + _textbook(art["subject_id"], sec["title"], art["topic_id"])
         out = llm.chat_json([{"role": "system", "content": system}, {"role": "user", "content": task}], schema,
                             max_tokens=16000, reasoning=db.setting("generation_reasoning"), temperature=0.4)
         new = out.cards if isinstance(out, Cards) else out.questions
@@ -212,7 +214,7 @@ def gen_notes(art, params, groups, prog):
                      "into figures (or draw/plot them when that explains better), add worked examples where the material "
                      "has calculations, flag exam tips and common mistakes, and finish with a callout key 'Summary' of the "
                      "key points. Do not include content from other documents."
-                     + _focus_text(params) + _textbook(art["subject_id"], sec["title"]), art, prog, label)
+                     + _focus_text(params) + _textbook(art["subject_id"], sec["title"], art["topic_id"]), art, prog, label)
         out.append({"title": sec["title"], "topic": sec["topic"], **page})
     return {"sections": out}
 
@@ -351,7 +353,7 @@ def gen_exam(art, params, groups, prog):
                     "MCQ/true-false: give options and answer_index. Written questions: give a model answer and a marking rubric "
                     "whose point marks add up to the question's marks. Case studies: put the scenario in 'stimulus' and the parts "
                     f"in 'subquestions' (multiple-choice sub-questions get their own options and answer_index).\n\nPractice exam text, for STYLE reference only:\n{text[:12000]}"
-                    + _textbook(art["subject_id"], f"{part.name} {part.question_type} {art['scope']}"))
+                    + _textbook(art["subject_id"], f"{part.name} {part.question_type} {art['scope']}", art["topic_id"]))
             out = llm.chat_json([{"role": "system", "content": _system(art["scope"], groups[gi])}, {"role": "user", "content": task}],
                                 ExamQs, max_tokens=20000, reasoning=db.setting("generation_reasoning"), temperature=0.5)
             for q in out.questions[:n]:
@@ -380,7 +382,7 @@ def run_artifact(artifact_id: int, job):
     prog(0.01, "Collecting material")
     groups = context.material_groups(art["subject_id"], art["topic_id"], _gen_budget())
     if not groups:
-        raise ValueError("No ingested material in this scope yet. Upload files to the topic first.")
+        raise ValueError(context.material_problem(art["subject_id"], art["topic_id"]) or "No readable material in this scope.")
     content = GENERATORS[art["type"]](art, params, groups, prog)
     db.ex("UPDATE artifacts SET status='ready', content=?, progress=1, message='Ready', updated_at=? WHERE id=?",
           (json.dumps(content), time.time(), artifact_id))

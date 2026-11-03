@@ -5,11 +5,16 @@ const path = require('path');
 const { spawn } = require('child_process');
 const net = require('net');
 const http = require('http');
+const crypto = require('crypto');
 
 const isDev = process.argv.includes('--dev');
 const DEV_PORT = 47615; // fixed in dev so the UI can also be opened in a plain browser
 let backend = null;
 let backendPort = null;
+// Every request to the backend carries this per-launch secret (backend api.require_token), so web pages open in a
+// browser on this computer can't use the local API. It reaches the backend in its environment and the renderer
+// through the preload (ipc 'backend:token'), never on a command line.
+let backendToken = crypto.randomBytes(32).toString('base64url');
 
 // Window chrome: the native title bar is replaced by the app's own strip; the min/max/close buttons are drawn by
 // Windows on top of it in the theme's colours. The renderer reports the colours on every theme change and the last
@@ -32,9 +37,9 @@ function freePort() {
   });
 }
 
-function healthy(port) {
+function healthy(port, pathname = '/health', headers = {}) {
   return new Promise((resolve) => {
-    const req = http.get({ host: '127.0.0.1', port, path: '/health', timeout: 1000 }, (res) => {
+    const req = http.get({ host: '127.0.0.1', port, path: pathname, headers, timeout: 1000 }, (res) => {
       res.resume();
       resolve(res.statusCode === 200);
     });
@@ -43,9 +48,9 @@ function healthy(port) {
   });
 }
 
-async function waitHealthy(port, ms = 30000) {
+async function waitHealthy(port, ms = 30000, gone = () => false) {
   const end = Date.now() + ms;
-  while (Date.now() < end) {
+  while (Date.now() < end && !gone()) {
     if (await healthy(port)) return true;
     await new Promise((r) => setTimeout(r, 300));
   }
@@ -67,18 +72,29 @@ function backendCommand(port, dataDir) {
 }
 
 async function startBackend() {
-  if (isDev && (await healthy(DEV_PORT))) return DEV_PORT; // reuse a backend started by hand
-  const port = isDev ? DEV_PORT : await freePort();
   const dataDir = path.join(app.getPath('userData'), 'data');
+  if (isDev && (await healthy(DEV_PORT))) {
+    // Reuse a backend started by hand on this data: it wrote its token beside the database.
+    try { backendToken = fs.readFileSync(path.join(dataDir, 'backend-token'), 'utf8').trim(); } catch { /* none */ }
+    if (await healthy(DEV_PORT, '/jobs/pause', { 'X-Apollo-Token': backendToken })) return DEV_PORT;
+    throw new Error(`Another backend is already running on port ${DEV_PORT} with a different data folder or token. Close it and start again.`);
+  }
+  const port = isDev ? DEV_PORT : await freePort();
   const { cmd, args, cwd } = backendCommand(port, dataDir);
   // The portable exe unpacks to a temp folder; a .env next to the exe itself can seed endpoints and keys.
   const exeDir = process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath);
-  const env = app.isPackaged ? { ...process.env, STUDY_ENV_FILE: path.join(exeDir, '.env') } : process.env;
+  const env = { ...process.env, APOLLO_TOKEN: backendToken, ...(app.isPackaged ? { STUDY_ENV_FILE: path.join(exeDir, '.env') } : {}) };
   backend = spawn(cmd, args, { cwd, windowsHide: true, env });
+  let startupError = '';
+  let exited = false;
   backend.stdout.on('data', (d) => process.stdout.write(`[backend] ${d}`));
-  backend.stderr.on('data', (d) => process.stderr.write(`[backend] ${d}`));
-  backend.on('exit', (code) => { console.log(`[backend] exited ${code}`); backend = null; });
-  if (!(await waitHealthy(port))) throw new Error('Backend did not start');
+  backend.stderr.on('data', (d) => {
+    process.stderr.write(`[backend] ${d}`);
+    const m = /STUDYAPP_ERROR (.*)/.exec(String(d));
+    if (m) startupError = m[1].trim();
+  });
+  backend.on('exit', (code) => { console.log(`[backend] exited ${code}`); backend = null; exited = true; });
+  if (!(await waitHealthy(port, 30000, () => exited))) throw new Error(startupError || 'Backend did not start');
   return port;
 }
 
@@ -150,7 +166,7 @@ async function createWindow() {
 ipcMain.handle('dialog:openFiles', async (_e, opts = {}) => {
   const res = await dialog.showOpenDialog({
     properties: opts.multi === false ? ['openFile'] : ['openFile', 'multiSelections'],
-    filters: [
+    filters: opts.filters || [
       { name: 'Study material', extensions: ['pdf', 'pptx', 'docx', 'txt', 'md', 'csv', 'html', 'htm', 'png', 'jpg', 'jpeg', 'webp', 'bmp'] },
       { name: 'All files', extensions: ['*'] },
     ],
@@ -167,6 +183,8 @@ ipcMain.handle('dialog:saveFile', async (_e, opts = {}) => {
 });
 
 ipcMain.handle('shell:showItem', (_e, p) => { shell.showItemInFolder(p); });
+
+ipcMain.on('backend:token', (e) => { e.returnValue = backendToken; });
 
 ipcMain.on('window:chrome', (e, c) => {
   const win = BrowserWindow.fromWebContents(e.sender);

@@ -136,3 +136,53 @@ body.col-resizing iframe, body.col-resizing canvas { pointer-events: none; }
 
 /* focused sidebar rows glide their highlight */
 .side .topic-row, .folder-row, .side .file { transition: background 0.2s, box-shadow 0.25s var(--ease-out), color 0.15s, transform 0.3s var(--ease-spring); }
+
+/* ================================================================ paused models (jobs panel) */
+.jobs-v-paused { position: absolute; bottom: -5px; right: -5px; min-width: 17px; height: 17px; padding: 0 3px; border-radius: 9px; background: var(--warn);
+  color: var(--bg); font-size: 8px; font-weight: 800; line-height: 17px; text-align: center; letter-spacing: -1px; box-shadow: 0 0 0 2px var(--bg-elev);
+  animation: badge-pop 0.4s var(--ease-spring); }
+.jobs-v-btn.paused .hg-body, .jobs-v-btn.paused .hg-sand-top, .jobs-v-btn.paused .hg-sand-bottom, .jobs-v-btn.paused .hg-grains,
+.jobs-v-btn.paused .hg-grains circle { animation-play-state: paused; }
+.jobs-v-btn.paused.busy { color: var(--warn); }
+.pause-row { display: flex; gap: 6px; margin: 8px 0 6px; }
+.pause-chip { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 6px 8px; border-radius: 9px; cursor: pointer;
+  border: 1px solid var(--border-strong); background: var(--bg-elev); color: var(--text-dim); font: inherit; font-size: 12px; font-weight: 600;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.25s var(--ease-spring); }
+.pause-chip:hover { color: var(--text); border-color: var(--text-faint); }
+.pause-chip:active { transform: scale(0.95); }
+.pause-chip.on { background: var(--warn-soft); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+.pause-icon { font-size: 9px; letter-spacing: -1px; }
+.pause-note { padding: 6px 9px; margin-bottom: 8px; border-radius: 8px; background: var(--warn-soft); color: var(--text-dim); line-height: 1.5; }
+.pause-note b { color: var(--ok); font-weight: 600; }
+
+/* ================================================================ Settings → Share (study packs) */
+.share { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 18px; align-items: start; animation: rise 0.4s var(--ease-out); }
+.share-card { display: flex; flex-direction: column; gap: 12px; }
+.share-card h2 { margin: 0; }
+.share-help { margin-top: -6px; line-height: 1.55; }
+.share-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.share-row > label { font-size: 13px; color: var(--text-dim); min-width: 56px; }
+.share-row select, .share-row input, .share-path { background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+  padding: 6px 9px; font: inherit; font-size: 13px; min-width: 0; }
+.share-path { flex: 1; }
+.share-chosen { font-size: 12.5px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.share-files { max-height: 300px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; padding: 6px 10px; background: var(--bg); }
+.share-group + .share-group { margin-top: 8px; }
+.share-group-head { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); font-weight: 600; padding: 4px 0; }
+.share-file { display: flex; align-items: center; gap: 8px; padding: 3px 2px; font-size: 13px; cursor: pointer; border-radius: 6px; }
+.share-file:hover { background: var(--bg-hover); }
+.share-file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.share-actions { display: flex; align-items: center; gap: 12px; }
+.share-preview { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 10px; background: var(--bg); border: 1px solid var(--border);
+  animation: rise 0.3s var(--ease-out); }
+.share-stat { font-size: 13px; line-height: 1.5; }
+.share-msg { margin: 0; line-height: 1.5; overflow-wrap: anywhere; animation: rise 0.3s var(--ease-out); }
+.share-annotated { margin: 6px 0; padding-left: 18px; font-size: 13px; line-height: 1.6; max-height: 200px; overflow: auto; }
+
+/* ================================================================ Maintenance → Backups */
+.maint-backups { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elev); overflow: hidden; max-height: 320px; overflow-y: auto; }
+.maint-backup + .maint-backup { border-top: 1px solid var(--border); }
+.maint-backup:hover { background: var(--bg-hover); }
+.maint-backup.pending { background: var(--warn-soft); }
+.maint-backup-kind { font-size: 12px; color: var(--text-faint); min-width: 150px; }
+.maint-restore { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }

@@ -27,14 +27,52 @@ def _unit_block(u: dict) -> str:
     return "\n".join(parts)
 
 
+REFERENCE_LABEL = "Reference library"
+
+
 def topic_documents(subject_id: int, topic_id: int | None) -> list[dict]:
+    """The scope's study material. A whole-subject scope whose topics hold no material (no topics yet, or only
+    textbooks uploaded) falls back to the reference library, so a subject can be studied from its textbooks alone."""
     ids = [t["id"] for t in topics_in_scope(subject_id, topic_id)]
-    if not ids:
-        return []
-    marks = ",".join("?" * len(ids))
-    return db.q(f"""SELECT d.*, t.name AS topic_name FROM documents d JOIN topics t ON t.id=d.topic_id
-                    WHERE d.topic_id IN ({marks}) AND d.kind='topic' AND d.unit_count > 0
-                    ORDER BY t.name COLLATE NOCASE, d.id""", tuple(ids))
+    docs = []
+    if ids:
+        marks = ",".join("?" * len(ids))
+        docs = db.q(f"""SELECT d.*, t.name AS topic_name FROM documents d JOIN topics t ON t.id=d.topic_id
+                        WHERE d.topic_id IN ({marks}) AND d.kind='topic' AND d.unit_count > 0
+                        ORDER BY t.name COLLATE NOCASE, d.id""", tuple(ids))
+    if not docs and topic_id is None:
+        docs = db.q("""SELECT d.*, ? AS topic_name FROM documents d WHERE d.subject_id=? AND d.kind='reference'
+                       AND d.unit_count > 0 ORDER BY d.id""", (REFERENCE_LABEL, subject_id))
+    return docs
+
+
+def uses_reference_material(subject_id: int, topic_id: int | None) -> bool:
+    """True when the scope's material is the reference library itself (then textbook passages would repeat it)."""
+    docs = topic_documents(subject_id, topic_id)
+    return bool(docs) and docs[0]["kind"] == "reference"
+
+
+def material_problem(subject_id: int, topic_id: int | None) -> str | None:
+    """Why a scope has nothing to generate from, in words the student can act on; None when it has material."""
+    if any(d["token_count"] or d["vision_done"] for d in topic_documents(subject_id, topic_id)):
+        return None
+    topic = db.q1("SELECT name FROM topics WHERE id=?", (topic_id,)) if topic_id else None
+    where, args = ("topic_id=? AND kind='topic'", (topic_id,)) if topic_id else ("subject_id=?", (subject_id,))
+    docs = db.q(f"SELECT status, unit_count, token_count FROM documents WHERE {where}", args)
+    busy = sum(d["status"] not in ("ready", "failed", "cancelled") and not d["unit_count"] for d in docs)
+    failed = sum(d["status"] in ("failed", "cancelled") for d in docs)
+    name = f"The topic '{topic['name']}'" if topic else "This subject"
+    if busy:
+        return f"{name} has {busy} file(s) still being processed. Try again once they are ready (see background jobs)."
+    if failed and failed == len(docs):
+        return f"{name}'s files failed to ingest. Re-ingest them from the file's menu, then try again."
+    if docs:
+        return (f"{name}'s files have no readable text yet: their pages are images waiting for vision notes, or vision is "
+                "off for them. Run vision on them (file menu), then try again.")
+    if topic:
+        return (f"{name} has no files yet. Upload files to it, or choose All topics to use the whole subject "
+                "(including the reference library).")
+    return "This subject has no files yet. Upload files to a topic or the reference library first."
 
 
 def document_sections(doc: dict, budget: int) -> list[dict]:

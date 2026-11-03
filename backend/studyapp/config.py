@@ -11,6 +11,19 @@ load_dotenv(os.environ.get("STUDY_ENV_FILE") or Path(__file__).resolve().parents
 DATA_DIR = Path(os.environ.get("STUDY_DATA_DIR") or Path(os.environ.get("APPDATA", Path.home())) / "StudyApp")
 
 
+# The per-launch secret every request must carry (see api.require_token). None (tests) leaves the API open.
+API_TOKEN: str | None = None
+
+
+def token_file() -> Path:
+    """Where the running backend writes its token, so Electron (dev) can reuse a backend it didn't start."""
+    return DATA_DIR / "backend-token"
+
+
+def backups_dir() -> Path:
+    return DATA_DIR / "backups"
+
+
 def set_data_dir(path: str | None):
     global DATA_DIR
     if path:
@@ -76,6 +89,9 @@ DEFAULT_SETTINGS = {
     "chat_assistive": 1,  # show methods / worked steps
     "chat_concise": 1,  # 0 detailed, 1 balanced, 2 concise
     "chat_interactive": 0,  # guide with smaller questions instead of giving answers
+    # Paused models (the jobs panel): background jobs wait, chat reports it. Lets Qwen be unloaded to free VRAM.
+    "pause_llm": False,
+    "pause_embed": False,
     # Files sent straight to the chat (not ingested) must be at most this many words
     "chat_file_word_limit": 12000,
 }

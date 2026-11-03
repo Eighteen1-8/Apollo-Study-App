@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api, Settings } from '../api';
 import type { SettingsTab } from '../App';
 import MaintenanceView from './MaintenanceView';
+import ShareView from './ShareView';
 import { useOverlay } from '../components/overlay';
 import { Button } from '../components/ui';
 import { ACCENTS, THEMES, useAppearance } from '../theme';
@@ -265,6 +266,16 @@ export default function SettingsView({ onSaved, tab: initialTab, subjectId }: { 
     <div className="seg settings-tabs">
       <button className={tab === 'general' ? 'active' : ''} onClick={() => setTab('general')}>General</button>
       <button className={tab === 'maintenance' ? 'active' : ''} onClick={() => setTab('maintenance')}>Maintenance</button>
+      <button className={tab === 'share' ? 'active' : ''} onClick={() => setTab('share')}>Share</button>
+    </div>
+  );
+  if (tab === 'share') return (
+    <div className="page settings">
+      <header className="page-head">
+        <div><h1>Settings</h1><p className="muted">Share embedded files with classmates, or import theirs.</p></div>
+        <div className="head-actions">{tabs}</div>
+      </header>
+      <ShareView subjectId={subjectId} onChanged={onSaved} />
     </div>
   );
   if (tab === 'maintenance') return (

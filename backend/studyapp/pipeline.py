@@ -16,7 +16,8 @@ class Cancelled(Exception):
     pass
 
 
-KEEP_VISION = 1  # ingest job ref_id: re-ingest after a move, keeping this file's finished vision notes
+KEEP_VISION = 1  # ingest job ref_id: re-ingest, keeping this file's finished vision notes
+ANNOTATIONS_HEADER = "[Student's annotations]"  # starts the block annotation_blocks() appends to a unit's text
 
 
 def doc_path(doc):
@@ -85,7 +86,7 @@ def annotation_blocks(doc_id, positions: dict[int, list[float]] | None = None) -
         else:
             continue
         lines.setdefault(unit, []).append(line)
-    return {u: "[Student's annotations]\n" + "\n".join(ls) for u, ls in lines.items()}
+    return {u: f"{ANNOTATIONS_HEADER}\n" + "\n".join(ls) for u, ls in lines.items()}
 
 
 def _set_doc(doc_id, **kw):
@@ -167,6 +168,18 @@ def ingest(doc_id, job, keep_vision=False):
     return pending
 
 
+def vision_chunks(units, target: int) -> list[dict]:
+    """Chunks of units' vision notes (units: idx, label, vision_notes), long notes split like long text."""
+    out = []
+    for u in units:
+        pieces = _split_long(u["vision_notes"].strip(), target)
+        for k, piece in enumerate(pieces, 1):
+            text = f"[{u['label']} · visual content]\n{piece}"
+            out.append({"unit_start": u["idx"], "unit_end": u["idx"], "text": text, "token_count": approx_tokens(text),
+                        "label": f"{u['label']} (visual{f', part {k}' if len(pieces) > 1 else ''})"})
+    return out
+
+
 def index_vision(doc_id, idxs: list[int] | None = None, embed=True):
     """(Re)build a document's vision chunks (all units, or units `idxs`): finished, relevant notes, split like long
     text. Dedupe is unaffected (it hashes the file's own content). Notes the audit's rules flagged as malformed are
@@ -185,25 +198,107 @@ def index_vision(doc_id, idxs: list[int] | None = None, embed=True):
                      AND NOT EXISTS (SELECT 1 FROM vision_flags f WHERE f.unit_id=u.id AND f.source='rule'
                                      AND f.kind='malformed' AND f.dismissed=0) ORDER BY u.idx""", (doc_id, *unit_args))
     target = int(db.setting("chunk_target_tokens"))
+    reuse = _vectors(db.q(f"SELECT text, embedding, embed_model FROM chunks WHERE {where}", args))
     with db.tx() as c:
         c.execute(f"DELETE FROM chunks_fts WHERE rowid IN (SELECT id FROM chunks WHERE {where})", args)
         c.execute(f"DELETE FROM chunks WHERE {where}", args)
-        for u in units:
-            pieces = _split_long(u["vision_notes"].strip(), target)
-            for k, piece in enumerate(pieces, 1):
-                label = f"{u['label']} (visual{f', part {k}' if len(pieces) > 1 else ''})"
-                text = f"[{u['label']} · visual content]\n{piece}"
-                cid = c.execute("INSERT INTO chunks(document_id, unit_start, unit_end, label, text, token_count, source) "
-                                "VALUES (?,?,?,?,?,?,'vision')", (doc_id, u["idx"], u["idx"], label, text, approx_tokens(text))).lastrowid
-                c.execute("INSERT INTO chunks_fts(rowid, text) VALUES (?, ?)", (cid, text))
+        for ch in vision_chunks(units, target):
+            vec, vmodel = reuse.get(ch["text"], (None, None))
+            cid = c.execute("INSERT INTO chunks(document_id, unit_start, unit_end, label, text, token_count, source, embedding, "
+                            "embed_model) VALUES (?,?,?,?,?,?,'vision',?,?)",
+                            (doc_id, ch["unit_start"], ch["unit_end"], ch["label"], ch["text"], ch["token_count"], vec, vmodel)).lastrowid
+            c.execute("INSERT INTO chunks_fts(rowid, text) VALUES (?, ?)", (cid, ch["text"]))
         # vision_indexed only after a whole-document pass: a single page doesn't mean the others have chunks
         c.execute(f"UPDATE documents SET {'vision_indexed=1, ' if idxs is None else ''}"
                   "chunk_count=(SELECT COUNT(*) FROM chunks WHERE document_id=?) WHERE id=?", (doc_id, doc_id))
     if embed and units:
+        if llm.paused("embed"):  # vision carries on; the vectors come once embedding is resumed
+            from . import jobs
+            jobs.enqueue("embed", doc_id)
+            return
         try:
             embed_chunks(doc_id)
         except Exception:  # e.g. the embedding server is offline; the notes themselves are saved
             pass
+
+
+def _vectors(rows) -> dict[str, tuple]:
+    """Stored vectors by exact chunk text: a rebuilt chunk with the same text keeps its vector (no re-embedding)."""
+    return {r["text"]: (r["embedding"], r["embed_model"]) for r in rows if r["embedding"] is not None}
+
+
+def _same_text_vector(c, text) -> tuple:
+    """A vector from any chunk with exactly this text and the current model (e.g. the unit this one duplicated)."""
+    row = c.execute("SELECT embedding, embed_model FROM chunks WHERE text=? AND embedding IS NOT NULL AND embed_model=? LIMIT 1",
+                    (text, llm.embed_model())).fetchone()
+    return (row[0], row[1]) if row else (None, None)
+
+
+def relink(doc_ids: list[int], rebuild=()) -> list[int]:
+    """Recompute exact-duplicate links after files changed scope (a move, an import) from the stored units: nothing is
+    parsed. Runs in document order, the order ingest dedupes in. A document whose links changed gets its chunks rebuilt;
+    every chunk whose text is unchanged keeps its vector, and a unit that stops being a duplicate takes the vision notes
+    of the identical unit it duplicated (`rebuild`: documents whose chunks are rebuilt either way). Returns the documents
+    left with chunks that still need embedding."""
+    from . import jobs
+    dedupe_on = db.setting("dedupe_units")
+    target, max_slides = int(db.setting("chunk_target_tokens")), int(db.setting("chunk_max_slides"))
+    need_embed = []
+    for did in sorted(set(doc_ids)):
+        doc = db.q1("SELECT * FROM documents WHERE id=?", (did,))
+        if doc is None:
+            continue
+        scope = [i for i in scope_doc_ids(doc) if i != did]
+        earlier = f"document_id IN ({','.join('?' * len(scope))}) OR " if scope else ""
+        changed = False
+        with db.tx() as c:
+            for u in db.q("SELECT * FROM units WHERE document_id=? ORDER BY idx", (did,)):
+                original = None
+                if dedupe_on and ANNOTATIONS_HEADER not in u["text"] and (u["text"].strip() or json.loads(u["images"])):
+                    # earlier documents in the scope, or earlier units of this one (what ingest would have seen)
+                    row = c.execute(f"SELECT id FROM units WHERE content_hash=? AND duplicate_of IS NULL AND "
+                                    f"({earlier}(document_id=? AND idx<?)) ORDER BY document_id, idx LIMIT 1",
+                                    (u["content_hash"], *scope, did, u["idx"])).fetchone()
+                    original = row[0] if row else None
+                if original == u["duplicate_of"]:
+                    continue
+                changed = True
+                if original is None:  # its own content now: identical content means identical vision notes
+                    src = c.execute("SELECT vision_status, vision_notes, vision_relevant FROM units WHERE id=?",
+                                    (u["duplicate_of"],)).fetchone()
+                    if src and src[0] == "done":
+                        c.execute("UPDATE units SET needs_vision=1, vision_status='done', vision_notes=?, vision_relevant=?, "
+                                  "vision_audited=0 WHERE id=?", (src[1], src[2], u["id"]))
+                    elif _selected_for_vision({"images": json.loads(u["images"]), "reasons": json.loads(u["vision_reasons"])},
+                                              doc["vision_mode"], doc["ext"]):
+                        c.execute("UPDATE units SET needs_vision=1, vision_status='pending' WHERE id=?", (u["id"],))
+                c.execute("UPDATE units SET duplicate_of=? WHERE id=?", (original, u["id"]))
+        if not changed and did not in rebuild:
+            continue
+        kept = db.q("SELECT idx, kind, label, text FROM units WHERE document_id=? AND duplicate_of IS NULL ORDER BY idx", (did,))
+        reuse = _vectors(db.q("SELECT text, embedding, embed_model FROM chunks WHERE document_id=? AND source='text'", (did,)))
+        with db.tx() as c:
+            c.execute("DELETE FROM chunks_fts WHERE rowid IN (SELECT id FROM chunks WHERE document_id=? AND source='text')", (did,))
+            c.execute("DELETE FROM chunks WHERE document_id=? AND source='text'", (did,))
+            for ch in chunk_units(kept, target, max_slides):
+                vec, vmodel = reuse.get(ch["text"]) or _same_text_vector(c, ch["text"])
+                cid = c.execute("INSERT INTO chunks(document_id, unit_start, unit_end, label, text, token_count, embedding, "
+                                "embed_model) VALUES (?,?,?,?,?,?,?,?)", (did, ch["unit_start"], ch["unit_end"], ch["label"],
+                                                                         ch["text"], ch["token_count"], vec, vmodel)).lastrowid
+                c.execute("INSERT INTO chunks_fts(rowid, text) VALUES (?, ?)", (cid, ch["text"]))
+        index_vision(did, embed=False)
+        st = db.q1("""SELECT SUM(duplicate_of IS NOT NULL) dupes, SUM(CASE WHEN duplicate_of IS NULL THEN token_count END) tokens,
+                      SUM(needs_vision=1 AND duplicate_of IS NULL) vt, SUM(vision_status='done' AND needs_vision=1 AND duplicate_of IS NULL) vd
+                      FROM units WHERE document_id=?""", (did,))
+        _set_doc(did, duplicate_units=st["dupes"] or 0, token_count=st["tokens"] or 0,
+                 vision_total=st["vt"] or 0, vision_done=st["vd"] or 0)
+        vision_audit.rule_scan([did])
+        if (st["vt"] or 0) > (st["vd"] or 0):
+            jobs.enqueue("vision", did)
+        if db.q1("SELECT 1 FROM chunks WHERE document_id=? AND (embedding IS NULL OR embed_model IS NOT ?) LIMIT 1",
+                 (did, llm.embed_model())):
+            need_embed.append(did)
+    return need_embed
 
 
 def embed_chunks(doc_id, job=None, start=0.0) -> int:

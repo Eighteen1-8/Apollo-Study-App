@@ -2,6 +2,8 @@
 import argparse
 import ctypes
 import os
+import secrets
+import sys
 import threading
 import time
 import uvicorn
@@ -27,7 +29,16 @@ def main():
     ap.add_argument("--parent-pid", type=int)
     args = ap.parse_args()
     config.set_data_dir(args.data_dir)
-    db.init()
+    # Electron passes the token in the environment (not the command line, which other programs can read). Started by
+    # hand, the backend makes its own: open the UI with ?backend=PORT&token=<the backend-token file's contents>.
+    config.API_TOKEN = os.environ.pop("APOLLO_TOKEN", None) or secrets.token_urlsafe(32)
+    try:
+        db.init()
+    except db.StartupError as e:
+        print(f"STUDYAPP_ERROR {e}", file=sys.stderr, flush=True)
+        sys.exit(3)
+    config.token_file().write_text(config.API_TOKEN, encoding="utf-8")
+    db.start_backup_schedule()
     jobs.start_workers()
     if args.parent_pid and os.name == "nt":
         threading.Thread(target=_watch_parent, args=(args.parent_pid,), daemon=True).start()

@@ -2,7 +2,9 @@ declare global {
   interface Window {
     studyApp?: {
       backendUrl: string;
-      openFiles: (opts?: { multi?: boolean }) => Promise<string[]>;
+      /** The backend's per-launch secret; every request carries it (backend api.require_token). */
+      backendToken?: string;
+      openFiles: (opts?: { multi?: boolean; filters?: { name: string; extensions: string[] }[] }) => Promise<string[]>;
       pathForFile: (file: File) => string;
       saveFile: (opts?: { defaultName?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>;
       showItem: (path: string) => Promise<void>;
@@ -17,6 +19,14 @@ declare global {
 export const BASE = window.studyApp?.backendUrl
   ?? `http://127.0.0.1:${new URLSearchParams(location.search).get('backend') ?? '47615'}`;
 export const inElectron = !!window.studyApp;
+// A plain-browser preview passes the token too: ?backend=PORT&token=<contents of <data>/backend-token>.
+const TOKEN = window.studyApp?.backendToken ?? new URLSearchParams(location.search).get('token') ?? '';
+export const hasToken = !!TOKEN;
+const AUTH: Record<string, string> = TOKEN ? { 'X-Apollo-Token': TOKEN } : {};
+/** A backend URL the browser loads by itself (<img>, pdf.js), which can't send headers: the token goes in the query. */
+export function authUrl(url: string) {
+  return TOKEN ? `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(TOKEN)}` : url;
+}
 
 export type VisionMode = 'off' | 'auto' | 'all';
 
@@ -71,6 +81,25 @@ export interface VisionFlag {
   unit: number; label: string; notes: string; notes_length: number; vision_status: string;
   filename: string; subject_id: number; topic_id: number | null; topic: string | null;
 }
+/** Paused models: background jobs that need one wait; chat reports it. `running`: job types still mid-request. */
+export interface PauseState { llm: boolean; embed: boolean; running: string[] }
+
+/** Settings → Share: study packs (embedded files in one zip, see backend packages.py). */
+export interface PackScope { subject_id?: number; topic_id?: number; document_ids?: number[] }
+export interface ExportPreview {
+  label: string; subject: string; documents: number; skipped: string[]; size: number; embed_model: string;
+  annotated: { id: number; filename: string; marks: number }[];
+}
+export interface ImportPreview {
+  subject: string; scope: string | null; topics: string[]; documents: { filename: string; kind: string; notes: boolean }[];
+  notes_included: boolean; embed_model: string | null; current_model: string; same_model: boolean; created_at: number | null;
+}
+export interface ImportResult { subject_id: number; imported: number; skipped: { filename: string; reason: string }[]; reembedding: number; same_model: boolean }
+
+/** Whole-database copies in <data>/backups (backend db.backup); a restore takes effect at the next start. */
+export interface Backup { name: string; kind: 'daily' | 'before-update' | 'before-restore' | 'manual'; size: number; created_at: number }
+export interface Backups { backups: Backup[]; pending_restore: string | null; folder: string; keep: Record<string, number> }
+
 export interface Job {
   id: number; type: 'ingest' | 'vision' | 'embed' | 'audit' | 'generate' | 'mark'; document_id: number; filename: string | null; status: string;
   progress: number; message: string; error: string | null;
@@ -96,7 +125,7 @@ export type Reasoning = 'off' | 'low' | 'medium' | 'xhigh';
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(BASE + path, {
     method,
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+    headers: body !== undefined ? { ...AUTH, 'Content-Type': 'application/json' } : AUTH,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
@@ -108,7 +137,7 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
 }
 
 export const api = {
-  health: () => req<{ ok: boolean; data_dir: string }>('GET', '/health'),
+  health: () => req<{ ok: boolean; data_dir: string; auth: boolean }>('GET', '/health'),
   subjects: () => req<Subject[]>('GET', '/subjects'),
   createSubject: (name: string, color?: string) => req<Subject>('POST', '/subjects', { name, color }),
   renameSubject: (id: number, name: string) => req('PATCH', `/subjects/${id}`, { name }),
@@ -126,9 +155,9 @@ export const api = {
   /** Move a file to a topic, or to the subject's reference library (topic_id null). */
   moveDocument: (id: number, topic_id: number | null) => req<Doc>('POST', `/documents/${id}/move`, { topic_id }),
   documentLayout: (id: number) => req<DocLayout>('GET', `/documents/${id}/layout`),
-  fileUrl: (id: number) => `${BASE}/documents/${id}/file`,
-  exportUrl: (id: number) => `${BASE}/documents/${id}/export`,
-  thumbUrl: (id: number, page: number, w = 120) => `${BASE}/documents/${id}/thumb/${page}?w=${w}`,
+  fileUrl: (id: number) => authUrl(`${BASE}/documents/${id}/file`),
+  exportUrl: (id: number) => authUrl(`${BASE}/documents/${id}/export`),
+  thumbUrl: (id: number, page: number, w = 120) => authUrl(`${BASE}/documents/${id}/thumb/${page}?w=${w}`),
   outline: (id: number) => req<OutlineItem[]>('GET', `/documents/${id}/outline`),
   snapshot: (id: number, unit: number, rect: [number, number, number, number]) =>
     req<{ path: string; asset: string; name: string }>('POST', `/documents/${id}/snapshot`, { unit, rect }),
@@ -157,13 +186,31 @@ export const api = {
   jobs: (active = false) => req<Job[]>('GET', `/jobs${active ? '?active=true' : ''}`),
   cancelJob: (id: number) => req('POST', `/jobs/${id}/cancel`),
   dismissJob: (id?: number) => req('POST', `/jobs/dismiss${id ? `?job_id=${id}` : ''}`),
+  exportPreview: (s: PackScope) => req<ExportPreview>('POST', '/export/preview', s),
+  exportPack: (s: PackScope & { include_notes: boolean; path: string }) =>
+    req<{ path: string; documents: number; bytes: number }>('POST', '/export', s),
+  /** Browser fallback (no save dialog): the pack comes back as a download. */
+  exportPackBlob: async (s: PackScope & { include_notes: boolean }) => {
+    const res = await fetch(BASE + '/export', { method: 'POST', headers: { ...AUTH, 'Content-Type': 'application/json' }, body: JSON.stringify(s) });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? String(res.status));
+    const name = /filename="?([^"]+)"?/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? 'study-pack.apollo.zip';
+    return { blob: await res.blob(), name };
+  },
+  importPreview: (path: string) => req<ImportPreview>('POST', '/import/preview', { path }),
+  importPack: (b: { path: string; subject_id?: number | null; subject_name?: string }) => req<ImportResult>('POST', '/import', b),
+  backups: () => req<Backups>('GET', '/backups'),
+  backupNow: () => req<Backup>('POST', '/backups'),
+  restoreBackup: (name: string | null) => req<{ pending_restore: string | null }>('POST', '/backups/restore', { name }),
+  deleteBackup: (name: string) => req('DELETE', `/backups/${encodeURIComponent(name)}`),
+  pauseState: () => req<PauseState>('GET', '/jobs/pause'),
+  setPause: (p: { llm?: boolean; embed?: boolean }) => req<PauseState>('POST', '/jobs/pause', p),
   search: (query: string, topic_id: number, include_reference: boolean) =>
     req<{ results: SearchResult[]; warning: string | null }>('POST', '/search', { query, topic_id, include_reference }),
   settings: () => req<Settings>('GET', '/settings'),
   saveSettings: (s: Settings) => req<Settings>('PUT', '/settings', s),
   testSettings: () => req<Record<string, { ok: boolean; online?: boolean; model?: string; error?: string; dim?: number; ms?: number; max_model_len?: number; models?: string[] }>>('POST', '/settings/test'),
-  previewUrl: (docId: number, idx: number) => `${BASE}/documents/${docId}/units/${idx}/preview`,
-  assetUrl: (rel: string) => `${BASE}/assets/${rel}`,
+  previewUrl: (docId: number, idx: number) => authUrl(`${BASE}/documents/${docId}/units/${idx}/preview`),
+  assetUrl: (rel: string) => authUrl(`${BASE}/assets/${rel}`),
   embeddingMap: (subjectId?: number) => req<EmbeddingMap>('GET', `/embeddings/map${subjectId != null ? `?subject_id=${subjectId}` : ''}`),
   folders: (subjectId: number) => req<FolderMap>('GET', `/subjects/${subjectId}/folders`),
   saveFolders: (subjectId: number, f: FolderMap) => req<FolderMap>('PUT', `/subjects/${subjectId}/folders`, f),
@@ -221,7 +268,7 @@ export const api = {
 /** Server-sent chat events: user | status | reasoning | delta | assistant | tool | error | end. */
 async function streamChat(path: string, body: unknown, onEvent: (e: ChatEvent) => void) {
   const res = await fetch(BASE + path, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    method: 'POST', headers: { ...AUTH, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
   if (!res.ok || !res.body) {
     let msg = `HTTP ${res.status}`;

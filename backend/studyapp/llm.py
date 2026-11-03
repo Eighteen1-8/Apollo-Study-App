@@ -3,7 +3,11 @@ user opts in, OpenRouter. `llm_cfg()` / `embed_cfg()` resolve which one is in us
 provider-specific settings themselves.
 
 All chat requests go through one semaphore sized by the active provider's concurrency (default 1), so the server
-never sees more simultaneous requests than it can handle."""
+never sees more simultaneous requests than it can handle.
+
+The language model and the embedding model can each be paused (settings `pause_llm` / `pause_embed`, e.g. to unload
+Qwen and free VRAM). A background job reaching a paused model waits in place (its worker installs a wait hook);
+anything interactive, like chat, gets `Paused` straight away."""
 import base64
 import contextlib
 import json
@@ -19,6 +23,33 @@ from . import db
 
 _llm_gate = threading.Semaphore(1)
 _gate_size = 1
+_local = threading.local()
+
+
+class Paused(RuntimeError):
+    pass
+
+
+PAUSE_NAMES = {"llm": "The language model", "embed": "The embedding model"}
+
+
+def paused(kind: str) -> bool:
+    """kind: "llm" | "embed"."""
+    return bool(db.setting(f"pause_{kind}"))
+
+
+def set_wait_hook(fn):
+    """Installed by a job worker for its thread: fn(kind) blocks while that model is paused."""
+    _local.wait_hook = fn
+
+
+def _wait_if_paused(kind: str):
+    if not paused(kind):
+        return
+    hook = getattr(_local, "wait_hook", None)
+    if hook is None:
+        raise Paused(f"{PAUSE_NAMES[kind]} is paused. Resume it from the background jobs panel to continue.")
+    hook(kind)
 
 
 def llm_cfg() -> dict:
@@ -126,6 +157,7 @@ def chat(messages, max_tokens=4096, reasoning="off", temperature=None) -> dict:
     body = {"model": cfg["model"], "messages": messages, "max_tokens": max_tokens, **reasoning_fields(reasoning, cfg["online"])}
     if temperature is not None:
         body["temperature"] = temperature
+    _wait_if_paused("llm")
     with _gate():
         data = _post(cfg, "/chat/completions", body)
     msg = data["choices"][0]["message"]
@@ -147,6 +179,7 @@ def chat_stream(messages, tools=None, max_tokens=8000, reasoning="off"):
         body["tools"] = tools
     calls: dict[int, dict] = {}
     finish = None
+    _wait_if_paused("llm")
     with _gate(), _stream(cfg, body) as r:
         for line in r.iter_lines():
             if not line.startswith("data: ") or line == "data: [DONE]":
@@ -217,6 +250,7 @@ QUERY_INSTRUCT = "Instruct:Given a student's question, retrieve study material p
 
 
 def embed(texts: list[str], query=False) -> np.ndarray:
+    _wait_if_paused("embed")
     cfg = embed_cfg()
     if query and "qwen3" in cfg["model"].lower():  # the instruction prefix is specific to Qwen3 embedding models
         texts = [QUERY_INSTRUCT + t for t in texts]
@@ -235,7 +269,7 @@ def test_connections() -> dict:
         want = cfg["model"]
         m = next((m for m in models if m["id"] == want), None)
         if m and cfg["online"]:  # listing models needs no key, so make one tiny call to catch a bad key here
-            chat([{"role": "user", "content": "Reply with OK."}], max_tokens=16)
+            _post(cfg, "/chat/completions", {"model": want, "messages": [{"role": "user", "content": "Reply with OK."}], "max_tokens": 16})
         out["llm"] = {"ok": m is not None, "online": cfg["online"], "model": want, "models": [m["id"] for m in models][:200],
                       "max_model_len": (m or {}).get("max_model_len") or (m or {}).get("context_length"),
                       "ms": round((time.perf_counter() - t) * 1000), "error": None if m else f"model '{want}' not found on server"}
@@ -243,6 +277,8 @@ def test_connections() -> dict:
         out["llm"] = {"ok": False, "error": str(e)}
     t = time.perf_counter()
     try:
+        if paused("embed"):
+            raise Paused("paused (not tested)")
         v = embed(["connection test"])
         out["embed"] = {"ok": True, "online": embed_cfg()["online"], "model": embed_model(), "dim": int(v.shape[1]), "ms": round((time.perf_counter() - t) * 1000)}
     except Exception as e:

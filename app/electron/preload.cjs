@@ -5,6 +5,7 @@ const port = arg ? arg.split('=')[1] : '47615';
 
 contextBridge.exposeInMainWorld('studyApp', {
   backendUrl: `http://127.0.0.1:${port}`,
+  backendToken: ipcRenderer.sendSync('backend:token'),
   openFiles: (opts) => ipcRenderer.invoke('dialog:openFiles', opts),
   pathForFile: (file) => webUtils.getPathForFile(file),
   saveFile: (opts) => ipcRenderer.invoke('dialog:saveFile', opts),

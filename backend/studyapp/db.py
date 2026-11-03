@@ -83,7 +83,11 @@ CREATE TABLE IF NOT EXISTS attempts (
 );
 """
 
-MIGRATIONS = [
+# Schema changes, in two parts. LEGACY_MIGRATIONS ran before the database recorded its version: each is tried once
+# more when an old database first opens, and only "this column already exists" is tolerated. Every later change is a
+# numbered entry in MIGRATIONS: (version, statements), run once in a transaction and recorded as PRAGMA user_version.
+# Append new ones there (never edit an applied one); a database is backed up before any of them run.
+LEGACY_MIGRATIONS = [
     "ALTER TABLE jobs ADD COLUMN ref_id INTEGER",  # artifact id (generate) or attempt id (mark)
     # Subject icon in the mini sidebar: initials text, or an emoji, or an uploaded image (asset path)
     "ALTER TABLE subjects ADD COLUMN icon_text TEXT",
@@ -137,9 +141,19 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS vision_flags_doc ON vision_flags(document_id, unit_id)",
 ]
+LEGACY_VERSION = 1  # user_version once the legacy list has been applied
+
+MIGRATIONS: list[tuple[int, list[str]]] = [
+    # (2, ["ALTER TABLE documents ADD COLUMN example TEXT"]),
+]
+SCHEMA_VERSION = max([LEGACY_VERSION, *(v for v, _ in MIGRATIONS)])
 
 _lock = threading.RLock()
 _conn: sqlite3.Connection | None = None
+
+
+class StartupError(RuntimeError):
+    """The database can't be opened safely; the message is shown to the student."""
 
 
 def init():
@@ -147,20 +161,158 @@ def init():
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     config.files_dir().mkdir(exist_ok=True)
     config.assets_dir().mkdir(exist_ok=True)
+    _apply_pending_restore()
+    fresh = not config.db_path().exists()
     _conn = sqlite3.connect(config.db_path(), check_same_thread=False, isolation_level=None)
     _conn.row_factory = sqlite3.Row
     _conn.execute("PRAGMA journal_mode=WAL")
-    _conn.executescript(SCHEMA)
-    for m in MIGRATIONS:
-        try:
-            _conn.execute(m)
-        except sqlite3.OperationalError:
-            pass  # already applied
+    _migrate(fresh)
     with tx() as c:
         for k, v in config.DEFAULT_SETTINGS.items():
             c.execute("INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)", (k, json.dumps(v)))
         # Anything interrupted by a crash/quit goes back to the queue.
         c.execute("UPDATE jobs SET status='queued', updated_at=? WHERE status='running'", (time.time(),))
+
+
+def _migrate(fresh: bool):
+    version = _conn.execute("PRAGMA user_version").fetchone()[0]
+    if version > SCHEMA_VERSION:
+        raise StartupError("This data was last opened by a newer version of Apollo Study. Update the app to open it "
+                           "(or restore an older backup from the backups folder).")
+    if version < SCHEMA_VERSION and not fresh:
+        backup("before-update")
+    _conn.executescript(SCHEMA)
+    if version < LEGACY_VERSION:
+        for m in LEGACY_MIGRATIONS:
+            try:
+                _conn.execute(m)
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" not in str(e):  # anything else is a real failure, not "already applied"
+                    raise StartupError(f"Updating the database failed ({e}). Your data was backed up first.") from e
+        _conn.execute(f"PRAGMA user_version = {LEGACY_VERSION}")
+    for v, statements in MIGRATIONS:
+        if version < v:
+            try:
+                with tx() as c:
+                    for s in statements:
+                        c.execute(s)
+                    c.execute(f"PRAGMA user_version = {v}")
+            except sqlite3.Error as e:
+                raise StartupError(f"Updating the database to version {v} failed ({e}). Your data was backed up first.") from e
+
+
+# ---------------------------------------------------------------- backups
+# Whole-database copies made with SQLite's online backup API (consistent, WAL included, safe while the app runs) in
+# <data>/backups. Kinds: daily (made in the background once a day), before-update (before migrations), before-restore,
+# manual. The newest KEEP[kind] of each kind are kept. Restoring happens at the next start, before the database opens.
+
+KEEP = {"daily": 3, "before-update": 2, "before-restore": 2, "manual": 5}
+DAY = 24 * 3600
+_backup_lock = threading.Lock()
+
+
+def backup(kind: str = "manual") -> dict:
+    if kind not in KEEP:
+        raise ValueError(f"unknown backup kind {kind}")
+    d = config.backups_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    with _backup_lock:
+        now = time.time()
+        dest = d / f"study-{time.strftime('%Y%m%d-%H%M%S', time.localtime(now))}_{int(now * 1000) % 1000:03d}-{kind}.db"
+        while dest.exists():  # two in the same millisecond
+            dest = dest.with_name(dest.stem.replace(f"-{kind}", f"x-{kind}") + ".db")
+        src = sqlite3.connect(config.db_path())  # its own connection: readers don't block the app (WAL)
+        try:
+            out = sqlite3.connect(dest)
+            try:
+                src.backup(out, pages=4096)
+            finally:
+                out.close()
+        finally:
+            src.close()
+    _prune(kind)
+    return _info(dest)
+
+
+def _info(p) -> dict:
+    parts = p.stem.split("-", 3)  # study-YYYYmmdd-HHMMSS_mmm-kind
+    st = p.stat()
+    return {"name": p.name, "kind": parts[3] if len(parts) == 4 else "manual", "size": st.st_size, "created_at": st.st_mtime}
+
+
+def list_backups() -> list[dict]:
+    d = config.backups_dir()
+    if not d.exists():
+        return []
+    return sorted((_info(p) for p in d.glob("study-*.db") if p.is_file()), key=lambda b: (b["created_at"], b["name"]), reverse=True)
+
+
+def _prune(kind: str):
+    for b in [b for b in list_backups() if b["kind"] == kind][KEEP[kind]:]:
+        (config.backups_dir() / b["name"]).unlink(missing_ok=True)
+
+
+def backup_path(name: str):
+    """A backup by file name, or None (names are checked against the folder, never joined blindly)."""
+    return next((config.backups_dir() / b["name"] for b in list_backups() if b["name"] == name), None)
+
+
+def delete_backup(name: str) -> bool:
+    p = backup_path(name)
+    if p:
+        p.unlink(missing_ok=True)
+    return p is not None
+
+
+def _restore_marker():
+    return config.DATA_DIR / "restore-pending"
+
+
+def request_restore(name: str | None):
+    """Restore `name` at the next start (None cancels a pending restore)."""
+    if name is None:
+        _restore_marker().unlink(missing_ok=True)
+        return
+    if backup_path(name) is None:
+        raise ValueError("No such backup")
+    _restore_marker().write_text(name, encoding="utf-8")
+
+
+def pending_restore() -> str | None:
+    m = _restore_marker()
+    return m.read_text(encoding="utf-8").strip() if m.exists() else None
+
+
+def _apply_pending_restore():
+    """Swap in the chosen backup before the database opens; the current data is backed up first."""
+    name = pending_restore()
+    if not name:
+        return
+    _restore_marker().unlink(missing_ok=True)
+    chosen = backup_path(name)
+    if chosen is None:
+        return
+    import shutil
+    if config.db_path().exists():
+        backup("before-restore")
+    for suffix in ("-wal", "-shm"):
+        config.db_path().with_name(config.db_path().name + suffix).unlink(missing_ok=True)
+    shutil.copyfile(chosen, config.db_path())
+
+
+def start_backup_schedule():
+    """A daily backup in the background (first one shortly after start if none was made in the last day)."""
+    def loop():
+        time.sleep(60)
+        while True:
+            try:
+                last = max((b["created_at"] for b in list_backups() if b["kind"] == "daily"), default=0)
+                if time.time() - last > DAY:
+                    backup("daily")
+            except Exception as e:  # a full disk must not take the app down; the next pass tries again
+                print(f"[backup] failed: {e}", flush=True)
+            time.sleep(3600)
+    threading.Thread(target=loop, daemon=True, name="backups").start()
 
 
 @contextmanager

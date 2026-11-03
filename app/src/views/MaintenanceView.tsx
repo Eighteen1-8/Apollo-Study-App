@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { api, FlagKind, inElectron, MaintDoc, MaintOverview, MaintScope, VisionFlag } from '../api';
+import { useEffect, useState } from 'react';
+import { api, Backups as BackupList, FlagKind, inElectron, MaintDoc, MaintOverview, MaintScope, VisionFlag } from '../api';
 import { fmtBytes, usePoll } from '../hooks';
 import { MenuItem, useOverlay } from '../components/overlay';
 import { Button, Empty, Pill } from '../components/ui';
@@ -84,6 +84,8 @@ export default function MaintenanceView({ subjectId }: { subjectId?: number }) {
         reload();
         await ov.confirm({ title: 'Cleaned up', body: `${fmtBytes(r.freed)} freed.`, confirmText: 'OK' });
       }} />
+
+      <Backups />
 
       <Index o={o} onReembed={async () => { const r = await api.reembed({}); reload();
         await ov.confirm({ title: 'Re-embedding', confirmText: 'OK', body: r.queued ? `${plural(r.queued, 'file')} queued (see the jobs list).` : 'Everything is up to date.' }); }} />
@@ -170,6 +172,73 @@ function Storage({ o, compact, setCompact, onClean }: { o: MaintOverview; compac
         <label className="field-bool maint-check"><input type="checkbox" checked={compact} onChange={(e) => setCompact(e.target.checked)} /> Also compact the database</label>
         <Button small onClick={onClean} disabled={!leftN && !compact}>Clean up</Button>
       </div>
+    </section>
+  );
+}
+
+const KIND_LABEL: Record<string, string> = { daily: 'Daily', 'before-update': 'Before an app update', 'before-restore': 'Before a restore', manual: 'Made by you' };
+
+/** Database backups: made daily and before every database update; restoring swaps the database at the next start. */
+function Backups() {
+  const ov = useOverlay();
+  const [b, setB] = useState<BackupList | null>(null);
+  const [busy, setBusy] = useState(false);
+  const load = () => api.backups().then(setB).catch(() => {});
+  useEffect(() => { load(); }, []);
+  if (!b) return null;
+  const pending = b.backups.find((x) => x.name === b.pending_restore);
+  const when = (t: number) => new Date(t * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+
+  const now = async () => {
+    setBusy(true);
+    try { await api.backupNow(); await load(); } catch (e) { await ov.confirm({ title: 'Backup failed', body: String(e), confirmText: 'OK' }); }
+    finally { setBusy(false); }
+  };
+  const restore = async (name: string, t: number) => {
+    if (!(await ov.confirm({
+      title: 'Restore this backup?', confirmText: 'Restore at next start', danger: true,
+      body: <>Your library goes back to how it was on <b>{when(t)}</b>: anything added or changed since is undone. Your current data is
+        backed up first, so this can be reversed. It happens the next time Apollo starts; restart the app to finish.</>,
+    }))) return;
+    await api.restoreBackup(name);
+    load();
+  };
+  const remove = async (name: string) => {
+    if (await ov.confirm({ title: 'Delete this backup?', confirmText: 'Delete', danger: true })) { await api.deleteBackup(name); load(); }
+  };
+  return (
+    <section className="section">
+      <h2>Backups</h2>
+      <p className="muted maint-help">The database (subjects, files' text and vision notes, generated content, progress) is copied once a day
+        and before every app update changes it. The original files aren't copied; they're kept in the data folder. Older copies are deleted
+        automatically ({b.keep.daily} daily, {b.keep['before-update']} before updates, {b.keep.manual} of your own).</p>
+      {pending && (
+        <div className="banner banner-warn maint-restore">
+          <span>Restoring the backup from <b>{when(pending.created_at)}</b> the next time Apollo starts. Restart the app to finish.</span>
+          <Button small onClick={async () => { await api.restoreBackup(null); load(); }}>Cancel restore</Button>
+        </div>
+      )}
+      <div className="maint-line">
+        <span>{b.backups.length ? <>{plural(b.backups.length, 'backup')}, {fmtBytes(b.backups.reduce((n, x) => n + x.size, 0))}</> : 'No backups yet: the first daily one is made a minute after the app starts.'}</span>
+        <span className="grow" />
+        <Button small disabled={!inElectron} onClick={() => window.studyApp!.showItem(b.folder)}>Open backups folder</Button>
+        <Button small kind="primary" disabled={busy} onClick={now}>{busy ? 'Backing up…' : 'Back up now'}</Button>
+      </div>
+      {b.backups.length > 0 && (
+        <div className="maint-backups">
+          {b.backups.map((x) => (
+            <div key={x.name} className={`maint-row maint-backup${x.name === b.pending_restore ? ' pending' : ''}`}>
+              <span className="maint-name">{when(x.created_at)}</span>
+              <span className="maint-backup-kind">{KIND_LABEL[x.kind] ?? x.kind}</span>
+              <span className="maint-size">{fmtBytes(x.size)}</span>
+              <span className="maint-actions">
+                <Button small disabled={x.name === b.pending_restore} onClick={() => restore(x.name, x.created_at)}>Restore…</Button>
+                <button className="x-btn" title="Delete this backup" onClick={() => remove(x.name)}>×</button>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }

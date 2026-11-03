@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as pdfjs from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-import { api, Annotation, AnnotationData, AnnotationKind, BASE, DocDetail, DocLayout, DocxBlock, OutlineItem, Quote, SlideItem, TextAnchor } from '../api';
+import { api, Annotation, AnnotationData, AnnotationKind, authUrl, BASE, DocDetail, DocLayout, DocxBlock, OutlineItem, Quote, SlideItem, TextAnchor } from '../api';
 import Markdown from '../components/Markdown';
 import { MenuItem, useOverlay } from '../components/overlay';
 import { Empty, MathText } from '../components/ui';
@@ -515,7 +515,7 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
             onPointerDown={startSnap}>
             {error && <Empty title="Couldn't open this file">{error}</Empty>}
             {doc && layout && (
-              layout.kind === 'pdf' ? <PdfView url={BASE + layout.url} zoom={zoom} onReady={ready} slides={layout.source === 'pptx'} />
+              layout.kind === 'pdf' ? <PdfView url={authUrl(BASE + layout.url)} zoom={zoom} onReady={ready} slides={layout.source === 'pptx'} />
                 : layout.kind === 'slides' ? <SlidesView layout={layout} onReady={ready} />
                 : layout.kind === 'docx' ? <DocxView blocks={layout.blocks} onReady={ready} />
                 : layout.kind === 'image' ? <div className="src-image"><div className="src-page" data-unit={1}><img src={api.fileUrl(id)} alt={doc.filename} /><UnitOverlay unit={1} /></div></div>
