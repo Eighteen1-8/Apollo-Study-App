@@ -3,6 +3,7 @@
 PDFs are rendered client-side by pdf.js straight from the stored file. Slides and Word documents have no native
 renderer here, so they are described as positioned/ordered blocks of real text plus pictures; the UI lays them out as
 HTML so the text stays selectable. Pictures are written once to assets/<doc id>/view/ (browser-safe formats only)."""
+import logging
 import io
 from pathlib import Path
 
@@ -14,6 +15,8 @@ from pptx.oxml.ns import qn
 
 from . import config
 from .parsers import _local, docx_blocks, docx_groups, sha, xml_text
+
+log = logging.getLogger(__name__)
 
 EMU_PT = 12700
 WEB_IMAGE = {"png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"}
@@ -38,6 +41,7 @@ def _picture(did: int, blob: bytes, ext: str) -> str | None:
         im.save(out_dir / f"{h}.png", "PNG")
         return f"{did}/view/{h}.png"
     except Exception:
+        log.info("viewer: an image in document %s couldn't be converted", did, exc_info=True)
         return None
 
 

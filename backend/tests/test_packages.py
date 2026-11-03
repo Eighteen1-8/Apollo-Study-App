@@ -166,3 +166,12 @@ def test_rejects_damaged_or_foreign_zips(tmp_path, library):
         z.writestr("manifest.json", json.dumps({"format": "apollo-study-pack", "version": 1, "subject": {"name": "x"},
                                                 "documents": [{"key": "../../x", "sha256": "0" * 64, "ext": ".pdf", "kind": "topic"}]}))
     assert client.post("/import", json={"path": str(evil)}).status_code == 400
+
+
+def test_notes_html_is_scrubbed_of_anything_that_runs():
+    from studyapp import notehtml
+    html, is_html = notehtml.clean('<h2>T</h2><svg class="diagram" onload="x()"><foreignObject><div>x</div></foreignObject>'
+                                   '<a xlink:href="javascript:y()">a</a></svg><p onclick="z()">ok $a<b$</p><script>bad()</script>')
+    assert is_html and "$a<b$" in html
+    for bad in ("onload", "onclick", "foreignObject", "javascript:", "<script", "bad()"):
+        assert bad not in html

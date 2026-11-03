@@ -4,9 +4,12 @@ safe to store: fences and page-level tags removed, unbalanced tags repaired, str
 
 Maths ($...$), inline SVG, plot blocks and [[...]] tags are protected while the HTML is repaired, because an HTML
 parser would mangle them (`$a<b$` looks like a tag; SVG attribute case matters)."""
+import logging
 import re
 
 from lxml import etree, html as lxml_html
+
+log = logging.getLogger(__name__)
 
 DESIGN = """FORMAT: reply with ONE HTML fragment only. No <html>, <head>, <body>, <style> or <script>; no CSS; no Markdown
 (#, **, ```); no code fences. Start directly with <h2>.
@@ -54,6 +57,20 @@ def _markdownish(s: str) -> str:
     return s
 
 
+_ACTIVE_TAGS = r"script|foreignObject|iframe|object|embed|form|base|meta|link"
+_ACTIVE = re.compile(rf"<({_ACTIVE_TAGS})\b[^>]*>[\s\S]*?</\1\s*>|</?({_ACTIVE_TAGS})\b[^>]*>", re.I)
+_EVENT = re.compile(r"""\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)""", re.I)
+_JS_URL = re.compile(r"""(href|src|xlink:href)\s*=\s*(["']?)\s*(javascript|vbscript|data:text)""", re.I)
+
+
+def scrub(s: str) -> str:
+    """Remove anything that could run: script-like elements, on* handlers and javascript: URLs. The UI sanitises too
+    (Markdown.tsx); this keeps stored notes clean for anything else that reads them (exports, study packs)."""
+    s = _ACTIVE.sub("", s)
+    s = _EVENT.sub("", s)
+    return _JS_URL.sub(r"\1=\2#blocked:", s)
+
+
 def clean(raw: str) -> tuple[str, bool]:
     """(content, is_html). Falls back to Markdown when the reply has no HTML structure at all."""
     s = re.sub(r"<think>.*?</think>", "", raw, flags=re.S).strip()
@@ -62,7 +79,7 @@ def clean(raw: str) -> tuple[str, bool]:
         s = m.group(1).strip()
     s = re.sub(r"<!DOCTYPE[^>]*>|</?(html|body)[^>]*>|<head[\s\S]*?</head>|<style[\s\S]*?</style>|<script[\s\S]*?</script>", "", s, flags=re.I)
     if not re.search(r"<(h[1-4]|p|div|ul|ol|table|details)\b", s, re.I):
-        return s, False
+        return scrub(s), False
     held: list[str] = []
 
     def hold(m):
@@ -72,6 +89,6 @@ def clean(raw: str) -> tuple[str, bool]:
     try:
         parts = lxml_html.fragments_fromstring(body)
         body = "".join(p if isinstance(p, str) else etree.tostring(p, method="html", encoding="unicode") for p in parts)
-    except Exception:
-        pass  # unparseable: keep as written (the UI sanitises it anyway)
-    return re.sub(r"@@K(\d+)@@", lambda m: held[int(m.group(1))], body), True
+    except Exception:  # unparseable: keep as written (scrubbed below, and the UI sanitises it)
+        log.info("notes HTML couldn't be repaired; kept as written", exc_info=True)
+    return scrub(re.sub(r"@@K(\d+)@@", lambda m: held[int(m.group(1))], body)), True

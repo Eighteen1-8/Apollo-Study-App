@@ -3,6 +3,7 @@
 Every request needs the backend's per-launch token (`require_token`): the X-Apollo-Token header, or for plain GETs a
 `token` query parameter (images and pdf.js can't send headers). Binding to 127.0.0.1 alone isn't enough: any web page
 open in a browser on this computer can send requests to localhost, and several endpoints read or write local files."""
+import logging
 import hashlib
 import hmac
 import io
@@ -10,7 +11,6 @@ import json
 import re
 import shutil
 import time
-from pathlib import Path
 
 import pymupdf
 from fastapi import FastAPI, HTTPException, Request
@@ -19,14 +19,17 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from PIL import Image
 from pydantic import BaseModel
 
-from . import config, db, jobs, llm, pipeline, render, search, viewer
+from . import config, db, grants, jobs, llm, pipeline, render, search, viewer
 from .annotations import router as annotations_router
 from .chat_api import router as chat_router
 from .maintenance import router as maintenance_router
 from .packages import router as packages_router
+from .events import router as events_router
 from .projection import router as projection_router
 from .study_api import router as study_router
 from .parsers import IMAGE_EXTS, SUPPORTED, TEXT_EXTS
+
+log = logging.getLogger(__name__)
 
 app = FastAPI(title="StudyApp backend")
 app.include_router(chat_router)
@@ -35,6 +38,7 @@ app.include_router(study_router)
 app.include_router(projection_router)
 app.include_router(maintenance_router)
 app.include_router(packages_router)
+app.include_router(events_router)
 
 
 OPEN_PATHS = ("/health",)
@@ -49,7 +53,11 @@ async def require_token(request: Request, call_next):
         given = request.headers.get("x-apollo-token") or (request.query_params.get("token") if request.method == "GET" else None)
         if not given or not hmac.compare_digest(given.encode(), token.encode()):
             return JSONResponse({"detail": "Missing or wrong backend token"}, status_code=401)
-    return await call_next(request)
+    ctx = grants.load_header(request.headers.get("x-apollo-grants"))  # the files the student picked (grants.py)
+    try:
+        return await call_next(request)
+    finally:
+        grants.reset(ctx)
 
 
 # Origins: the Vite dev server, and "null", which is what Chromium sends for the packaged app's file:// page. A
@@ -58,7 +66,7 @@ async def require_token(request: Request, call_next):
 app.add_middleware(CORSMiddleware, allow_origin_regex=r"^(http://(localhost|127\.0\.0\.1)(:\d+)?|null)$",
                    allow_methods=["*"], allow_headers=["*"])
 
-SECRET_KEYS = ("llm_api_key", "embed_api_key", "openrouter_api_key")
+SECRET_KEYS = config.SECRET_KEYS
 PAUSE_KEYS = ("pause_llm", "pause_embed")  # changed only through /jobs/pause (a settings save must not undo them)
 
 
@@ -69,6 +77,33 @@ def _404(row, what="Not found"):
 
 
 # ---------------------------------------------------------------- health & settings
+
+@app.exception_handler(Exception)
+async def unhandled(request: Request, exc: Exception):
+    """Anything an endpoint didn't expect: logged with its traceback, and a short message for the UI."""
+    log.error("%s %s failed", request.method, request.url.path, exc_info=exc)
+    return JSONResponse({"detail": f"Something went wrong ({type(exc).__name__}: {str(exc)[:200]}). Details are in the log."},
+                        status_code=500)
+
+
+class ClientLog(BaseModel):
+    level: str = "error"
+    where: str = ""
+    message: str
+    stack: str = ""
+
+
+_ui_log = logging.getLogger("studyapp.ui")
+
+
+@app.post("/client-log")
+def client_log(body: ClientLog):
+    """Errors from the renderer (error boundaries, failed background saves, uncaught exceptions)."""
+    level = logging.ERROR if body.level == "error" else logging.WARNING
+    stack = "\n" + body.stack[:4000] if body.stack else ""
+    _ui_log.log(level, "%s: %s%s", body.where[:120], body.message[:2000], stack)
+    return {"ok": True}
+
 
 @app.get("/health")
 def health():
@@ -172,7 +207,7 @@ def update_subject(sid: int, body: NameBody):
 @app.delete("/subjects/{sid}")
 def delete_subject(sid: int):
     for d in db.q("SELECT id FROM documents WHERE subject_id=?", (sid,)):
-        delete_document(d["id"])
+        _delete_document(d["id"], relink=False)  # everything goes: nothing left to relink
     db.ex("DELETE FROM subjects WHERE id=?", (sid,))
     return {"ok": True}
 
@@ -206,7 +241,8 @@ def update_topic(tid: int, body: NameBody):
 
 @app.delete("/topics/{tid}")
 def delete_topic(tid: int):
-    for d in db.q("SELECT id FROM documents WHERE topic_id=?", (tid,)):
+    # newest first, so files that duplicated an older one in the topic are gone before it is (nothing to relink)
+    for d in db.q("SELECT id FROM documents WHERE topic_id=? ORDER BY id DESC", (tid,)):
         delete_document(d["id"])
     db.ex("DELETE FROM topics WHERE id=?", (tid,))
     return {"ok": True}
@@ -239,7 +275,7 @@ def upload_documents(body: UploadBody):
 
     results = []
     for p in body.paths:
-        path = Path(p)
+        path = grants.require(p)
         ext = path.suffix.lower()
         if not path.is_file():
             results.append({"filename": path.name, "status": "error", "message": "File not found"})
@@ -303,14 +339,32 @@ def get_document(did: int):
 
 @app.delete("/documents/{did}")
 def delete_document(did: int):
+    return _delete_document(did)
+
+
+def _delete_document(did: int, relink=True):
+    """Pages other files duplicated from this one become theirs: they take its vision notes first, then their
+    duplicate links and chunks are recomputed (pipeline.relink), so only genuinely new chunks are embedded."""
     d = db.q1("SELECT * FROM documents WHERE id=?", (did,))
     if d is None:
         return {"ok": True}
     jobs.cancel_for_document(did)
+    dependents = []
+    if relink:
+        dependents = [r["document_id"] for r in db.q(
+            "SELECT DISTINCT u.document_id FROM units u JOIN units o ON o.id=u.duplicate_of WHERE o.document_id=? AND u.document_id<>?",
+            (did, did))]
+        db.ex("""UPDATE units SET needs_vision=1, vision_status='done', vision_audited=0,
+                   vision_notes=(SELECT o.vision_notes FROM units o WHERE o.id=units.duplicate_of),
+                   vision_relevant=(SELECT o.vision_relevant FROM units o WHERE o.id=units.duplicate_of)
+                 WHERE duplicate_of IN (SELECT id FROM units WHERE document_id=? AND vision_status='done') AND document_id<>?""",
+              (did, did))
     pipeline.clear_document(did)
     db.ex("DELETE FROM documents WHERE id=?", (did,))
     if not db.q1("SELECT id FROM documents WHERE sha256=?", (d["sha256"],)):
         (config.files_dir() / f"{d['sha256']}{d['ext']}").unlink(missing_ok=True)
+    for doc_id in pipeline.relink(dependents):
+        jobs.enqueue("embed", doc_id)
     return {"ok": True}
 
 
@@ -579,6 +633,13 @@ def set_pause(body: PauseBody):
     return jobs.set_paused(body.llm, body.embed)
 
 
+@app.post("/jobs/{jid}/prioritize")
+def prioritize_job(jid: int):
+    if not jobs.prioritize(jid):
+        raise HTTPException(400, "Only a waiting job can be moved to the front")
+    return {"ok": True}
+
+
 @app.post("/jobs/{jid}/cancel")
 def cancel_job(jid: int):
     jobs.cancel(jid)
@@ -606,5 +667,6 @@ def do_search(body: SearchBody):
     ids = search.scope_documents(body.topic_id, body.subject_id, body.include_reference)
     try:
         return {"results": search.search(body.query, ids, body.k), "warning": None}
-    except Exception as e:  # e.g. embedding server offline: fall back to keyword-only
+    except Exception as e:  # e.g. embedding server offline
+        log.warning("search failed", exc_info=True)
         return {"results": [], "warning": f"Search failed: {e}"}

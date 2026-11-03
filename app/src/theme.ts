@@ -1,5 +1,5 @@
 /* Appearance: colour theme, accent and motion. Stored per machine in localStorage and applied as attributes on
-   <html> (styles-v4.css defines the themes), so it is in place before the first render. */
+   <html> (styles/4-themes.css defines the themes), so it is in place before the first render. */
 import { useEffect, useState } from 'react';
 
 export type ThemeId = 'midnight' | 'aurora' | 'nebula' | 'graphite' | 'daylight';

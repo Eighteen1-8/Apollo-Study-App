@@ -1,5 +1,6 @@
 """Ingest pipeline: parse -> exact dedupe -> select vision units -> chunk -> embed; then (separate lane) vision notes,
 which get chunks of their own (source='vision') so pages that are only images (scans, diagrams) can be found."""
+import logging
 import json
 import re
 import shutil
@@ -11,9 +12,15 @@ from . import config, db, dedupe, llm, render, vision_audit
 from .chunker import _split_long, chunk_units
 from .parsers import PARSER_VERSION, approx_tokens, parse, render_for_vision, render_pdf_page
 
+log = logging.getLogger(__name__)
+
 
 class Cancelled(Exception):
     pass
+
+
+class Yield(Exception):
+    """A long job steps aside for others in its lane; it goes back in the queue and resumes where it stopped."""
 
 
 KEEP_VISION = 1  # ingest job ref_id: re-ingest, keeping this file's finished vision notes
@@ -95,8 +102,16 @@ def _set_doc(doc_id, **kw):
 
 
 def ingest(doc_id, job, keep_vision=False):
-    """Returns the number of units still waiting for vision."""
+    """Returns the number of units still waiting for vision. A document that was already parsed and chunked when the
+    app stopped (status 'embedding', same parser) only finishes its embeddings: nothing is parsed again."""
     doc = db.q1("SELECT * FROM documents WHERE id=?", (doc_id,))
+    if (doc["status"] == "embedding" and doc["parser_version"] == PARSER_VERSION
+            and db.q1("SELECT 1 FROM chunks WHERE document_id=? LIMIT 1", (doc_id,))):
+        job.update(0.1, "Resuming: embedding")
+        embed_chunks(doc_id, job, start=0.1)
+        pending = max(0, (doc["vision_total"] or 0) - (doc["vision_done"] or 0))
+        _set_doc(doc_id, status="vision" if pending else "ready", annotations_ingested=doc["annotated_at"])
+        return pending
     s = db.get_settings()
     # Same file, same unit index, same exact content: the vision input is unchanged, so its notes still hold.
     kept_vision = {(r["idx"], r["content_hash"]): r for r in db.q(
@@ -219,7 +234,7 @@ def index_vision(doc_id, idxs: list[int] | None = None, embed=True):
         try:
             embed_chunks(doc_id)
         except Exception:  # e.g. the embedding server is offline; the notes themselves are saved
-            pass
+            log.warning("vision chunks of document %s not embedded yet", doc_id, exc_info=True)
 
 
 def _vectors(rows) -> dict[str, tuple]:
@@ -263,7 +278,7 @@ def relink(doc_ids: list[int], rebuild=()) -> list[int]:
                 if original == u["duplicate_of"]:
                     continue
                 changed = True
-                if original is None:  # its own content now: identical content means identical vision notes
+                if original is None and u["vision_status"] != "done":  # its own content now: identical content, identical notes
                     src = c.execute("SELECT vision_status, vision_notes, vision_relevant FROM units WHERE id=?",
                                     (u["duplicate_of"],)).fetchone()
                     if src and src[0] == "done":
@@ -365,6 +380,8 @@ def run_vision(doc_id, job):
     _set_doc(doc_id, status="vision", vision_total=total)
     for k, u in enumerate(pending):
         job.check()
+        if k and job.should_yield():  # pages already described are saved; the rest wait for the next turn
+            raise Yield()
         u["images"] = json.loads(u["images"])
         job.update(k / max(len(pending), 1), f"Vision: {u['label']} ({k + 1}/{len(pending)})")
         try:

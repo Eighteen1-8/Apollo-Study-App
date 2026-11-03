@@ -2,7 +2,9 @@
 re-embedding, and the vision notes audit (vision_audit.py) with re-running vision on the units it flags.
 
 Scopes are a subject, a topic or one document (`ScopeBody`); a subject includes its reference library."""
+import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -10,6 +12,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from . import config, db, jobs, llm, pipeline, render, vision_audit
+from .parsers import PARSER_VERSION
 
 router = APIRouter()
 
@@ -45,8 +48,22 @@ def _tree_size(p: Path) -> int:
     return total
 
 
+CHAT_GRACE = 7 * 24 * 3600  # a screenshot or attachment not sent yet may still be in the composer
+
+
+def _referenced_assets() -> set[str]:
+    """Shared assets (figures/..., chat/...) that saved messages, generated content or the figure cache point to."""
+    refs = set()
+    pat = re.compile(r"""(?:figures|chat)/[^\s"'<>)?\\]+""")
+    for sql in ("SELECT meta || ' ' || content AS t FROM messages", "SELECT COALESCE(content, '') AS t FROM artifacts",
+                "SELECT data AS t FROM figure_cache"):
+        for r in db.q(sql):
+            refs.update(pat.findall(r["t"] or ""))
+    return refs
+
+
 def _orphans() -> dict:
-    """Files left behind on disk that no document uses any more."""
+    """Files left behind on disk that no document, message or generated content uses any more."""
     docs = db.q("SELECT id, sha256, ext FROM documents")
     names, shas, ids = {f"{d['sha256']}{d['ext']}" for d in docs}, {d["sha256"] for d in docs}, {str(d["id"]) for d in docs}
     out = {"files": [], "renders": [], "assets": []}
@@ -55,14 +72,35 @@ def _orphans() -> dict:
     out["renders"] = [p for p in render.renders_dir().iterdir() if p.is_file() and p.stem not in shas]
     if config.assets_dir().exists():  # per-document folders are named by document id; chat/, figures/ etc. are shared
         out["assets"] = [p for p in config.assets_dir().iterdir() if p.is_dir() and p.name.isdigit() and p.name not in ids]
+    # caches: cropped figures and chat files nothing refers to, and folders older versions left from practice exams
+    out["cache"] = []
+    if config.assets_dir().exists():
+        refs, old = _referenced_assets(), time.time() - CHAT_GRACE
+        for folder in ("figures", "chat"):
+            d = config.assets_dir() / folder
+            if d.is_dir():
+                out["cache"] += [p for p in d.iterdir() if p.is_file() and f"{folder}/{p.name}" not in refs
+                                 and (folder == "figures" or p.stat().st_mtime < old)]
+        out["cache"] += [p for p in config.assets_dir().iterdir() if p.is_dir() and p.name.startswith("practice_")]
     return out
+
+
+def _stale_rows() -> dict:
+    """Database rows pointing at nothing: cached figures whose image is gone, screenshot records whose file is gone,
+    and older copies of a practice exam (one per subject and file is kept)."""
+    figures = [r["key"] for r in db.q("SELECT key, data FROM figure_cache")
+               if not (config.assets_dir() / str(json.loads(r["data"]).get("asset") or "-")).exists()]
+    snaps = [r["path"] for r in db.q("SELECT path FROM snapshots") if not Path(r["path"]).exists()]
+    exams = [r["id"] for r in db.q("""SELECT id FROM practice_exams p WHERE id < (SELECT MAX(id) FROM practice_exams q
+                                       WHERE q.subject_id=p.subject_id AND q.sha256=p.sha256)""")]
+    return {"figure_cache": figures, "snapshots": snaps, "practice_exams": exams}
 
 
 @router.get("/maintenance/overview")
 def overview():
     model = llm.embed_model()
     docs = db.q("""SELECT d.id, d.subject_id, d.topic_id, d.kind, d.filename, d.ext, d.sha256, d.size, d.status, d.error,
-                          d.unit_count, d.vision_total, d.vision_done, d.embed_model, d.updated_at FROM documents d ORDER BY d.filename COLLATE NOCASE""")
+                          d.unit_count, d.vision_total, d.vision_done, d.embed_model, d.parser_version, d.updated_at FROM documents d ORDER BY d.filename COLLATE NOCASE""")
     per = lambda sql: {r["document_id"]: r for r in db.q(sql, (model,) if "?" in sql else ())}
     chunks = per("""SELECT document_id, SUM(source='text') text_chunks, SUM(source='vision') vision_chunks,
                     SUM(embedding IS NULL OR embed_model IS NOT ?) unembedded,
@@ -91,15 +129,19 @@ def overview():
             "unembedded": c.get("unembedded") or 0, "stale": bool(d["embed_model"]) and d["embed_model"] != model,
             "vision_total": d["vision_total"], "vision_done": d["vision_done"], "vision_failed": u.get("vision_failed") or 0,
             "flags": (flags.get(d["id"]) or {}).get("flags", 0), "reviewing": d["id"] in reviewing,
+            "old_parser": d["status"] in ("ready", "vision") and d["parser_version"] != PARSER_VERSION,
         })
 
     db_size = sum(p.stat().st_size for p in config.DATA_DIR.glob("study.db*") if p.is_file())
     orphans = _orphans()
     return {
         "data_dir": str(config.DATA_DIR), "db_path": str(config.db_path()), "embed_model": model,
+        "log_path": str(config.DATA_DIR / "logs" / "backend.log"),
         "disk": {"database": db_size, "files": _tree_size(config.files_dir()), "renders": _tree_size(render.renders_dir()),
                  "assets": _tree_size(config.assets_dir())},
         "orphans": {k: {"count": len(v), "bytes": sum(_tree_size(p) for p in v)} for k, v in orphans.items()},
+        "stale_rows": sum(len(v) for v in _stale_rows().values()),
+        "parser_version": PARSER_VERSION,
         "subjects": db.q("SELECT id, name, color FROM subjects ORDER BY name COLLATE NOCASE"),
         "topics": db.q("SELECT id, subject_id, name FROM topics ORDER BY name COLLATE NOCASE"),
         "documents": out,
@@ -122,12 +164,32 @@ def cleanup(body: CleanupBody):
                 freed += size
             except OSError:
                 pass
+    rows = _stale_rows()
+    with db.tx() as c:
+        c.executemany("DELETE FROM figure_cache WHERE key=?", [(k,) for k in rows["figure_cache"]])
+        c.executemany("DELETE FROM snapshots WHERE path=?", [(p,) for p in rows["snapshots"]])
+        c.executemany("DELETE FROM practice_exams WHERE id=?", [(i,) for i in rows["practice_exams"]])
     if body.compact:
         before = sum(p.stat().st_size for p in config.DATA_DIR.glob("study.db*") if p.is_file())
         db.ex("VACUUM")
         db.ex("PRAGMA wal_checkpoint(TRUNCATE)")
         freed += max(0, before - sum(p.stat().st_size for p in config.DATA_DIR.glob("study.db*") if p.is_file()))
     return {"freed": freed}
+
+
+@router.post("/maintenance/reparse")
+def reparse(body: ScopeBody):
+    """Read files again that an older parser read (they may be missing text a newer one finds, e.g. SmartArt). Their
+    finished vision notes are kept for every page whose content is unchanged, and unchanged chunks keep their vectors
+    only through re-embedding (parsing again rebuilds them)."""
+    queued = 0
+    for did in _scope_docs(body):
+        d = db.q1("SELECT status, parser_version FROM documents WHERE id=?", (did,))
+        if d and d["status"] in ("ready", "vision") and d["parser_version"] != PARSER_VERSION:
+            db.ex("UPDATE documents SET status='queued', updated_at=? WHERE id=?", (time.time(), did))
+            jobs.enqueue("ingest", did, ref_id=pipeline.KEEP_VISION)
+            queued += 1
+    return {"queued": queued}
 
 
 @router.post("/maintenance/reembed")

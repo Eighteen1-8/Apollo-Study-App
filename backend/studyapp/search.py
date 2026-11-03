@@ -1,13 +1,78 @@
 """Hybrid retrieval: FTS5 BM25 + cosine over stored embeddings, fused with reciprocal rank fusion.
 Chunks are extracted text or a unit's vision notes (source='vision'). Every result carries the vision notes of the
-units it spans; a vision hit becomes its unit (extracted text + notes). Each unit's notes appear once per search."""
+units it spans; a vision hit becomes its unit (extracted text + notes). Each unit's notes appear once per search.
+
+Vectors are kept in memory (`_vectors`): per document, and the combined matrix for the last few scopes searched, so a
+question doesn't decode every BLOB in scope again. An entry is reused while its signature (`_signatures`) is
+unchanged; SQLite triggers change it on every add, rebuild or re-embed. The least recently used are dropped past CACHE_BYTES."""
 import re
+import threading
+from collections import OrderedDict
 
 import numpy as np
 
 from . import db, llm
 
 RRF_K = 60
+CACHE_BYTES = 512 << 20
+_docs: "OrderedDict[tuple, tuple]" = OrderedDict()  # (doc_id, model) -> (signature, chunk ids, matrix)
+_scopes: "OrderedDict[tuple, tuple]" = OrderedDict()  # (doc ids, model) -> (signature, chunk ids, matrix), last few
+_cache_lock = threading.Lock()
+
+
+def _signatures(doc_ids: list[int], model: str) -> dict[int, tuple]:
+    """Per document with current-model vectors: its creation time and vec_version, which SQLite triggers bump on any
+    chunk added, removed or re-embedded (db.MIGRATIONS 2). Creation time covers a deleted document's reused id."""
+    marks = ",".join("?" * len(doc_ids))
+    return {r["id"]: (r["created_at"], r["vec_version"]) for r in db.q(
+        f"SELECT id, created_at, vec_version FROM documents WHERE id IN ({marks})", tuple(doc_ids))}
+
+
+def _evict():
+    while sum(v[2].nbytes for v in (*_docs.values(), *_scopes.values()) if v[2] is not None) > CACHE_BYTES and len(_docs) > 1:
+        _docs.popitem(last=False)
+    while len(_scopes) > 4:
+        _scopes.popitem(last=False)
+
+
+def _vectors(doc_ids: list[int], model: str) -> tuple[np.ndarray, np.ndarray]:
+    """(chunk ids, matrix) of the current model's vectors for these documents, from the cache where it's current."""
+    sigs = _signatures(doc_ids, model)
+    scope_key, scope_sig = (tuple(sorted(sigs)), model), tuple(sorted(sigs.items()))
+    with _cache_lock:
+        hit = _scopes.get(scope_key)
+        if hit and hit[0] == scope_sig:
+            _scopes.move_to_end(scope_key)
+            return hit[1], hit[2]
+    ids, mats = [], []
+    for did, sig in sigs.items():
+        with _cache_lock:
+            entry = _docs.get((did, model))
+            if entry and entry[0] == sig:
+                _docs.move_to_end((did, model))
+        if not (entry and entry[0] == sig):
+            rows = db.q("SELECT id, embedding FROM chunks WHERE document_id=? AND embedding IS NOT NULL AND embed_model=? ORDER BY id",
+                        (did, model))
+            entry = (sig, np.array([r["id"] for r in rows], dtype=int),
+                     np.vstack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows]) if rows else None)
+            with _cache_lock:
+                _docs[(did, model)] = entry
+        if entry[2] is None:  # nothing embedded with this model (yet)
+            continue
+        ids.append(entry[1])
+        mats.append(entry[2])
+    if not mats:
+        return np.array([], dtype=int), np.zeros((0, 0), dtype=np.float32)
+    dims = {m.shape[1] for m in mats}
+    if len(dims) > 1:  # one model always gives one size; mixed sizes mean stale rows, keep the common one
+        common = max(dims, key=lambda d: sum(m.shape[0] for m in mats if m.shape[1] == d))
+        ids = [i for i, m in zip(ids, mats) if m.shape[1] == common]
+        mats = [m for m in mats if m.shape[1] == common]
+    out = (np.concatenate(ids), np.vstack(mats))
+    with _cache_lock:
+        _scopes[scope_key] = (scope_sig, *out)
+        _evict()
+    return out
 
 
 def scope_documents(topic_id=None, subject_id=None, include_reference=True) -> list[int]:
@@ -40,14 +105,13 @@ def search(query: str, doc_ids: list[int], k=10):
             ranks.setdefault(row["id"], {})["bm25_rank"] = r + 1
 
     # Only vectors from the current model are comparable (a different model may not even have the same size).
-    rows = db.q(f"SELECT id, embedding FROM chunks WHERE embedding IS NOT NULL AND embed_model=? AND document_id IN ({marks})",
-                (llm.embed_model(), *doc_ids))
-    if rows and not llm.paused("embed"):  # paused embedding model: keyword matches only
-        mat = np.vstack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows])
-        qv = llm.embed([query], query=True)[0]
-        sims = mat @ qv
-        for r, i in enumerate(np.argsort(-sims)[:50]):
-            ranks.setdefault(rows[i]["id"], {}).update(vector_rank=r + 1, similarity=float(sims[i]))
+    if not llm.paused("embed"):  # paused embedding model: keyword matches only
+        chunk_ids, mat = _vectors(doc_ids, llm.embed_model())
+        if len(chunk_ids):
+            qv = llm.embed([query], query=True)[0]
+            sims = mat @ qv
+            for r, i in enumerate(np.argsort(-sims)[:50]):
+                ranks.setdefault(int(chunk_ids[i]), {}).update(vector_rank=r + 1, similarity=float(sims[i]))
 
     for cid, d in ranks.items():
         d["score"] = sum(1 / (RRF_K + d[key]) for key in ("bm25_rank", "vector_rank") if key in d)

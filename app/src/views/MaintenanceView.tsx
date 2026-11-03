@@ -3,6 +3,7 @@ import { api, Backups as BackupList, FlagKind, inElectron, MaintDoc, MaintOvervi
 import { fmtBytes, usePoll } from '../hooks';
 import { MenuItem, useOverlay } from '../components/overlay';
 import { Button, Empty, Pill } from '../components/ui';
+import { logError } from '../log';
 
 const KIND: Record<FlagKind, string> = {
   malformed: 'Malformed output', incomplete: 'Incomplete', misleading: 'False or misleading', failed: 'Vision failed',
@@ -17,7 +18,7 @@ const sum = (ds: MaintDoc[], f: (d: MaintDoc) => number) => ds.reduce((n, d) => 
  * (the quick checks plus Apollo's review against each page image) with re-running vision on just the flagged pages. */
 export default function MaintenanceView({ subjectId }: { subjectId?: number }) {
   const ov = useOverlay();
-  const data = usePoll(api.maintenance, 8000);
+  const data = usePoll(api.maintenance, 4000, [], ['documents', 'flags', 'jobs']);
   const [open, setOpen] = useState<Set<number>>(new Set(subjectId ? [subjectId] : []));
   const [compact, setCompact] = useState(false);
   const [scope, setScope] = useState<Scope | null>(null);
@@ -76,9 +77,9 @@ export default function MaintenanceView({ subjectId }: { subjectId?: number }) {
   return (
     <div className="maint">
       <Storage o={o} compact={compact} setCompact={setCompact} onClean={async () => {
-        const n = o.orphans.files.count + o.orphans.renders.count + o.orphans.assets.count;
+        const n = o.orphans.files.count + o.orphans.renders.count + o.orphans.assets.count + o.orphans.cache.count + o.stale_rows;
         if (!(await ov.confirm({ title: 'Clean up?', confirmText: 'Clean up', danger: true,
-          body: <>{n ? `${plural(n, 'leftover item')} from deleted files will be removed.` : 'There are no leftovers.'}
+          body: <>{n ? `${plural(n, 'leftover item')} will be removed: files of deleted documents, figures and chat images nothing uses, and records pointing at nothing.` : 'There are no leftovers.'}
             {compact && ' The database is compacted too, which can take a while on a large library.'}</> }))) return;
         const r = await api.cleanup(compact);
         reload();
@@ -88,7 +89,9 @@ export default function MaintenanceView({ subjectId }: { subjectId?: number }) {
       <Backups />
 
       <Index o={o} onReembed={async () => { const r = await api.reembed({}); reload();
-        await ov.confirm({ title: 'Re-embedding', confirmText: 'OK', body: r.queued ? `${plural(r.queued, 'file')} queued (see the jobs list).` : 'Everything is up to date.' }); }} />
+        await ov.confirm({ title: 'Re-embedding', confirmText: 'OK', body: r.queued ? `${plural(r.queued, 'file')} queued (see the jobs list).` : 'Everything is up to date.' }); }}
+        onReparse={async () => { const r = await api.reparse({}); reload();
+          await ov.confirm({ title: 'Reading files again', confirmText: 'OK', body: `${plural(r.queued, 'file')} queued (see the jobs list). Vision notes are kept for every page whose content hasn't changed.` }); }} />
 
       <section className="section">
         <h2>Library</h2>
@@ -151,8 +154,8 @@ function Storage({ o, compact, setCompact, onClean }: { o: MaintOverview; compac
     { k: 'assets', label: 'Page images and previews', v: o.disk.assets },
   ];
   const total = parts.reduce((n, p) => n + p.v, 0) || 1;
-  const left = o.orphans.files.bytes + o.orphans.renders.bytes + o.orphans.assets.bytes;
-  const leftN = o.orphans.files.count + o.orphans.renders.count + o.orphans.assets.count;
+  const left = o.orphans.files.bytes + o.orphans.renders.bytes + o.orphans.assets.bytes + o.orphans.cache.bytes;
+  const leftN = o.orphans.files.count + o.orphans.renders.count + o.orphans.assets.count + o.orphans.cache.count + o.stale_rows;
   return (
     <section className="section">
       <h2>Storage</h2>
@@ -166,9 +169,10 @@ function Storage({ o, compact, setCompact, onClean }: { o: MaintOverview; compac
       <div className="maint-line">
         <code className="maint-path" title={o.data_dir}>{o.data_dir}</code>
         <Button small disabled={!inElectron} onClick={() => window.studyApp!.showItem(o.db_path)}>Open data folder</Button>
+        <Button small disabled={!inElectron} onClick={() => window.studyApp!.showItem(o.log_path)}>Open log</Button>
       </div>
       <div className="maint-line">
-        <span>{leftN ? <>Leftovers from deleted files: <b>{plural(leftN, 'item')}</b>, {fmtBytes(left)}</> : 'No leftovers from deleted files.'}</span>
+        <span>{leftN ? <>Leftovers (deleted files, unused figures and screenshots, stale records): <b>{plural(leftN, 'item')}</b>, {fmtBytes(left)}</> : 'No leftovers.'}</span>
         <label className="field-bool maint-check"><input type="checkbox" checked={compact} onChange={(e) => setCompact(e.target.checked)} /> Also compact the database</label>
         <Button small onClick={onClean} disabled={!leftN && !compact}>Clean up</Button>
       </div>
@@ -183,7 +187,7 @@ function Backups() {
   const ov = useOverlay();
   const [b, setB] = useState<BackupList | null>(null);
   const [busy, setBusy] = useState(false);
-  const load = () => api.backups().then(setB).catch(() => {});
+  const load = () => api.backups().then(setB).catch((e) => logError('backups', e));
   useEffect(() => { load(); }, []);
   if (!b) return null;
   const pending = b.backups.find((x) => x.name === b.pending_restore);
@@ -243,8 +247,9 @@ function Backups() {
   );
 }
 
-function Index({ o, onReembed }: { o: MaintOverview; onReembed: () => void }) {
+function Index({ o, onReembed, onReparse }: { o: MaintOverview; onReembed: () => void; onReparse: () => void }) {
   const missing = o.documents.filter((d) => d.unembedded || d.stale);
+  const oldParser = o.documents.filter((d) => d.old_parser);
   const vision = sum(o.documents, (d) => d.vision_chunks);
   return (
     <section className="section">
@@ -258,6 +263,13 @@ function Index({ o, onReembed }: { o: MaintOverview; onReembed: () => void }) {
           : 'Every chunk has a vector from the current model.'}</span>
         <Button small disabled={!missing.length} onClick={onReembed}>Re-embed</Button>
       </div>
+      {oldParser.length > 0 && (
+        <div className="maint-line">
+          <span><b>{plural(oldParser.length, 'file')}</b> {oldParser.length === 1 ? 'was' : 'were'} read by an older version of the file reader and
+            may be missing text the current one finds (e.g. SmartArt and chart labels).</span>
+          <Button small onClick={onReparse}>Read again</Button>
+        </div>
+      )}
     </section>
   );
 }
@@ -298,7 +310,7 @@ function DocRow({ d, onFlags, onMenu }: { d: MaintDoc; onFlags: () => void; onMe
 function Issues({ scope, o, onScope, onChange }: { scope: Scope; o: MaintOverview; onScope: (s: Scope) => void; onChange: () => void }) {
   const ov = useOverlay();
   const [dismissed, setDismissed] = useState(false);
-  const flags = usePoll(() => api.visionFlags(scope, dismissed), 5000, [dismissed]);
+  const flags = usePoll(() => api.visionFlags(scope, dismissed), 1500, [dismissed], ['flags']);
   const list = flags.data ?? [];
   const reload = () => { flags.reload(); onChange(); };
   const options: Scope[] = [{ label: 'All subjects' }, ...o.subjects.flatMap((s) => [

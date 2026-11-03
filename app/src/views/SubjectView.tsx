@@ -14,7 +14,9 @@ import LibraryPanel from './LibraryPanel';
 import ResourcePanel from './ResourcePanel';
 import SourceView from './SourceView';
 import ArtifactViewer, { ArtifactPage } from './ArtifactViewer';
+import ErrorBoundary from '../components/ErrorBoundary';
 import { useAppearance } from '../theme';
+import { getPref, setPref } from '../prefs';
 
 type RouteSubject = Extract<Route, { name: 'subject' }>;
 type Side = 'left' | 'right';
@@ -40,12 +42,6 @@ const CENTER_MIN = 380;
 type Sides = { left: SidePanel; right: SidePanel };
 const DEFAULT_SIDES: Sides = { left: { width: LEFT.def, open: true }, right: { width: RIGHT.def, open: true } };
 
-function loadPref<T>(key: string, parse: (v: string) => T, fallback: T): T {
-  try { const v = localStorage.getItem(key); return v == null ? fallback : parse(v); } catch { return fallback; }
-}
-function savePref(key: string, v: string) {
-  try { localStorage.setItem(key, v); } catch { /* storage unavailable */ }
-}
 
 /**
  * Subject workspace: generated-content library (left) · the subject's knowledge cloud, an open document, or the
@@ -65,8 +61,8 @@ export default function SubjectView({ route, subjects, go, onChange }: {
   // the cloud is what a subject opens to, so the chat starts as a pill unless a create form is waiting in it
   const [chatCollapsed, setChatCollapsed] = useState(() => look.cloud && !route.launch);
   const [chatFull, setChatFull] = useState(false);
-  const [side, setSide] = useState<Side>(() => loadPref('chatSide', (v) => (v === 'left' ? 'left' : 'right'), 'right'));
-  const [size, setSize] = useState<{ w: number; h: number } | null>(() => loadPref('chatSize', JSON.parse, null));
+  const [side, setSide] = useState<Side>(() => getPref<Side>('chatSide', 'right', (v) => (v === 'left' ? 'left' : 'right')));
+  const [size, setSize] = useState<{ w: number; h: number } | null>(() => getPref<{ w: number; h: number } | null>('chatSize', null, JSON.parse));
   const [quote, setQuote] = useState<(Quote & { nonce: number }) | null>(null);
   const [viewing, setViewing] = useState<number | null>(null);
   const [page, setPage] = useState<number | null>(null); // notes / cheat sheet shown in the centre
@@ -78,12 +74,12 @@ export default function SubjectView({ route, subjects, go, onChange }: {
   const [upload, setUpload] = useState<Upload | null>(null);
   const [assign, setAssign] = useState<string[] | null>(null);
   const [incoming, setIncoming] = useState<{ paths: string[]; nonce: number } | null>(null);
-  const [sides, setSides] = useState<Sides>(() => loadPref('sides', (v) => ({ ...DEFAULT_SIDES, ...JSON.parse(v) }), DEFAULT_SIDES));
+  const [sides, setSides] = useState<Sides>(() => getPref<Sides>('sides', DEFAULT_SIDES, (v) => ({ ...DEFAULT_SIDES, ...JSON.parse(v) })));
   const [sizing, setSizing] = useState(false);
   const workspace = useRef<HTMLDivElement>(null);
   const center = useRef<HTMLElement>(null);
   const shell = useRef<HTMLDivElement>(null);
-  const docs = usePoll(() => api.allDocuments(route.id), 10000, [route.id]);
+  const docs = usePoll(() => api.allDocuments(route.id), 2000, [route.id], ['documents']);
 
   useEffect(() => { if (route.launch) setLaunch(route.launch); }, [route.launch]);
 
@@ -216,7 +212,7 @@ export default function SubjectView({ route, subjects, go, onChange }: {
       const c = center.current!.getBoundingClientRect();
       const next: Side = r.left + r.width / 2 < c.left + c.width / 2 ? 'left' : 'right';
       setSide(next);
-      savePref('chatSide', next);
+      setPref('chatSide', next);
       setDrag(null);
     };
     window.addEventListener('pointermove', move);
@@ -245,7 +241,7 @@ export default function SubjectView({ route, subjects, go, onChange }: {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
       setResizing(false);
-      savePref('chatSize', JSON.stringify(last));
+      setPref('chatSize', JSON.stringify(last));
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
@@ -259,7 +255,7 @@ export default function SubjectView({ route, subjects, go, onChange }: {
       side: which, panel: sides[which], limits: which === 'left' ? LEFT : RIGHT, onSizing: setSizing,
       room: () => (workspace.current?.clientWidth ?? 1600) - (other.open ? other.width : 0) - CENTER_MIN,
       onChange: (p: SidePanel) => setSides((s) => ({ ...s, [which]: p })),
-      onCommit: (p: SidePanel) => setSides((s) => { const n = { ...s, [which]: p }; savePref('sides', JSON.stringify(n)); return n; }),
+      onCommit: (p: SidePanel) => setSides((s) => { const n = { ...s, [which]: p }; setPref('sides', JSON.stringify(n)); return n; }),
     };
   };
 
@@ -269,7 +265,7 @@ export default function SubjectView({ route, subjects, go, onChange }: {
   return (
     <div ref={workspace} className={`workspace${sizing ? ' sizing' : ''}${sides.left.open ? '' : ' left-folded'}${sides.right.open ? '' : ' right-folded'}`}
       style={{ '--left-w': `${sides.left.open ? sides.left.width : 0}px`, '--right-w': `${sides.right.open ? sides.right.width : 0}px` } as React.CSSProperties}>
-      <LibraryPanel subject={subject} onOpen={openArtifact} />
+      <ErrorBoundary name="Generated content" compact><LibraryPanel subject={subject} onOpen={openArtifact} /></ErrorBoundary>
       <SideResizer {...sideProps('left')} />
       <SideResizer {...sideProps('right')} />
 
@@ -279,10 +275,12 @@ export default function SubjectView({ route, subjects, go, onChange }: {
             focus={focus} onFocus={setFocus} onOpenDoc={(id, label) => openDoc(id, label)} />
         )}
         {page !== null && !doc && (
-          <div className="doc-pane"><ArtifactPage key={page} id={page} onClose={closeDoc} onCite={openCitation} /></div>
+          <div className="doc-pane">
+            <ErrorBoundary name="These notes" resetKey={page} onClose={closeDoc}><ArtifactPage key={page} id={page} onClose={closeDoc} onCite={openCitation} /></ErrorBoundary>
+          </div>
         )}
         {doc && (
-          <div className="doc-pane">
+          <div className="doc-pane"><ErrorBoundary name="The document viewer" resetKey={doc.nonce} onClose={closeDoc}>
             {doc.details ? (
               <DocumentView key={`details-${doc.nonce}`} id={doc.id} focus={doc.focus} onClose={closeDoc}
                 onBack={() => setDoc({ ...doc, details: false, nonce: Date.now() })} />
@@ -292,7 +290,7 @@ export default function SubjectView({ route, subjects, go, onChange }: {
                 onDetails={() => setDoc({ ...doc, details: true })} onAsk={askAbout}
                 onAttach={(paths) => { setIncoming({ paths, nonce: Date.now() }); setChatCollapsed(false); }} />
             )}
-          </div>
+          </ErrorBoundary></div>
         )}
         <div ref={shell} onPointerDown={startDrag}
           className={`chat-shell${floating ? ' floating' : ''}${collapsed ? ' collapsed' : ''}${full ? ' full' : ''}${drag ? ' dragging' : ''}${resizing ? ' resizing' : ''}`}
@@ -304,17 +302,19 @@ export default function SubjectView({ route, subjects, go, onChange }: {
               <div className={`rz rz-corner rz-top-${inner < 0 ? 'left' : 'right'}`} title="Drag to resize" onPointerDown={startResize(inner, -1)} />
             </>
           )}
-          <ChatView subject={subject} launch={launch} floating={floating} collapsed={collapsed} full={full}
+          <ErrorBoundary name="The chat" compact><ChatView subject={subject} launch={launch} floating={floating} collapsed={collapsed} full={full}
             onToggleCollapse={() => setChatCollapsed(!chatCollapsed)} onToggleFull={() => setChatFull(!chatFull)}
             onCite={openCitation} onOpenArtifact={openArtifact} onOpenDoc={(id) => openDoc(id)} onShowArea={showArea}
-            quote={quote} onClearQuote={() => setQuote(null)} incoming={incoming} />
+            quote={quote} onClearQuote={() => setQuote(null)} incoming={incoming} /></ErrorBoundary>
         </div>
       </section>
 
-      <ResourcePanel subject={subject} go={go} onChange={onChange} onOpenDoc={openDoc} onCreate={create}
-        onDocsChanged={docs.reload} sel={{ focus, onFocus: setFocus, cloudVisible: showCloud, openId: doc?.id ?? null }} />
+      <ErrorBoundary name="Resources" compact><ResourcePanel subject={subject} go={go} onChange={onChange} onOpenDoc={openDoc} onCreate={create}
+        onDocsChanged={docs.reload} sel={{ focus, onFocus: setFocus, cloudVisible: showCloud, openId: doc?.id ?? null }} /></ErrorBoundary>
 
-      {viewing !== null && <ArtifactViewer id={viewing} subject={subject} onClose={() => setViewing(null)} />}
+      {viewing !== null && (
+        <ErrorBoundary name="This study set" resetKey={viewing} onClose={() => setViewing(null)}><ArtifactViewer id={viewing} subject={subject} onClose={() => setViewing(null)} /></ErrorBoundary>
+      )}
 
       {fileDrag && (
         <FileDropOverlay topicCount={subject.topics.length} singleTopic={subject.topics.length === 1 ? subject.topics[0].name : undefined}

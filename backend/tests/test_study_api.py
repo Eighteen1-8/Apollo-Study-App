@@ -39,3 +39,21 @@ def test_dismiss_only_finished_jobs():
         assert done not in ids and live in ids
     finally:
         db.ex("DELETE FROM jobs WHERE id IN (?, ?)", (done, live))
+
+
+def test_change_stream_names_what_changed():
+    import time as _t
+    from studyapp import db as _db, events
+    events.start()
+    _t.sleep(events.INTERVAL * 2)  # let the watcher take its first signatures
+    stream = events._stream()
+    assert next(stream).startswith("retry:")
+    sid = _db.ex("INSERT INTO subjects(name, created_at) VALUES ('Events', 0)")
+    try:
+        _db.ex("INSERT INTO todos(subject_id, text, created_at) VALUES (?, 'revise', 0)", (sid,))
+        msg = next(stream)
+        while msg.startswith(":"):
+            msg = next(stream)
+        assert msg.startswith("data: ") and {"subjects", "todos"} & set(__import__("json").loads(msg[6:]))
+    finally:
+        _db.ex("DELETE FROM subjects WHERE id=?", (sid,))

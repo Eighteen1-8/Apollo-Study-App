@@ -8,6 +8,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, EmbeddingMap } from '../api';
 import { REF_COLOR, reducedMotion, topicColor } from '../theme';
+import { logError } from '../log';
+import { onChange } from '../events';
 
 type RGB = [number, number, number];
 
@@ -198,10 +200,13 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
       if (!alive || sigOf(m) === sig) return;
       sig = sigOf(m);
       setMap(m);
-    }).catch(() => {}).finally(() => alive && setLoaded(true));
+    }).catch((e) => logError('knowledge map', e, 'warning')).finally(() => alive && setLoaded(true));
     load();
-    const t = setInterval(load, 20000);
-    return () => { alive = false; clearInterval(t); };
+    // the map is costly to rebuild: once things have settled after a change, and every minute as a fallback
+    let pending: number | undefined;
+    const off = onChange(['documents'], () => { clearTimeout(pending); pending = window.setTimeout(load, 4000); });
+    const t = setInterval(load, 60000);
+    return () => { alive = false; off(); clearTimeout(pending); clearInterval(t); };
   }, [subjectId]);
 
   const scene = useMemo(() => (loaded ? buildScene(map, topics) : null), [map, loaded, topicKey]); // eslint-disable-line react-hooks/exhaustive-deps

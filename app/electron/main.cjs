@@ -15,6 +15,15 @@ let backendPort = null;
 // browser on this computer can't use the local API. It reaches the backend in its environment and the renderer
 // through the preload (ipc 'backend:token'), never on a command line.
 let backendToken = crypto.randomBytes(32).toString('base64url');
+// Path grants (backend grants.py): the backend only touches a file outside its data folder if this process signed
+// its path, which happens only for files the student picks in a dialog or drops in. The key never reaches the page.
+const grantKey = crypto.randomBytes(32).toString('base64url');
+function grant(mode, p) {
+  // must match backend grants.normalise: absolute, and only A-Z lowercased on Windows
+  const norm = process.platform === 'win32' ? path.resolve(p).replace(/[A-Z]/g, (c) => c.toLowerCase()) : path.resolve(p);
+  return crypto.createHmac('sha256', grantKey).update(`${mode}
+${norm}`).digest('hex');
+}
 
 // Window chrome: the native title bar is replaced by the app's own strip; the min/max/close buttons are drawn by
 // Windows on top of it in the theme's colours. The renderer reports the colours on every theme change and the last
@@ -72,7 +81,8 @@ function backendCommand(port, dataDir) {
 }
 
 async function startBackend() {
-  const dataDir = path.join(app.getPath('userData'), 'data');
+  // APOLLO_DATA_DIR (dev only) runs against another data folder, e.g. a throwaway one for testing.
+  const dataDir = (isDev && process.env.APOLLO_DATA_DIR) || path.join(app.getPath('userData'), 'data');
   if (isDev && (await healthy(DEV_PORT))) {
     // Reuse a backend started by hand on this data: it wrote its token beside the database.
     try { backendToken = fs.readFileSync(path.join(dataDir, 'backend-token'), 'utf8').trim(); } catch { /* none */ }
@@ -83,7 +93,7 @@ async function startBackend() {
   const { cmd, args, cwd } = backendCommand(port, dataDir);
   // The portable exe unpacks to a temp folder; a .env next to the exe itself can seed endpoints and keys.
   const exeDir = process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath);
-  const env = { ...process.env, APOLLO_TOKEN: backendToken, ...(app.isPackaged ? { STUDY_ENV_FILE: path.join(exeDir, '.env') } : {}) };
+  const env = { ...process.env, APOLLO_TOKEN: backendToken, APOLLO_GRANT_KEY: grantKey, ...(app.isPackaged ? { STUDY_ENV_FILE: path.join(exeDir, '.env') } : {}) };
   backend = spawn(cmd, args, { cwd, windowsHide: true, env });
   let startupError = '';
   let exited = false;
@@ -149,8 +159,7 @@ async function createWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
-      additionalArguments: [`--backend-port=${backendPort}`],
+      sandbox: true, // the preload only uses contextBridge/ipcRenderer/webUtils; it gets the backend over ipc
     },
   });
   if (state.maximized) win.maximize();
@@ -171,7 +180,7 @@ ipcMain.handle('dialog:openFiles', async (_e, opts = {}) => {
       { name: 'All files', extensions: ['*'] },
     ],
   });
-  return res.canceled ? [] : res.filePaths;
+  return res.canceled ? [] : res.filePaths.map((p) => ({ path: p, grant: grant('read', p) }));
 });
 
 ipcMain.handle('dialog:saveFile', async (_e, opts = {}) => {
@@ -179,12 +188,15 @@ ipcMain.handle('dialog:saveFile', async (_e, opts = {}) => {
     defaultPath: path.join(app.getPath('documents'), opts.defaultName || 'export.pdf'),
     filters: opts.filters || [{ name: 'PDF', extensions: ['pdf'] }],
   });
-  return res.canceled ? null : res.filePath;
+  return res.canceled ? null : { path: res.filePath, grant: grant('write', res.filePath) };
 });
+
+// A file dropped on the window: the preload resolved its path from a real File object, which page script can't forge.
+ipcMain.on('grant:dropped', (e, p) => { e.returnValue = typeof p === 'string' && p ? grant('read', p) : ''; });
 
 ipcMain.handle('shell:showItem', (_e, p) => { shell.showItemInFolder(p); });
 
-ipcMain.on('backend:token', (e) => { e.returnValue = backendToken; });
+ipcMain.on('backend:info', (e) => { e.returnValue = { url: `http://127.0.0.1:${backendPort}`, token: backendToken }; });
 
 ipcMain.on('window:chrome', (e, c) => {
   const win = BrowserWindow.fromWebContents(e.sender);

@@ -3,21 +3,42 @@
 Both Qwen lanes share llm's concurrency gate, so the server still sees at most `llm_concurrency` requests.
 Jobs survive restarts (running -> queued on startup) and can be cancelled between steps.
 
+Scheduling: highest priority first ("Run next" raises one), then the longest waiting (queued_at). A vision job over a
+long document yields its lane after SLICE seconds when another job is waiting there, or at once when a waiting job
+has a higher priority, and rejoins the back of the queue (its finished pages are kept), so a textbook can't hold up
+every small upload for hours.
+
 Pausing a model (llm.paused) holds the lanes that need it: no new job starts there, and a running one waits at its
 next request to that model (llm.set_wait_hook) until it is resumed or cancelled."""
+import logging
 import threading
 import time
-import traceback
 
 from . import db, generate, llm, pipeline, vision_audit
+
+log = logging.getLogger(__name__)
 
 _wake = threading.Event()
 
 
+SLICE = 180  # seconds a yielding job runs before stepping aside for others in its lane
+
+
 class Job:
-    def __init__(self, row):
+    def __init__(self, row, lane):
         self.id = row["id"]
         self.document_id = row["document_id"]
+        self.priority = row["priority"]
+        self.types = LANES[lane]
+        self.started = time.monotonic()
+
+    def should_yield(self) -> bool:
+        """Another job waits in this lane and either outranks this one, or this one has had its slice."""
+        marks = ",".join("?" * len(self.types))
+        top = db.q1(f"SELECT MAX(priority) p FROM jobs WHERE status='queued' AND type IN ({marks})", self.types)["p"]
+        if top is None:
+            return False
+        return top > self.priority or time.monotonic() - self.started > SLICE
 
     def update(self, progress, message):
         db.ex("UPDATE jobs SET progress=?, message=?, updated_at=? WHERE id=?", (progress, message, time.time(), self.id))
@@ -44,10 +65,23 @@ def enqueue(type_, document_id=None, ref_id=None):
     if existing:
         return existing["id"]
     now = time.time()
-    jid = db.ex("INSERT INTO jobs(type, document_id, ref_id, status, created_at, updated_at) VALUES (?,?,?,?,?,?)",
-                (type_, document_id, ref_id, "queued", now, now))
+    jid = db.ex("INSERT INTO jobs(type, document_id, ref_id, status, created_at, updated_at, queued_at) VALUES (?,?,?,?,?,?,?)",
+                (type_, document_id, ref_id, "queued", now, now, now))
     _wake.set()
     return jid
+
+
+def prioritize(job_id) -> bool:
+    """'Run next': ahead of everything waiting in its lane (and the running job there yields at its next step)."""
+    row = db.q1("SELECT type, status FROM jobs WHERE id=?", (job_id,))
+    if not row or row["status"] != "queued":
+        return False
+    types = next(t for t in LANES.values() if row["type"] in t)
+    marks = ",".join("?" * len(types))
+    top = db.q1(f"SELECT COALESCE(MAX(priority), 0) p FROM jobs WHERE type IN ({marks}) AND status IN ('queued','running')", types)["p"]
+    db.ex("UPDATE jobs SET priority=?, updated_at=? WHERE id=?", (top + 1, time.time(), job_id))
+    _wake.set()
+    return True
 
 
 def cancel(job_id):
@@ -78,13 +112,14 @@ def _run(lane):
             time.sleep(1.0)
             continue
         types = LANES[lane]
-        row = db.q1(f"SELECT * FROM jobs WHERE type IN ({','.join('?' * len(types))}) AND status='queued' ORDER BY id LIMIT 1", types)
+        row = db.q1(f"SELECT * FROM jobs WHERE type IN ({','.join('?' * len(types))}) AND status='queued' "
+                    "ORDER BY priority DESC, COALESCE(queued_at, created_at), id LIMIT 1", types)
         if row is None:
             _wake.wait(1.0)
             _wake.clear()
             continue
         db.ex("UPDATE jobs SET status='running', updated_at=? WHERE id=?", (time.time(), row["id"]))
-        job = Job(row)
+        job = Job(row, lane)
         llm.set_wait_hook(_waiter(job))
         try:
             if row["type"] == "ingest":
@@ -101,11 +136,14 @@ def _run(lane):
             elif row["type"] == "mark":
                 generate.run_marking(row["ref_id"], job)
             db.ex("UPDATE jobs SET status='done', progress=1, message='Done', updated_at=? WHERE id=?", (time.time(), row["id"]))
+        except pipeline.Yield:
+            db.ex("UPDATE jobs SET status='queued', priority=0, queued_at=?, updated_at=?, message='Waiting: other files go first' "
+                  "WHERE id=?", (time.time(), time.time(), row["id"]))
         except pipeline.Cancelled:
             db.ex("UPDATE jobs SET status='cancelled', message='Cancelled', updated_at=? WHERE id=?", (time.time(), row["id"]))
             _mark_owner(row, "cancelled", None)
         except Exception as e:
-            traceback.print_exc()
+            log.exception("job %s (%s) failed", row["id"], row["type"])
             db.ex("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?", (str(e), time.time(), row["id"]))
             _mark_owner(row, "failed", str(e)[:500])
 

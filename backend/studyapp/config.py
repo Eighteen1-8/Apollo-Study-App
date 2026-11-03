@@ -11,6 +11,9 @@ load_dotenv(os.environ.get("STUDY_ENV_FILE") or Path(__file__).resolve().parents
 DATA_DIR = Path(os.environ.get("STUDY_DATA_DIR") or Path(os.environ.get("APPDATA", Path.home())) / "StudyApp")
 
 
+# Settings holding API keys: encrypted at rest (secret_store) and never sent back to the UI.
+SECRET_KEYS = ("llm_api_key", "embed_api_key", "openrouter_api_key")
+
 # The per-launch secret every request must carry (see api.require_token). None (tests) leaves the API open.
 API_TOKEN: str | None = None
 

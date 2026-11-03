@@ -7,16 +7,13 @@ import { useOverlay } from '../components/overlay';
 import { Progress } from '../components/ui';
 import { TYPE_ICON } from './LibraryPanel';
 import { CREATE_ITEMS } from './SubjectView';
+import { logError } from '../log';
+import { onChange } from '../events';
+import { getPref, setPref } from '../prefs';
 
 const TERMINAL = ['ready', 'failed', 'cancelled'];
 const LEVEL_LABEL: Record<string, string> = { off: 'Off', low: 'Low', medium: 'Medium', xhigh: 'XHigh' };
 
-function loadPref(key: string, fallback: string) {
-  try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
-}
-function savePref(key: string, v: string) {
-  try { localStorage.setItem(key, v); } catch { /* storage unavailable */ }
-}
 
 export default function ChatView({ subject, launch, floating, collapsed, full, onToggleCollapse, onToggleFull, onCite, onOpenArtifact,
   onOpenDoc, quote, onClearQuote, incoming, onShowArea }: {
@@ -70,9 +67,9 @@ export default function ChatView({ subject, launch, floating, collapsed, full, o
     api.settings().then((s) => {
       const lv = Array.isArray(s.reasoning_levels) ? s.reasoning_levels as string[] : ['low', 'medium', 'xhigh'];
       setLevels(lv);
-      const pref = loadPref('chatReasoning', String(s.chat_reasoning_default ?? 'off'));
+      const pref = getPref('chatReasoning', String(s.chat_reasoning_default ?? 'off'));
       setReasoning((pref === 'off' || lv.includes(pref) ? pref : 'off') as Reasoning);
-    }).catch(() => {});
+    }).catch((e) => logError('chat', e, 'warning'));
   }, []);
 
   const loadChats = async () => {
@@ -202,7 +199,7 @@ export default function ChatView({ subject, launch, floating, collapsed, full, o
 
   const pickReasoning = (e: React.MouseEvent) => ov.menu(e, ['off', ...levels].map((l) => ({
     label: `${l === reasoning ? '✓ ' : '   '}${LEVEL_LABEL[l] ?? l}${l === 'off' ? ' (fastest)' : l === levels[levels.length - 1] ? ' (most thorough)' : ''}`,
-    onClick: () => { setReasoning(l as Reasoning); savePref('chatReasoning', l); },
+    onClick: () => { setReasoning(l as Reasoning); setPref('chatReasoning', l); },
   })), { anchor: e.currentTarget, place: 'above' });
 
   const pickTopic = (e: React.MouseEvent) => ov.menu(e, [null, ...subject.topics.map((t) => t.id)].map((id) => ({
@@ -596,16 +593,19 @@ function ArtifactCard({ id, initial, onOpen }: { id: number; initial: ArtifactSu
   const [gen, setGen] = useState(0); // bump to restart polling after a retry
   useEffect(() => {
     let alive = true;
+    let done = false;
     const tick = async () => {
+      if (done) return;
       try {
         const r = await api.artifact(id);
         if (!alive) return;
         setA(r);
-        if (!TERMINAL.includes(r.status)) setTimeout(tick, 2000);
+        done = TERMINAL.includes(r.status);
       } catch { if (alive) setA(null); }
     };
     tick();
-    return () => { alive = false; };
+    const off = onChange(['library'], tick);  // progress arrives as library changes, not by polling
+    return () => { alive = false; off(); };
   }, [id, gen]);
   if (!a) return <div className="msg msg-note muted small">This content was deleted.</div>;
   return (

@@ -9,6 +9,7 @@ suggestions for the student to look at, not verdicts.
 
 Flags live in `vision_flags`. Re-running vision on a unit clears its flags; dismissed flags are kept so a rescan
 doesn't raise them again."""
+import logging
 import re
 import time
 from typing import Literal
@@ -16,6 +17,8 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from . import config, db, llm
+
+log = logging.getLogger(__name__)
 
 KINDS = ("malformed", "incomplete", "misleading", "failed")
 
@@ -176,6 +179,7 @@ def review_document(doc_id: int, job, recheck=False):
         except Cancelled:
             raise
         except Exception:
+            log.warning("vision review of unit %s failed", u["id"], exc_info=True)
             errors += 1
             continue
         with db.tx() as c:

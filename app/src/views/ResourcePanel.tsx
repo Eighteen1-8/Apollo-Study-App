@@ -29,7 +29,7 @@ export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCrea
 }) {
   const ov = useOverlay();
   const act = useLibraryActions([subject], go, onChange);
-  const refs = usePoll(() => api.referenceDocs(subject.id), 2500, [subject.id]);
+  const refs = usePoll(() => api.referenceDocs(subject.id), 1000, [subject.id], ['documents']);
   const [open, setOpen] = useState<Set<number>>(new Set());
   const [upload, setUpload] = useState<UploadTarget | null>(null);
   const [refDrag, setRefDrag] = useState(false);
@@ -366,7 +366,7 @@ function TopicFiles({ topicId, onOpen, onDetails, onChange, folders, onFolders, 
   files: FileProps; sel: Selection;
 }) {
   const ov = useOverlay();
-  const docs = usePoll(() => api.topicDocs(topicId), 2500, [topicId]);
+  const docs = usePoll(() => api.topicDocs(topicId), 1000, [topicId], ['documents']);
   const [closed, setClosed] = useState<Set<string>>(new Set());
   const [over, setOver] = useState<string | null>(null);
   const list = docs.data ?? [];
@@ -444,7 +444,7 @@ function TopicFiles({ topicId, onOpen, onDetails, onChange, folders, onFolders, 
 
 function Todos({ subject }: { subject: Subject }) {
   const ov = useOverlay();
-  const todos = usePoll(() => api.todos(subject.id), 4000, [subject.id]);
+  const todos = usePoll(() => api.todos(subject.id), 500, [subject.id], ['todos']);
   const [adding, setAdding] = useState('');
   const list = todos.data ?? [];
   const pending = list.filter((t) => !t.done).length;

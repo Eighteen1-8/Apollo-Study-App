@@ -12,7 +12,7 @@ export function Button({ children, onClick, kind = 'default', disabled, title, s
   );
 }
 
-/** onMouseMove for cards with a cursor-following glow (`--mx`/`--my`, drawn by styles-v4.css). */
+/** onMouseMove for cards with a cursor-following glow (`--mx`/`--my`, drawn by styles/4-themes.css). */
 export function spotlight(e: React.MouseEvent<HTMLElement>) {
   const r = e.currentTarget.getBoundingClientRect();
   e.currentTarget.style.setProperty('--mx', `${e.clientX - r.left}px`);

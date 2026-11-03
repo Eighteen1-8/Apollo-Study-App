@@ -8,7 +8,7 @@ import threading
 import time
 import uvicorn
 
-from . import config, db, jobs
+from . import config, db, grants, jobs, log
 
 
 def _watch_parent(pid: int):
@@ -29,9 +29,11 @@ def main():
     ap.add_argument("--parent-pid", type=int)
     args = ap.parse_args()
     config.set_data_dir(args.data_dir)
+    log.setup()
     # Electron passes the token in the environment (not the command line, which other programs can read). Started by
     # hand, the backend makes its own: open the UI with ?backend=PORT&token=<the backend-token file's contents>.
     config.API_TOKEN = os.environ.pop("APOLLO_TOKEN", None) or secrets.token_urlsafe(32)
+    grants.KEY = os.environ.pop("APOLLO_GRANT_KEY", None)  # set by Electron; without it file paths aren't checked
     try:
         db.init()
     except db.StartupError as e:

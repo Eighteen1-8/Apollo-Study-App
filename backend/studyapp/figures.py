@@ -13,6 +13,7 @@ This module turns a tag into a cropped image:
      the description (choosing a number is far more reliable than asking a model for coordinates);
      with none, ask it for the figure's box; failing that, use the whole page or slide;
   4. crop at ~170 dpi, save under assets/figures/, cache by (file, page, description)."""
+import logging
 import hashlib
 import io
 import json
@@ -23,6 +24,8 @@ from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel
 
 from . import config, db, llm, render
+
+log = logging.getLogger(__name__)
 
 FIGURE_TAG = re.compile(r"\[\[\s*figure:\s*([^\]|]+?\.[A-Za-z0-9]{2,5})\s*[·|\-–]\s*([^\]|]+?)\s*\|\s*([^\]]+?)\s*\]\]", re.I)
 _norm = lambda s: re.sub(r"[^a-z0-9]+", " ", re.sub(r"\.(pdf|pptx|docx|txt|md|png|jpe?g)$", "", s.lower())).strip()  # noqa: E731
@@ -164,7 +167,7 @@ def _choose(page, boxes, hint: str):
             W, H = page.rect.width, page.rect.height
             return pymupdf.Rect(x0 * W, y0 * H, x1 * W, y1 * H)
     except Exception:
-        pass
+        log.warning("figure box choice failed; using the whole page", exc_info=True)
     return None
 
 
@@ -227,7 +230,7 @@ def resolve(subject_id: int, text: str, limit: int = 4, on_progress=None) -> dic
         try:
             fig = figure(subject_id, file, label, hint)
         except Exception as e:  # a missing figure must never break notes or a reply
-            print(f"[figures] {tag}: {e}")
+            log.warning("figure %s: %s", tag, e, exc_info=True)
             fig = None
         out[tag] = {**fig, "caption": hint} if fig else {"missing": True, "caption": hint, "file": file, "label": label}
     return out

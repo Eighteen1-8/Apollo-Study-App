@@ -12,14 +12,14 @@ const USES: Record<'llm' | 'embed', string[]> = { llm: ['vision', 'audit', 'gene
 export default function JobsPanel() {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
-  const jobs = usePoll(() => api.jobs(false), 1500);
+  const jobs = usePoll(() => api.jobs(false), 700, [], ['jobs']);
   const list = jobs.data ?? [];
   const active = list.filter((j) => ACTIVE.includes(j.status));
   const running = active.find((j) => j.status === 'running');
   const finished = list.length - active.length;
   const failed = list.some((j) => j.status === 'failed');
   const pct = running?.progress ?? 0;
-  const pause = usePoll(api.pauseState, 3000);
+  const pause = usePoll(api.pauseState, 300, [], ['pause', 'jobs']);
   const paused = { llm: !!pause.data?.llm, embed: !!pause.data?.embed };
   const anyPaused = paused.llm || paused.embed;
   // a job already mid-request keeps the model busy until that request ends; after that it waits
@@ -111,6 +111,9 @@ export default function JobsPanel() {
                     <div className="small muted">{j.message}</div>
                     <div className="job-row-bottom">
                       <Progress value={j.progress} />
+                      {j.status === 'queued' && (
+                        <button className="link-btn" title="Start this one before the others waiting" onClick={() => api.prioritizeJob(j.id).then(jobs.reload)}>Run next</button>
+                      )}
                       <button className="link-btn" onClick={() => api.cancelJob(j.id).then(jobs.reload)}>Cancel</button>
                     </div>
                   </>

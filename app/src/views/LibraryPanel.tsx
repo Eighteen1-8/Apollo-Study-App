@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { api, ArtifactType, LibraryItem, Subject } from '../api';
 import { usePoll } from '../hooks';
 import { useOverlay } from '../components/overlay';
+import { getPref, setPref } from '../prefs';
 
 export const TYPE_ICON: Record<ArtifactType, string> = { flashcards: '▤', quiz: '?', exam: '✎', notes: '¶', cheatsheet: '≡' };
 const TYPE_LABEL: Record<ArtifactType, string> = { flashcards: 'Flashcards', quiz: 'Quiz', exam: 'Exam', notes: 'Notes', cheatsheet: 'Cheat sheet' };
@@ -9,16 +10,16 @@ const TYPE_LABEL: Record<ArtifactType, string> = { flashcards: 'Flashcards', qui
 /** Left sidebar: everything generated for this subject, grouped by the topic it was made from. */
 export default function LibraryPanel({ subject, onOpen }: { subject: Subject; onOpen: (id: number) => void }) {
   const ov = useOverlay();
-  const lib = usePoll(() => api.library(subject.id), 3000, [subject.id]);
+  const lib = usePoll(() => api.library(subject.id), 1000, [subject.id], ['library']);
   const items = lib.data ?? [];
   const key = `libCollapsed:${subject.id}`;
   const [hidden, setHidden] = useState<Set<string>>(() => {
-    try { return new Set(JSON.parse(localStorage.getItem(key) ?? '[]')); } catch { return new Set(); }
+    return getPref(key, new Set<string>(), (v) => new Set(JSON.parse(v) as string[]));
   });
   const toggle = (name: string) => setHidden((h) => {
     const n = new Set(h);
     if (n.has(name)) n.delete(name); else n.add(name);
-    try { localStorage.setItem(key, JSON.stringify([...n])); } catch { /* storage unavailable */ }
+    setPref(key, JSON.stringify([...n]));
     return n;
   });
 

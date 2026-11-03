@@ -4,9 +4,11 @@ import { usePoll } from './hooks';
 import { OverlayProvider } from './components/overlay';
 import Minibar from './components/Minibar';
 import TooltipLayer from './components/Tooltip';
+import ErrorBoundary from './components/ErrorBoundary';
 import Home from './views/Home';
 import SubjectView from './views/SubjectView';
 import SettingsView from './views/SettingsView';
+import { logError } from './log';
 
 /** `launch` opens a create-content form in the chat (from a topic's Create menu). */
 export type Launch = { tool: ToolName; topicId: number | null; nonce: number };
@@ -19,14 +21,14 @@ export type SettingsTab = 'general' | 'maintenance' | 'share';
 
 export default function App() {
   const [route, setRoute] = useState<Route>({ name: 'home' });
-  const subjects = usePoll(api.subjects, 0);
+  const subjects = usePoll(api.subjects, 1000, [], ['subjects', 'documents']);
   const [backendUp, setBackendUp] = useState<boolean | null>(null);
   const [needsToken, setNeedsToken] = useState(false);
   /** Which parts run on OpenRouter (shown as a warning badge in the minibar; data leaves the computer). */
   const [online, setOnline] = useState<string[]>([]);
   const loadProvider = () => api.settings()
     .then((s) => setOnline([s.llm_provider === 'openrouter' && 'chat', s.embed_provider === 'openrouter' && 'embeddings'].filter(Boolean) as string[]))
-    .catch(() => {});
+    .catch((e) => logError('settings', e, 'warning'));
 
   useEffect(() => {
     let alive = true;
@@ -39,13 +41,6 @@ export default function App() {
 
   useEffect(() => { if (backendUp) { subjects.reload(); loadProvider(); } }, [backendUp]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // While files are being re-ingested for a new embedding model, keep the warning marks current.
-  const staleCount = (subjects.data ?? []).reduce((n, s) => n + (s.stale_docs ?? 0), 0);
-  useEffect(() => {
-    if (!staleCount) return;
-    const t = setInterval(() => subjects.reload(), 5000);
-    return () => clearInterval(t);
-  }, [staleCount]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const go = (r: Route) => setRoute(r);
   const refresh = () => { subjects.reload(); loadProvider(); };
@@ -79,7 +74,7 @@ export default function App() {
           {backendUp === false && (
             <div className="banner banner-bad">Local backend is not responding. Restart the app if this persists.</div>
           )}
-          {view}
+          <ErrorBoundary name="This page" resetKey={JSON.stringify(route)}>{view}</ErrorBoundary>
         </main>
         <TooltipLayer />
       </div>

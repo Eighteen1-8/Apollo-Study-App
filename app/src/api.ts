@@ -6,6 +6,8 @@ declare global {
       backendToken?: string;
       openFiles: (opts?: { multi?: boolean; filters?: { name: string; extensions: string[] }[] }) => Promise<string[]>;
       pathForFile: (file: File) => string;
+      /** The grant for a path the student picked or dropped ('' if none): see grantHeader. */
+      grantFor?: (path: string) => string;
       saveFile: (opts?: { defaultName?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>;
       showItem: (path: string) => Promise<void>;
       /** Present when the window has no native title bar (the app draws it; see Titlebar). */
@@ -23,6 +25,24 @@ export const inElectron = !!window.studyApp;
 const TOKEN = window.studyApp?.backendToken ?? new URLSearchParams(location.search).get('token') ?? '';
 export const hasToken = !!TOKEN;
 const AUTH: Record<string, string> = TOKEN ? { 'X-Apollo-Token': TOKEN } : {};
+/** Grants for every file path in a request body that the student picked or dropped (backend grants.py): the backend
+ * reads or writes a file outside its data folder only with one. Sent as base64url JSON {path: grant}. */
+function grantHeader(body: unknown): Record<string, string> {
+  const grantFor = window.studyApp?.grantFor;
+  if (!grantFor || body === undefined) return {};
+  const found: Record<string, string> = {};
+  const walk = (v: unknown) => {
+    if (typeof v === 'string') { const g = v.length < 1024 && grantFor(v); if (g) found[v] = g; }
+    else if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === 'object') Object.values(v).forEach(walk);
+  };
+  walk(body);
+  if (!Object.keys(found).length) return {};
+  const bytes = new TextEncoder().encode(JSON.stringify(found));
+  const b64 = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return { 'X-Apollo-Grants': b64 };
+}
+
 /** A backend URL the browser loads by itself (<img>, pdf.js), which can't send headers: the token goes in the query. */
 export function authUrl(url: string) {
   return TOKEN ? `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(TOKEN)}` : url;
@@ -66,11 +86,16 @@ export interface MaintDoc {
   size: { file: number; render: number; assets: number; index: number; total: number };
   units: number; text_chunks: number; vision_chunks: number; unembedded: number; stale: boolean;
   vision_total: number; vision_done: number; vision_failed: number; flags: number; reviewing: boolean;
+  /** Read by an older version of the parser (it may be missing text a newer one finds). */
+  old_parser: boolean;
 }
 export interface MaintOverview {
-  data_dir: string; db_path: string; embed_model: string;
+  data_dir: string; db_path: string; log_path: string; embed_model: string;
   disk: { database: number; files: number; renders: number; assets: number };
-  orphans: Record<'files' | 'renders' | 'assets', { count: number; bytes: number }>;
+  orphans: Record<'files' | 'renders' | 'assets' | 'cache', { count: number; bytes: number }>;
+  /** Database rows pointing at nothing (cached figures, screenshot records, older practice exam copies). */
+  stale_rows: number;
+  parser_version: string;
   subjects: { id: number; name: string; color: string }[];
   topics: { id: number; subject_id: number; name: string }[];
   documents: MaintDoc[];
@@ -125,7 +150,7 @@ export type Reasoning = 'off' | 'low' | 'medium' | 'xhigh';
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(BASE + path, {
     method,
-    headers: body !== undefined ? { ...AUTH, 'Content-Type': 'application/json' } : AUTH,
+    headers: body !== undefined ? { ...AUTH, ...grantHeader(body), 'Content-Type': 'application/json' } : AUTH,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
@@ -176,6 +201,7 @@ export const api = {
   maintenance: () => req<MaintOverview>('GET', '/maintenance/overview'),
   cleanup: (compact: boolean) => req<{ freed: number }>('POST', '/maintenance/cleanup', { compact }),
   reembed: (scope: MaintScope) => req<{ queued: number }>('POST', '/maintenance/reembed', scope),
+  reparse: (scope: MaintScope) => req<{ queued: number }>('POST', '/maintenance/reparse', scope),
   /** The rules run now; with `review`, Apollo checks each page against its image in the background. */
   visionScan: (scope: MaintScope, review = true, recheck = false) =>
     req<{ rule_flags: number; queued: number; units: number }>('POST', '/maintenance/vision-scan', { ...scope, review, recheck }),
@@ -185,13 +211,15 @@ export const api = {
   rerunFlagged: (body: MaintScope & { flag_ids?: number[] }) => req<{ units: number; queued: number }>('POST', '/maintenance/vision-rerun', body),
   jobs: (active = false) => req<Job[]>('GET', `/jobs${active ? '?active=true' : ''}`),
   cancelJob: (id: number) => req('POST', `/jobs/${id}/cancel`),
+  /** 'Run next': ahead of everything waiting in its lane. */
+  prioritizeJob: (id: number) => req('POST', `/jobs/${id}/prioritize`),
   dismissJob: (id?: number) => req('POST', `/jobs/dismiss${id ? `?job_id=${id}` : ''}`),
   exportPreview: (s: PackScope) => req<ExportPreview>('POST', '/export/preview', s),
   exportPack: (s: PackScope & { include_notes: boolean; path: string }) =>
     req<{ path: string; documents: number; bytes: number }>('POST', '/export', s),
   /** Browser fallback (no save dialog): the pack comes back as a download. */
   exportPackBlob: async (s: PackScope & { include_notes: boolean }) => {
-    const res = await fetch(BASE + '/export', { method: 'POST', headers: { ...AUTH, 'Content-Type': 'application/json' }, body: JSON.stringify(s) });
+    const res = await fetch(BASE + '/export', { method: 'POST', headers: { ...AUTH, ...grantHeader(s), 'Content-Type': 'application/json' }, body: JSON.stringify(s) });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? String(res.status));
     const name = /filename="?([^"]+)"?/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? 'study-pack.apollo.zip';
     return { blob: await res.blob(), name };
@@ -202,6 +230,7 @@ export const api = {
   backupNow: () => req<Backup>('POST', '/backups'),
   restoreBackup: (name: string | null) => req<{ pending_restore: string | null }>('POST', '/backups/restore', { name }),
   deleteBackup: (name: string) => req('DELETE', `/backups/${encodeURIComponent(name)}`),
+  clientLog: (b: { level: 'error' | 'warning'; where: string; message: string; stack: string }) => req('POST', '/client-log', b),
   pauseState: () => req<PauseState>('GET', '/jobs/pause'),
   setPause: (p: { llm?: boolean; embed?: boolean }) => req<PauseState>('POST', '/jobs/pause', p),
   search: (query: string, topic_id: number, include_reference: boolean) =>
@@ -268,7 +297,7 @@ export const api = {
 /** Server-sent chat events: user | status | reasoning | delta | assistant | tool | error | end. */
 async function streamChat(path: string, body: unknown, onEvent: (e: ChatEvent) => void) {
   const res = await fetch(BASE + path, {
-    method: 'POST', headers: { ...AUTH, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    method: 'POST', headers: { ...AUTH, ...grantHeader(body), 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
   if (!res.ok || !res.body) {
     let msg = `HTTP ${res.status}`;

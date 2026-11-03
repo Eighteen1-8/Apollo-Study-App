@@ -1,11 +1,19 @@
-"""SQLite storage: relational data, FTS5 keyword index, embeddings as float32 BLOBs."""
+"""SQLite storage: relational data, FTS5 keyword index, embeddings as float32 BLOBs.
+
+Connections: one writer (`_conn`, every write and every `tx()` under `_lock`) and one read-only connection per thread
+for `q`/`q1`. The database is in WAL mode, so reads never wait for a write (a long import, VACUUM or a big ingest)
+and see everything committed before they start. Inside `tx()` a thread reads through the writer instead, so it sees
+its own uncommitted changes."""
+import logging
 import json
 import sqlite3
 import threading
 import time
 from contextlib import contextmanager
 
-from . import config
+from . import config, secret_store
+
+log = logging.getLogger(__name__)
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -144,12 +152,26 @@ LEGACY_MIGRATIONS = [
 LEGACY_VERSION = 1  # user_version once the legacy list has been applied
 
 MIGRATIONS: list[tuple[int, list[str]]] = [
-    # (2, ["ALTER TABLE documents ADD COLUMN example TEXT"]),
+    # vec_version: bumped by SQLite itself whenever one of the document's chunks is added, removed or re-embedded, so the
+    # in-memory search cache (search._vectors) knows when to reload it without reading any vectors
+    (2, ["ALTER TABLE documents ADD COLUMN vec_version INTEGER NOT NULL DEFAULT 0",
+         """CREATE TRIGGER IF NOT EXISTS chunks_vec_ins AFTER INSERT ON chunks
+            BEGIN UPDATE documents SET vec_version = vec_version + 1 WHERE id = NEW.document_id; END""",
+         """CREATE TRIGGER IF NOT EXISTS chunks_vec_upd AFTER UPDATE OF embedding, embed_model, document_id ON chunks
+            BEGIN UPDATE documents SET vec_version = vec_version + 1 WHERE id IN (OLD.document_id, NEW.document_id); END""",
+         """CREATE TRIGGER IF NOT EXISTS chunks_vec_del AFTER DELETE ON chunks
+            BEGIN UPDATE documents SET vec_version = vec_version + 1 WHERE id = OLD.document_id; END"""]),
+    # Job scheduling (jobs.py): priority (higher first; "Run next" raises it) and queued_at (when it last joined the
+    # queue: a long vision job that yields to others goes to the back)
+    (3, ["ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
+         "ALTER TABLE jobs ADD COLUMN queued_at REAL",
+         "UPDATE jobs SET queued_at = created_at"]),
 ]
 SCHEMA_VERSION = max([LEGACY_VERSION, *(v for v, _ in MIGRATIONS)])
 
 _lock = threading.RLock()
 _conn: sqlite3.Connection | None = None
+_local = threading.local()  # .reader / .reader_path: this thread's read connection; .depth: open tx() levels
 
 
 class StartupError(RuntimeError):
@@ -169,8 +191,16 @@ def init():
     _migrate(fresh)
     with tx() as c:
         for k, v in config.DEFAULT_SETTINGS.items():
+            v = secret_store.protect(v) if k in config.SECRET_KEYS else v
             c.execute("INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)", (k, json.dumps(v)))
+        # keys saved before they were encrypted
+        for k in config.SECRET_KEYS:
+            r = c.execute("SELECT value FROM settings WHERE key=?", (k,)).fetchone()
+            if r and (v := json.loads(r[0])) and v != secret_store.protect(v):
+                c.execute("UPDATE settings SET value=? WHERE key=?", (json.dumps(secret_store.protect(v)), k))
         # Anything interrupted by a crash/quit goes back to the queue.
+        # An ingest stopped mid-way resumes where it can and keeps its finished vision notes (ref_id = pipeline.KEEP_VISION).
+        c.execute("UPDATE jobs SET ref_id=1 WHERE status='running' AND type='ingest' AND ref_id IS NULL")
         c.execute("UPDATE jobs SET status='queued', updated_at=? WHERE status='running'", (time.time(),))
 
 
@@ -310,7 +340,7 @@ def start_backup_schedule():
                 if time.time() - last > DAY:
                     backup("daily")
             except Exception as e:  # a full disk must not take the app down; the next pass tries again
-                print(f"[backup] failed: {e}", flush=True)
+                log.error("daily backup failed: %s", e, exc_info=True)
             time.sleep(3600)
     threading.Thread(target=loop, daemon=True, name="backups").start()
 
@@ -319,17 +349,34 @@ def start_backup_schedule():
 def tx():
     with _lock:
         _conn.execute("BEGIN")
+        _local.depth = getattr(_local, "depth", 0) + 1
         try:
             yield _conn
             _conn.execute("COMMIT")
         except BaseException:
             _conn.execute("ROLLBACK")
             raise
+        finally:
+            _local.depth -= 1
+
+
+def _reader() -> sqlite3.Connection:
+    path = str(config.db_path())
+    c = getattr(_local, "reader", None)
+    if c is None or _local.reader_path != path:
+        c = sqlite3.connect(path, isolation_level=None)
+        c.row_factory = sqlite3.Row
+        c.execute("PRAGMA query_only = 1")
+        c.execute("PRAGMA busy_timeout = 5000")
+        _local.reader, _local.reader_path = c, path
+    return c
 
 
 def q(sql, args=()):
-    with _lock:
-        return [dict(r) for r in _conn.execute(sql, args).fetchall()]
+    if getattr(_local, "depth", 0):  # inside this thread's transaction: read its own changes
+        with _lock:
+            return [dict(r) for r in _conn.execute(sql, args).fetchall()]
+    return [dict(r) for r in _reader().execute(sql, args).fetchall()]
 
 
 def q1(sql, args=()):
@@ -343,16 +390,22 @@ def ex(sql, args=()):
 
 
 def get_settings() -> dict:
-    return {r["key"]: json.loads(r["value"]) for r in q("SELECT key, value FROM settings")}
+    s = {r["key"]: json.loads(r["value"]) for r in q("SELECT key, value FROM settings")}
+    for k in config.SECRET_KEYS:
+        if k in s:
+            s[k] = secret_store.unprotect(s[k])
+    return s
 
 
 def setting(key):
     r = q1("SELECT value FROM settings WHERE key=?", (key,))
-    return json.loads(r["value"]) if r else config.DEFAULT_SETTINGS.get(key)
+    v = json.loads(r["value"]) if r else config.DEFAULT_SETTINGS.get(key)
+    return secret_store.unprotect(v) if key in config.SECRET_KEYS else v
 
 
 def put_settings(values: dict):
     with tx() as c:
         for k, v in values.items():
             if k in config.DEFAULT_SETTINGS:
+                v = secret_store.protect(v) if k in config.SECRET_KEYS and isinstance(v, str) else v
                 c.execute("INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)", (k, json.dumps(v)))

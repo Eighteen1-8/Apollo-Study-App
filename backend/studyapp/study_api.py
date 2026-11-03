@@ -3,12 +3,11 @@ and managing the saved content library."""
 import json
 import shutil
 import time
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from . import config, db, llm
+from . import config, db, grants, llm
 from .parsers import IMAGE_EXTS
 
 router = APIRouter()
@@ -43,7 +42,7 @@ def set_icon(sid: int, body: IconBody):
     if body.icon_emoji is not None:
         fields["icon_emoji"] = body.icon_emoji.strip()[:8] or None
     if body.image_path:
-        src = Path(body.image_path)
+        src = grants.require(body.image_path)
         if not src.is_file() or src.suffix.lower() not in IMAGE_EXTS:
             raise HTTPException(400, "Choose a PNG, JPG, WEBP, BMP or GIF image")
         folder = config.assets_dir() / "subject_icons"

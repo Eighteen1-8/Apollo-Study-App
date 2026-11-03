@@ -4,6 +4,7 @@ PowerPoint/Word (Microsoft Office via COM, or LibreOffice) export a .pptx/.docx 
 under <data>/renders/. Text still comes from the native parsers. Without either program, the viewer falls back to
 its HTML layout (viewer.py). Word sections don't line up with PDF pages, so `unit_positions` finds where each
 section starts in the PDF (exact text search), which is how citations and annotations map between the two."""
+import logging
 import json
 import re
 import shutil
@@ -14,6 +15,8 @@ from pathlib import Path
 import pymupdf
 
 from . import config, db
+
+log = logging.getLogger(__name__)
 
 OFFICE_EXTS = (".pptx", ".docx")
 _lock = threading.Lock()
@@ -52,8 +55,9 @@ def _convert(src: Path, out: Path, kind: str) -> bool:
                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             if out.exists():
                 return True
+            log.warning("Office export of %s produced no PDF", src.name)
     except Exception:
-        pass
+        log.warning("Office export of %s failed", src.name, exc_info=True)
     soffice = _soffice()
     if soffice:
         try:
@@ -67,7 +71,7 @@ def _convert(src: Path, out: Path, kind: str) -> bool:
             shutil.rmtree(tmp, ignore_errors=True)
             return out.exists()
         except Exception:
-            pass
+            log.warning("LibreOffice export of %s failed", src.name, exc_info=True)
     return False
 
 

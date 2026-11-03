@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState
 import { Annotation, AnnotationData, AnnotationKind, Stroke, TextAnchor } from '../api';
 import { useOverlay } from '../components/overlay';
 import { MathText } from '../components/ui';
+import { Px, anchorPx, nearStroke, NOTE_W } from './annotate-geometry';
 
 /**
  * The student's annotations on the original document. Every unit (page / slide / section) renders a <UnitOverlay>
@@ -15,7 +16,6 @@ export type Tool = 'select' | 'highlight' | 'pen' | 'eraser' | 'textbox' | 'note
 export type Area = { unit: number; rect: [number, number, number, number] };
 export const HIGHLIGHT_COLORS = ['#ffd84d', '#7ee081', '#7cc4ff', '#ff9ecb'];
 export const INK_COLORS = ['#e5484d', '#2463eb', '#1b1d22', '#16a34a'];
-const NOTE_W = 240; // px; note boxes stay readable at any zoom
 
 export interface AnnoApi {
   items: Annotation[];
@@ -44,136 +44,12 @@ const useAnno = () => useContext(AnnoContext)!;
 
 // ---------------------------------------------------------------- text anchoring
 
-/** Text nodes of a unit in order, leaving out the annotation layer itself. */
-function textNodes(root: Element): Text[] {
-  const out: Text[] = [];
-  const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    acceptNode: (n) => (n.parentElement?.closest('.anno-layer') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
-  });
-  while (w.nextNode()) out.push(w.currentNode as Text);
-  return out;
-}
-
-function offsetOf(root: Element, node: Node, offset: number): number {
-  const r = document.createRange();
-  r.setStart(root, 0);
-  r.setEnd(node, offset);
-  let acc = 0;
-  for (const t of textNodes(root)) {
-    if (!r.intersectsNode(t)) continue;
-    if (t === r.endContainer) return acc + r.endOffset;
-    acc += t.length;
-  }
-  return acc;
-}
-
-function rangeAt(root: Element, start: number, end: number): Range | null {
-  const r = document.createRange();
-  let acc = 0;
-  let started = false;
-  for (const t of textNodes(root)) {
-    if (!started && start <= acc + t.length) { r.setStart(t, Math.max(0, start - acc)); started = true; }
-    if (started && end <= acc + t.length) { r.setEnd(t, Math.max(0, end - acc)); return r; }
-    acc += t.length;
-  }
-  return null;
-}
-
-const squash = (s: string) => s.replace(/\s+/g, ' ').trim();
-
-/** Line boxes of a range (from its text only, so wholly-selected blocks don't add a box each), merged per line. */
-function rangeBoxes(range: Range, root: Element): DOMRect[] {
-  const boxes: DOMRect[] = [];
-  for (const t of textNodes(root)) {
-    if (!range.intersectsNode(t)) continue;
-    const r = document.createRange();
-    r.setStart(t, t === range.startContainer ? range.startOffset : 0);
-    r.setEnd(t, t === range.endContainer ? range.endOffset : t.length);
-    for (const b of r.getClientRects()) if (b.width > 1 && b.height > 1) boxes.push(b);
-  }
-  boxes.sort((a, b) => a.top - b.top || a.left - b.left);
-  const merged: DOMRect[] = [];
-  for (const b of boxes) {
-    const last = merged[merged.length - 1];
-    if (last && Math.abs(last.top - b.top) < Math.min(last.height, b.height) * 0.5 && b.left <= last.right + 6) {
-      const top = Math.min(last.top, b.top);
-      merged[merged.length - 1] = new DOMRect(Math.min(last.left, b.left), top, Math.max(last.right, b.right) - Math.min(last.left, b.left),
-        Math.max(last.bottom, b.bottom) - top);
-    } else merged.push(b);
-  }
-  return merged;
-}
-
-/** Anchor for a selection inside one unit element (a selection running past the unit is cut at its end). */
-export function anchorFromRange(range: Range, unitEl: Element): TextAnchor {
-  const r = range.cloneRange();
-  if (!unitEl.contains(r.endContainer)) r.setEnd(unitEl, unitEl.childNodes.length);
-  const box = unitEl.getBoundingClientRect();
-  const start = offsetOf(unitEl, r.startContainer, r.startOffset);
-  const end = offsetOf(unitEl, r.endContainer, r.endOffset);
-  const full = textNodes(unitEl).map((t) => t.data).join('');
-  return {
-    start, end, text: full.slice(start, end),
-    rects: rangeBoxes(r, unitEl).map((b) => [(b.left - box.left) / box.width, (b.top - box.top) / box.height, b.width / box.width, b.height / box.height]),
-  };
-}
-
-type Px = { x: number; y: number; w: number; h: number };
-
-function anchorPx(anchor: TextAnchor, el: Element, fixed: boolean, size: { w: number; h: number }): Px[] {
-  const fromRects = () => (anchor.rects ?? []).map(([x, y, w, h]) => ({ x: x * size.w, y: y * size.h, w: w * size.w, h: h * size.h }));
-  if (fixed && anchor.rects?.length) return fromRects();
-  if (anchor.start != null && anchor.end != null && anchor.text) {
-    let r = rangeAt(el, anchor.start, anchor.end);
-    if (!r || squash(r.toString()) !== squash(anchor.text)) {
-      // The text moved (e.g. the file was re-saved): look for the same words, nearest to where they were.
-      const full = textNodes(el).map((t) => t.data).join('');
-      let best = -1;
-      for (let i = full.indexOf(anchor.text); i >= 0; i = full.indexOf(anchor.text, i + 1)) {
-        if (best < 0 || Math.abs(i - anchor.start) < Math.abs(best - anchor.start)) best = i;
-      }
-      r = best >= 0 ? rangeAt(el, best, best + anchor.text.length) : null;
-    }
-    if (r) {
-      const box = el.getBoundingClientRect();
-      const sx = size.w / (box.width || 1);
-      const sy = size.h / (box.height || 1);
-      return rangeBoxes(r, el).map((b) => ({ x: (b.left - box.left) * sx, y: (b.top - box.top) * sy, w: b.width * sx, h: b.height * sy }));
-    }
-  }
-  return fromRects();
-}
-
-/** Where a note about some text goes: just below the end of the text, kept on the page. */
-export function notePlacement(anchor: TextAnchor, unitEl: Element) {
-  const box = unitEl.getBoundingClientRect();
-  const w = Math.min(NOTE_W / box.width, 0.9);
-  const last = anchor.rects?.[anchor.rects.length - 1] ?? [0.05, 0.05, 0, 0];
-  return {
-    x: Math.max(0.01, Math.min(last[0], 0.99 - w)), y: Math.min(last[1] + last[3] + 0.006, 0.95),
-    w, h: Math.min(150 / box.height, 0.5),
-  };
-}
-
-// ---------------------------------------------------------------- per-unit overlay
-
 const strokePath = (s: Stroke, w: number, h: number) => {
   const p = s.points;
   let d = `M${p[0] * w},${p[1] * h}`;
   for (let i = 2; i < p.length; i += 2) d += ` L${p[i] * w},${p[i + 1] * h}`;
   return d;
 };
-
-function nearStroke(s: Stroke, x: number, y: number, w: number, h: number, tol: number) {
-  const p = s.points;
-  for (let i = 0; i + 3 < p.length; i += 2) {
-    const ax = p[i] * w, ay = p[i + 1] * h, bx = p[i + 2] * w, by = p[i + 3] * h;
-    const dx = bx - ax, dy = by - ay;
-    const t = dx || dy ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy))) : 0;
-    if (Math.hypot(ax + t * dx - x, ay + t * dy - y) <= tol) return true;
-  }
-  return p.length === 2 && Math.hypot(p[0] * w - x, p[1] * h - y) <= tol;
-}
 
 export function UnitOverlay({ unit }: { unit: number }) {
   const ctx = useAnno();
@@ -519,73 +395,3 @@ function NotePad({ strokes, active, color, onChange }: { strokes: Stroke[]; acti
 }
 
 // ---------------------------------------------------------------- right-hand rail
-
-const KIND_ICON: Record<AnnotationKind, string> = { highlight: '▮', note: '🗒', ink: '✎', textbox: 'T', region: '▣' };
-type Filter = 'all' | AnnotationKind;
-
-export function AnnotationRail({ items, unitLabel, onGo, onDelete, needsReingest, busy, onReingest, onExport, onClose }: {
-  items: Annotation[]; unitLabel: (unit: number) => string; onGo: (a: Annotation) => void; onDelete: (a: Annotation) => void;
-  needsReingest: boolean; busy: boolean; onReingest: () => void; onExport: (() => void) | null; onClose: () => void;
-}) {
-  const [filter, setFilter] = useState<Filter>('all');
-  const shown = items.filter((a) => filter === 'all' || a.kind === filter);
-  const units = [...new Set(shown.map((a) => a.unit))].sort((a, b) => a - b);
-  const snippet = (a: Annotation) => {
-    if (a.kind === 'ink') return `Drawing (${a.data.strokes?.length ?? 0} stroke${a.data.strokes?.length === 1 ? '' : 's'})`;
-    if (a.kind === 'textbox') return a.data.text || 'Empty text box';
-    if (a.kind === 'region') return 'Screenshot sent to the chat';
-    if (a.kind === 'note') {
-      const body = a.data.pending ? 'Defining…' : a.data.text || (a.data.strokes?.length ? 'Drawing' : 'Empty note');
-      return a.data.definition ? `${a.data.title}: ${body}` : a.anchor.text ? `“${a.anchor.text}” · ${body}` : a.data.area ? `Area note · ${body}` : body;
-    }
-    return `“${a.anchor.text ?? ''}”`;
-  };
-  return (
-    <aside className="anno-rail">
-      <div className="rail-head">
-        <span>Annotations <span className="count-badge">{items.length}</span></span>
-        <button className="icon-btn" title="Hide annotations" onClick={onClose}>›</button>
-      </div>
-      {(needsReingest || busy) && (
-        <div className={`rail-card${busy ? '' : ' warn'}`}>
-          {busy ? <>Re-ingesting with your notes<span className="dots" /></> : (
-            <>
-              <div>Your notes changed since Apollo last read this file.</div>
-              <button className="btn btn-sm btn-primary" onClick={onReingest}>Re-ingest with notes</button>
-            </>
-          )}
-        </div>
-      )}
-      {onExport && items.length > 0 && <button className="btn btn-sm rail-export" onClick={onExport}>Export annotated PDF…</button>}
-      <div className="rail-filters">
-        {(['all', 'highlight', 'note', 'textbox', 'ink'] as Filter[]).map((f) => (
-          <button key={f} className={`rail-filter${filter === f ? ' on' : ''}`} onClick={() => setFilter(f)}>
-            {f === 'all' ? 'All' : f === 'highlight' ? 'Highlights' : f === 'note' ? 'Notes' : f === 'textbox' ? 'Text' : 'Drawings'}
-          </button>
-        ))}
-      </div>
-      <div className="rail-list">
-        {shown.length === 0 && (
-          <div className="rail-empty">
-            {items.length ? 'Nothing of this kind yet.' : 'Select text to highlight it, define it or add a note. Use the pen, text box and note tools above to write on the page.'}
-          </div>
-        )}
-        {units.map((u) => (
-          <div key={u} className="rail-group">
-            <div className="rail-unit">{unitLabel(u)}</div>
-            {shown.filter((a) => a.unit === u).map((a) => (
-              <div key={a.id} className="rail-item" onClick={() => onGo(a)} title="Go to this annotation">
-                <span className={`rail-icon k-${a.kind}`}
-                  style={{ color: a.kind === 'highlight' || a.kind === 'note' ? undefined : a.data.color ?? a.data.strokes?.[0]?.color,
-                    background: a.kind === 'highlight' ? a.data.color : undefined }}>{KIND_ICON[a.kind]}</span>
-                <span className="rail-text">{snippet(a)}</span>
-                {a.kind === 'note' && a.data.hidden && <span className="rail-hidden" title="Hidden note">hidden</span>}
-                <button className="x-btn rail-x" title="Delete" onClick={(e) => { e.stopPropagation(); onDelete(a); }}>×</button>
-              </div>
-            ))}
-          </div>
-        ))}
-      </div>
-    </aside>
-  );
-}

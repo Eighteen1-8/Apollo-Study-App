@@ -4,12 +4,13 @@ Every generator works group by group (see context.material_groups). Within a gro
 (rules + material) is identical for every call, so only the first call pays the prefill cost."""
 import json
 import re
+import tempfile
 import time
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from . import config, context, db, figures, llm, notehtml
+from . import context, db, figures, llm, notehtml
 from .parsers import IMAGE_EXTS, approx_tokens, parse, render_pdf_page, sha
 
 TOOLS = {
@@ -292,14 +293,19 @@ def _practice_exam_content(path: Path, subject_id: int):
     """Extract text (and page images for PDFs/images) from the practice exam. Not embedded, not added to topics."""
     data = path.read_bytes()
     digest = sha(data)
-    tmp = config.assets_dir() / f"practice_{digest[:16]}"
-    units, _ = parse(path, tmp, db.get_settings())
+    with tempfile.TemporaryDirectory() as tmp:  # extracted images aren't kept: the page images below are what's sent
+        units, _ = parse(path, Path(tmp), db.get_settings())
     text = "\n\n".join(f"[{u['label']}]\n{u['text']}" for u in units if u["text"].strip())
     images = []
     if path.suffix.lower() == ".pdf":
         images = [render_pdf_page(path, u["idx"], dpi=110) for u in units[:12]]
     elif path.suffix.lower() in IMAGE_EXTS:
         images = [data]
+    # one row per subject and file: generating again from the same practice exam reuses it
+    row = db.q1("SELECT id FROM practice_exams WHERE subject_id=? AND sha256=? ORDER BY id DESC LIMIT 1", (subject_id, digest))
+    if row:
+        db.ex("UPDATE practice_exams SET filename=?, text=?, created_at=? WHERE id=?", (path.name, text, time.time(), row["id"]))
+        return row["id"], text, images
     pid = db.ex("INSERT INTO practice_exams(subject_id, filename, sha256, text, created_at) VALUES (?,?,?,?,?)",
                 (subject_id, path.name, digest, text, time.time()))
     return pid, text, images

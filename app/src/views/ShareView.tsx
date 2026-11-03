@@ -3,6 +3,7 @@ import { api, DocRef, ExportPreview, ImportPreview, ImportResult, inElectron, Pa
 import { fmtBytes } from '../hooks';
 import { Modal } from '../components/overlay';
 import { Button } from '../components/ui';
+import { logError } from '../log';
 
 type What = 'subject' | 'topic' | 'files';
 const ZIP = [{ name: 'Apollo study pack', extensions: ['zip'] }];
@@ -12,7 +13,7 @@ const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`;
  * made by someone else. A pack carries the parsed text, vision notes and vectors, so importing skips all of that work. */
 export default function ShareView({ subjectId, onChanged }: { subjectId?: number; onChanged: () => void }) {
   const [subjects, setSubjects] = useState<Subject[]>([]);
-  useEffect(() => { api.subjects().then(setSubjects).catch(() => {}); }, []);
+  useEffect(() => { api.subjects().then(setSubjects).catch((e) => logError('share', e)); }, []);
   return (
     <div className="share">
       <ExportCard subjects={subjects} initialSubject={subjectId} />

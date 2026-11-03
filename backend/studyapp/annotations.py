@@ -1,10 +1,10 @@
 """The student's annotations on a document (highlights, note boxes, pen strokes, text boxes), "Define this", and
 exporting an annotated PDF. Text-bearing annotations are folded into the material on the next ingest
 (pipeline.annotation_blocks), so changing them flags the document for re-ingest."""
+import logging
 import json
 import re
 import time
-from pathlib import Path
 from urllib.parse import quote
 
 import pymupdf
@@ -12,7 +12,9 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from . import context, db, jobs, llm, pipeline, render, search
+from . import context, db, grants, jobs, llm, pipeline, render, search
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -137,6 +139,7 @@ def define(did: int, body: DefineBody):
     try:
         material = context._format_hits(search.search(term, refs, k=4))
     except Exception:  # embeddings offline: define from the passage alone
+        log.warning("define: related material search failed", exc_info=True)
         material = ""
     prompt = (f"Term: {term}\n\nPassage ({d['filename']}{' · ' + body.label if body.label else ''}):\n"
               f"…{body.before} {term} {body.after}…" + (f"\n\nRelated material:\n{material}" if material else ""))
@@ -162,7 +165,7 @@ class ExportBody(BaseModel):
 @router.post("/documents/{did}/export")
 def export_pdf_to(did: int, body: ExportBody):
     res = export_pdf(did)
-    out = Path(body.path)
+    out = grants.require(body.path, "write")
     if out.suffix.lower() != ".pdf":
         out = out.with_suffix(".pdf")
     try:

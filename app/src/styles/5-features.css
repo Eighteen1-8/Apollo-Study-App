@@ -1,9 +1,7 @@
-/* v5: quality-of-life layer. App-wide tooltips (components/Tooltip.tsx), the window's own title strip, the jobs
-   indicator's idle/busy icons, resizable workspace sidebars and small motion touches. Layered last. */
+/* 5 · Features: app-wide tooltips (components/Tooltip.tsx), the window's own title strip, the jobs indicator and
+   paused models, resizable workspace sidebars, Settings → Share and Backups, error boundaries, and small motion touches. */
 
 /* ================================================================ tooltips */
-/* the fixed layer replaces the old CSS ::after tips, which panes with overflow: hidden clipped */
-[data-tip]:hover::after, .minibar [data-tip]:hover::after { content: none !important; display: none !important; }
 .tooltip { position: fixed; z-index: 300; pointer-events: none; width: max-content; max-width: 300px; padding: 5px 10px; border-radius: 8px;
   background: var(--tip-bg); color: #f1f3f9; border: 1px solid color-mix(in srgb, white 10%, transparent); box-shadow: var(--shadow-lg);
   font-size: 12px; font-weight: 500; line-height: 1.4; white-space: pre-line; overflow-wrap: anywhere; }
@@ -186,3 +184,13 @@ body.col-resizing iframe, body.col-resizing canvas { pointer-events: none; }
 .maint-backup.pending { background: var(--warn-soft); }
 .maint-backup-kind { font-size: 12px; color: var(--text-faint); min-width: 150px; }
 .maint-restore { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+
+/* ================================================================ error boundary */
+.crash { margin: 24px auto; max-width: 520px; padding: 18px 20px; border-radius: var(--radius); background: var(--bad-soft);
+  border: 1px solid color-mix(in srgb, var(--bad) 35%, transparent); display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
+  animation: rise 0.3s var(--ease-out); }
+.crash-compact { margin: 10px; padding: 12px; }
+.crash-title { font-weight: 650; color: var(--bad); }
+.crash-msg { font-family: var(--mono); font-size: 12px; color: var(--text-dim); overflow-wrap: anywhere; max-height: 120px; overflow: auto; }
+.crash-note { font-size: 12px; color: var(--text-faint); }
+.crash-actions { display: flex; gap: 8px; }

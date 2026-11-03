@@ -18,7 +18,7 @@ export function matchUnit(units: Unit[], label: string): Unit | undefined {
 
 /** Ingest details: what was extracted, embedded and described by vision, unit by unit. */
 export default function DocumentView({ id, focus, onClose, onBack }: { id: number; focus?: string; onClose: () => void; onBack: () => void }) {
-  const doc = usePoll(() => api.document(id), 4000, [id]);
+  const doc = usePoll(() => api.document(id), 1500, [id], ['documents']);
   const [filter, setFilter] = useState<Filter>('all');
   const scrolled = useRef(false);
   const d = doc.data;

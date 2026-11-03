@@ -30,7 +30,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from . import config, db, jobs, llm, pipeline, render, vision_audit
+from . import config, db, grants, jobs, llm, pipeline, render, vision_audit
 from .chunker import chunk_units
 from .parsers import SUPPORTED
 
@@ -169,6 +169,7 @@ def _pack_document(doc: dict, keys: dict[int, str], include_notes: bool, unit_ke
 
 @router.post("/export")
 def export_pack(b: ExportBody):
+    chosen = grants.require(b.path, "write") if b.path else None  # before any work: only where the student chose
     subject, docs, label = _scope(b)
     docs = [d for d in docs if d["status"] in ("ready", "vision")]
     if not docs:
@@ -184,8 +185,8 @@ def export_pack(b: ExportBody):
             t = db.q1("SELECT name, description FROM topics WHERE id=?", (d["topic_id"],))
             topics[d["topic_id"]] = {"key": f"t{len(topics) + 1}", **t}
 
-    if b.path:
-        dest = Path(b.path)
+    if chosen:
+        dest = chosen
     else:
         fd, name = tempfile.mkstemp(suffix=".zip", prefix="apollo-pack-")
         os.close(fd)
@@ -253,7 +254,7 @@ def export_pack(b: ExportBody):
 # ---------------------------------------------------------------- import
 
 def _open(path: str) -> tuple[zipfile.ZipFile, dict]:
-    p = Path(path)
+    p = grants.require(path)
     if not p.is_file():
         raise HTTPException(404, "File not found")
     try:
@@ -394,7 +395,7 @@ def _insert_document(sid, topic_id, kind, d, data, vecs, size, now) -> int:
             "VALUES (?,?,?,?,?,?,?,'ready',?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)",
             (sid, topic_id, kind, str(d["filename"])[:255], d["ext"].lower(), d["sha256"], size, d.get("vision_mode") or "off",
              len(units), sum(int(u.get("token_count") or 0) for u in kept), len(chunks), len(units) - len(kept),
-             vision_total, vision_done, d.get("parser_version"), d.get("embed_model"), data.get("render_map"),
+             vision_total, vision_done, d.get("parser_version"), d.get("embed_model"), _render_map(data.get("render_map")),
              notes_at, notes_at, now, now)).lastrowid
         for u in units:
             images = [f"{did}/{n}" for n in u.get("images", []) if _SAFE.match(str(n))]
@@ -424,6 +425,17 @@ def _insert_document(sid, topic_id, kind, d, data, vecs, size, now) -> int:
             c.execute("INSERT INTO annotations(document_id, unit, kind, anchor, data, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
                       (did, int(a["unit"]), str(a["kind"]), str(a.get("anchor") or "{}"), str(a.get("data") or "{}"), now, now))
     return did
+
+
+def _render_map(raw) -> str | None:
+    """A pack's section → [page, y] map, only if it really is one (the viewer and annotations read it)."""
+    try:
+        m = json.loads(raw) if isinstance(raw, str) else None
+        ok = isinstance(m, dict) and all(isinstance(v, list) and len(v) == 2 and all(isinstance(x, (int, float)) for x in v)
+                                         for v in m.values())
+        return json.dumps(m) if ok else None
+    except ValueError:
+        return None
 
 
 def _copy_file(z: zipfile.ZipFile, member: str, out: Path, sha: str) -> bool:

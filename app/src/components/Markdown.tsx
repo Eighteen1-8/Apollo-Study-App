@@ -2,10 +2,29 @@ import { useEffect, useMemo, useRef } from 'react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import katex from 'katex';
-import { api, FigureRef } from '../api';
+import { api, BASE, FigureRef } from '../api';
 import { hydratePlots, plotHtml } from './plot';
 
 marked.setOptions({ gfm: true, breaks: true });
+
+/* Everything rendered here is model output or text from someone else's study pack, so it's sanitised strictly:
+   no forms, frames, embedded objects or SVG foreignObject; links and SVG references may only point inside the page;
+   images only from the backend's assets or inline data. (KaTeX's inline styles are kept.) */
+const PURIFY = {
+  FORBID_TAGS: ['form', 'input', 'button', 'textarea', 'select', 'option', 'iframe', 'frame', 'object', 'embed', 'base',
+    'meta', 'link', 'style', 'foreignObject', 'animate', 'set', 'animateMotion', 'animateTransform', 'audio', 'video', 'source'],
+  FORBID_ATTR: ['action', 'formaction', 'srcset', 'ping', 'target'],
+};
+DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+  for (const attr of ['href', 'xlink:href']) {
+    const v = node.getAttribute(attr);
+    if (v !== null && !v.startsWith('#')) node.removeAttribute(attr);
+  }
+  if (node.tagName === 'IMG' || node.tagName.toLowerCase() === 'image') {
+    const src = node.getAttribute('src') ?? '';
+    if (!(src.startsWith(`${BASE}/assets/`) || /^data:image\/(png|jpe?g|gif|webp);/.test(src))) node.removeAttribute('src');
+  }
+});
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 const unesc = (s: string) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
@@ -82,7 +101,7 @@ export function renderMarkdown(src: string, opts: { citations?: boolean; figures
     .replace(/\\\((.+?)\\\)/g, (_, t) => math(t, false))
     .replace(/\$([^$\n]+?)\$/g, (_, t) => math(t, false));
   const body = opts.html ? text : (marked.parse(repairTables(text), { async: false }) as string);
-  return DOMPurify.sanitize(body.replace(/@@KEEP(\d+)@@/g, (_, i) => keep[Number(i)]));
+  return DOMPurify.sanitize(body.replace(/@@KEEP(\d+)@@/g, (_, i) => keep[Number(i)]), PURIFY);
 }
 
 /** For saved messages/sections: every figure tag in them was already resolved (an empty map = none were found). */

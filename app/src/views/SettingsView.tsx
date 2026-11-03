@@ -6,6 +6,7 @@ import ShareView from './ShareView';
 import { useOverlay } from '../components/overlay';
 import { Button } from '../components/ui';
 import { ACCENTS, THEMES, useAppearance } from '../theme';
+import { logError } from '../log';
 
 type Field = {
   key: string; label: string; type: 'text' | 'password' | 'number' | 'bool' | 'select' | 'reasoning' | 'list';
@@ -187,7 +188,7 @@ function AppearanceSettings() {
 /** The tutor's rules (editable, {scope} = the subject/topic) and personality dials. */
 function TutorSettings({ s, set }: { s: Settings; set: (k: string, v: string | number) => void }) {
   const [def, setDef] = useState('');
-  useEffect(() => { api.defaultPrompt().then((r) => setDef(r.prompt)).catch(() => {}); }, []);
+  useEffect(() => { api.defaultPrompt().then((r) => setDef(r.prompt)).catch((e) => logError('default prompt', e, 'warning')); }, []);
   const custom = String(s.chat_system_prompt ?? '');
   return (
     <section className="section">
