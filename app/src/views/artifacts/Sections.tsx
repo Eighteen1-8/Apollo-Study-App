@@ -22,7 +22,7 @@ export function Sections({ content, onCite }: { content: ArtifactContent; onCite
         </nav>
       )}
       {secs.map((s, i) => (
-        <section key={i} id={`sec-${i}`} className="notes-section">
+        <section key={i} id={`sec-${i}`} className="notes-section" data-sec={i}>
           {secs.length > 1 && <div className="notes-src">{s.title}</div>}
           {!(s.html ?? s.markdown ?? '').trim()
             ? <div className="banner banner-warn">This section came back empty. Use Regenerate to write it again.</div>

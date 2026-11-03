@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, AreaSource, ArtifactSummary, Chat, ChatEvent, ChatFileCheck, inElectron, Message, Quote, Reasoning, Subject, ToolName } from '../api';
+import { api, AreaSource, ArtifactSummary, Chat, ChatEvent, ChatFileCheck, inElectron, Message, Quote, Reasoning, Review, Subject, ToolName } from '../api';
 import type { Launch } from '../App';
 import { DOC_DRAG, DraggedDoc, draggedDocs } from '../components/FileList';
 import Markdown, { RESOLVED } from '../components/Markdown';
@@ -16,7 +16,7 @@ const LEVEL_LABEL: Record<string, string> = { off: 'Off', low: 'Low', medium: 'M
 
 
 export default function ChatView({ subject, launch, floating, collapsed, full, onToggleCollapse, onToggleFull, onCite, onOpenArtifact,
-  onOpenDoc, quote, onClearQuote, incoming, onShowArea }: {
+  onOpenDoc, onOpenNote, quote, onClearQuote, incoming, onShowArea, openRequest, onActiveChat }: {
   subject: Subject; launch?: Launch; floating: boolean; collapsed: boolean; full: boolean; onToggleCollapse: () => void;
   onToggleFull: () => void; onCite: (file: string, label: string) => void; onOpenArtifact: (id: number) => void;
   onOpenDoc: (id: number) => void; quote: (Quote & { nonce: number }) | null; onClearQuote: () => void;
@@ -24,6 +24,11 @@ export default function ChatView({ subject, launch, floating, collapsed, full, o
   onShowArea: (s: AreaSource) => void;
   /** Files dropped on the "send to chat" bar: read for one message, not ingested. */
   incoming: { paths: string[]; nonce: number } | null;
+  onOpenNote: (id: number) => void;
+  /** A chat picked in the sidebar's history (id null: start a new one). */
+  openRequest: { id: number | null; nonce: number } | null;
+  /** The chat now showing, for the sidebar's history. */
+  onActiveChat: (id: number | null) => void;
 }) {
   const ov = useOverlay();
   const [chats, setChats] = useState<Chat[]>([]);
@@ -110,6 +115,14 @@ export default function ChatView({ subject, launch, floating, collapsed, full, o
     const list = bottom.current?.parentElement;
     if (list) list.scrollTo({ top: list.scrollHeight, behavior: 'smooth' });
   }, [messages.length, streaming?.text, streaming?.status, collapsed]);
+
+  useEffect(() => { onActiveChat(chat?.id ?? null); }, [chat?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!openRequest) return;
+    if (openRequest.id === null) newChat(chat?.topic_id ?? null);
+    else if (openRequest.id !== chat?.id) openChat(openRequest.id).catch(() => loadChats());
+    setTimeout(() => textarea.current?.focus(), 80);
+  }, [openRequest?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const ensureChat = async () => chat ?? (await newChat(null));
 
@@ -269,16 +282,16 @@ export default function ChatView({ subject, launch, floating, collapsed, full, o
       </div>
 
       <div className="chat-body" aria-hidden={collapsed}>
-          <div className="chat-scroll">
+          <div className="chat-scroll" data-find="the chat">
             {messages.length === 0 && !streaming && (
               <div className="chat-empty">
                 <div className="chat-empty-title">Ask anything about {subject.name}</div>
-                <div className="muted">Pick a topic below, then ask a question, or ask Apollo to make flashcards, a quiz, an exam, notes or a cheat sheet.</div>
+                <div className="muted">Pick a topic below, then ask a question, or ask Apollo to make flashcards, a quiz, an exam, notes, a cheat sheet or a mind map.</div>
               </div>
             )}
             {messages.map((m) => (
               <MessageView key={m.id} m={m} subject={subject} chatTopic={chat?.topic_id ?? null}
-                onReplace={replace} onOpenArtifact={onOpenArtifact} onCite={onCite} onOpenDoc={onOpenDoc}
+                onReplace={replace} onOpenArtifact={onOpenArtifact} onCite={onCite} onOpenDoc={onOpenDoc} onOpenNote={onOpenNote}
                 actions={{ busy: !!streaming, onEdit: editMessage, onRollback: rollback, onRegenerate: regenerate }} onShowArea={onShowArea} />
             ))}
             {streaming && (
@@ -396,9 +409,10 @@ function ReasoningBlock({ text, live, seconds, started, level }: {
 
 type MsgActions = { busy: boolean; onEdit: (m: Message, text: string) => void; onRollback: (m: Message) => void; onRegenerate: (m: Message) => void };
 
-function MessageView({ m, subject, chatTopic, onReplace, onOpenArtifact, onCite, onOpenDoc, actions, onShowArea }: {
+function MessageView({ m, subject, chatTopic, onReplace, onOpenArtifact, onCite, onOpenDoc, onOpenNote, actions, onShowArea }: {
   m: Message; subject: Subject; chatTopic: number | null; onReplace: (m: Message) => void;
   onOpenArtifact: (id: number) => void; onCite: (file: string, label: string) => void; onOpenDoc: (id: number) => void;
+  onOpenNote: (id: number) => void;
   actions: MsgActions; onShowArea: (s: AreaSource) => void;
 }) {
   const [editing, setEditing] = useState<string | null>(null);
@@ -492,6 +506,11 @@ function MessageView({ m, subject, chatTopic, onReplace, onOpenArtifact, onCite,
       </div>
     );
   }
+  if (m.meta.tool === 'review_content') {
+    if (!m.meta.review_id) return <div className="msg msg-note small bad">{m.meta.error || m.content}</div>;
+    return <ReviewMsgCard id={m.meta.review_id} title={m.meta.title ?? ''} mode={m.meta.mode ?? 'check'}
+      onOpen={() => (m.meta.target === 'note' ? onOpenNote(m.meta.target_id!) : onOpenArtifact(m.meta.target_id!))} />;
+  }
   if (m.meta.status === 'form') return <ToolForm m={m} subject={subject} chatTopic={chatTopic} onReplace={onReplace} />;
   if (m.meta.status === 'dismissed') return <div className="msg msg-note muted small">Cancelled: {m.content.toLowerCase()}</div>;
   return m.meta.artifact_id ? <ArtifactCard id={m.meta.artifact_id} initial={m.artifact ?? null} onOpen={onOpenArtifact} /> : null;
@@ -499,7 +518,43 @@ function MessageView({ m, subject, chatTopic, onReplace, onOpenArtifact, onCite,
 
 const FORM_TITLES: Record<string, string> = {
   flashcards: 'Create flashcards', quiz: 'Create a quiz', exam: 'Create an exam', notes: 'Compile full notes', cheatsheet: 'Create a cheat sheet',
+  mindmap: 'Create a mind map',
 };
+
+/** Apollo checking or revising a note because the student asked in chat: follows the review, opens the note. */
+function ReviewMsgCard({ id, title, mode, onOpen }: { id: number; title: string; mode: 'check' | 'revise'; onOpen: () => void }) {
+  const [r, setR] = useState<Review | null>(null);
+  const [gone, setGone] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const tick = () => api.review(id).then((x) => alive && setR(x)).catch(() => alive && setGone(true));
+    tick();
+    const off = onChange(['reviews'], tick);
+    return () => { alive = false; off(); };
+  }, [id]);
+  const busy = !r || r.status === 'queued' || r.status === 'running';
+  const verdict = r?.result?.verdict;
+  return (
+    <div className={`msg artifact-card status-${r?.status ?? 'queued'}`}>
+      <div className="artifact-icon t-notes">{mode === 'check' ? '✓' : '✎'}</div>
+      <div className="artifact-main">
+        <div className="artifact-title">{mode === 'check' ? 'Checking' : 'Revising'} {title}</div>
+        {gone && <div className="muted small">This comment was dismissed.</div>}
+        {!gone && busy && <><div className="muted small">{r?.status === 'running' ? r.message : 'Waiting for Apollo…'}</div><Progress value={r?.progress ?? 0} /></>}
+        {r?.status === 'failed' && <div className="small bad">{r.error}</div>}
+        {r?.status === 'ready' && (
+          <div className="muted small">
+            {mode === 'check'
+              ? `${{ correct: 'Looks correct', mostly_correct: 'Mostly correct', incorrect: 'Has errors', unsure: 'Not covered by your material' }[verdict ?? 'unsure']}`
+                + (r.result?.issues?.length ? ` · ${r.result.issues.length} issue${r.result.issues.length === 1 ? '' : 's'}` : '')
+              : r.applied ? 'Applied' : 'Ready: open it to see the changes and apply them'}
+          </div>
+        )}
+      </div>
+      <div className="artifact-actions"><button className="btn btn-sm btn-primary" onClick={onOpen}>Open</button></div>
+    </div>
+  );
+}
 
 function ToolForm({ m, subject, chatTopic, onReplace }: { m: Message; subject: Subject; chatTopic: number | null; onReplace: (m: Message) => void }) {
   const type = m.meta.type!;

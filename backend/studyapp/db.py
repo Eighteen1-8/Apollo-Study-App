@@ -166,7 +166,37 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     (3, ["ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
          "ALTER TABLE jobs ADD COLUMN queued_at REAL",
          "UPDATE jobs SET queued_at = created_at"]),
+    # The student's own notes (rich-text HTML from the notes editor). Never ingested: they may be wrong, so nothing
+    # reads them into the material; Apollo only sees one when asked to check or revise it.
+    # Reviews: Apollo checking ('check') or rewriting ('revise') a note or a generated notes/cheat sheet/mind map
+    # artifact (target 'note' | 'artifact'), optionally only a highlighted passage (quote) of one section, run as a
+    # 'review' job; result JSON holds the verdict and issues, or the proposed new HTML per section.
+    # Artifact marks: the student's highlights on generated content, as character offsets into a section's text.
+    # jobs.label: what an interactive job (a chat reply, a definition) is about, for the jobs list.
+    (4, ["""CREATE TABLE IF NOT EXISTS user_notes (
+            id INTEGER PRIMARY KEY, subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+            topic_id INTEGER REFERENCES topics(id) ON DELETE SET NULL, title TEXT NOT NULL DEFAULT 'Untitled note',
+            html TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL, updated_at REAL NOT NULL
+         )""",
+         """CREATE TABLE IF NOT EXISTS reviews (
+            id INTEGER PRIMARY KEY, subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+            target TEXT NOT NULL, target_id INTEGER NOT NULL, section INTEGER, quote TEXT NOT NULL DEFAULT '',
+            instruction TEXT NOT NULL DEFAULT '', mode TEXT NOT NULL, status TEXT NOT NULL, progress REAL NOT NULL DEFAULT 0,
+            message TEXT NOT NULL DEFAULT '', error TEXT, result TEXT, applied INTEGER NOT NULL DEFAULT 0,
+            dismissed INTEGER NOT NULL DEFAULT 0, chat_id INTEGER REFERENCES chats(id) ON DELETE SET NULL,
+            created_at REAL NOT NULL, updated_at REAL NOT NULL
+         )""",
+         "CREATE INDEX IF NOT EXISTS reviews_target ON reviews(target, target_id)",
+         """CREATE TABLE IF NOT EXISTS artifact_marks (
+            id INTEGER PRIMARY KEY, artifact_id INTEGER NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+            section INTEGER NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, text TEXT NOT NULL,
+            color TEXT NOT NULL DEFAULT 'yellow', created_at REAL NOT NULL
+         )""",
+         "ALTER TABLE jobs ADD COLUMN label TEXT"]),
 ]
+# Rows in `jobs` that only show interactive model work in the jobs list (jobs.track); no worker runs them.
+INTERACTIVE_JOBS = ("chat", "define", "quiz_review")
+
 SCHEMA_VERSION = max([LEGACY_VERSION, *(v for v, _ in MIGRATIONS)])
 
 _lock = threading.RLock()
@@ -201,6 +231,9 @@ def init():
         # Anything interrupted by a crash/quit goes back to the queue.
         # An ingest stopped mid-way resumes where it can and keeps its finished vision notes (ref_id = pipeline.KEEP_VISION).
         c.execute("UPDATE jobs SET ref_id=1 WHERE status='running' AND type='ingest' AND ref_id IS NULL")
+        # Interactive work (a chat reply, a definition) died with its request: it can't be resumed.
+        c.execute(f"UPDATE jobs SET status='cancelled', message='Interrupted', updated_at=? WHERE status IN ('queued','running') "
+                  f"AND type IN ({','.join('?' * len(INTERACTIVE_JOBS))})", (time.time(), *INTERACTIVE_JOBS))
         c.execute("UPDATE jobs SET status='queued', updated_at=? WHERE status='running'", (time.time(),))
 
 

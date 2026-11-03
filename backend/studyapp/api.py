@@ -23,6 +23,7 @@ from . import config, db, grants, jobs, llm, pipeline, render, search, viewer
 from .annotations import router as annotations_router
 from .chat_api import router as chat_router
 from .maintenance import router as maintenance_router
+from .notes_api import router as notes_router
 from .packages import router as packages_router
 from .events import router as events_router
 from .projection import router as projection_router
@@ -39,6 +40,7 @@ app.include_router(projection_router)
 app.include_router(maintenance_router)
 app.include_router(packages_router)
 app.include_router(events_router)
+app.include_router(notes_router)
 
 
 OPEN_PATHS = ("/health",)
@@ -611,7 +613,7 @@ def list_jobs(active: bool = False):
     where = ("WHERE j.status IN ('queued','running')" if active else
              "WHERE j.updated_at > ? AND (j.dismissed=0 OR j.status IN ('queued','running'))")
     args = () if active else (time.time() - 3600,)
-    return db.q(f"""SELECT j.*, COALESCE(d.filename, a.title, aa.title || ' (marking)') AS filename FROM jobs j
+    return db.q(f"""SELECT j.*, COALESCE(j.label, d.filename, a.title, aa.title || ' (marking)') AS filename FROM jobs j
                     LEFT JOIN documents d ON d.id=j.document_id
                     LEFT JOIN artifacts a ON j.type='generate' AND a.id=j.ref_id
                     LEFT JOIN attempts t ON j.type='mark' AND t.id=j.ref_id LEFT JOIN artifacts aa ON aa.id=t.artifact_id {where}

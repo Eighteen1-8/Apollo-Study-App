@@ -41,7 +41,7 @@ export default function DocumentView({ id, focus, onClose, onBack }: { id: numbe
   const busy = ['queued', 'parsing', 'embedding', 'vision'].includes(d.status);
 
   return (
-    <div className="page">
+    <div className="page" data-find={d.filename}>
       <header className="page-head">
         <div>
           <h1 className="doc-title">{d.filename}</h1>

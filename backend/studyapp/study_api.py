@@ -7,7 +7,7 @@ import time
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from . import config, db, grants, llm
+from . import config, db, grants, jobs, llm
 from .parsers import IMAGE_EXTS
 
 router = APIRouter()
@@ -210,8 +210,9 @@ def quiz_review(aid: int, body: QuizAnswers):
             "and list the specific topics they most likely need to revise (based on wrong answers and patterns across them). "
             "Each revise item: a short topic name a student would put on a to-do list, why, and the source to revise from. "
             "If everything was right, suggest at most one stretch topic.\n\n" + "\n\n".join(lines))
-    review = llm.chat_json([{"role": "user", "content": task}], Review, max_tokens=8000,
-                           reasoning=db.setting("review_reasoning"), temperature=0.3)
+    with jobs.track("quiz_review", f"Review: {a['title']}", "Reviewing your answers"):
+        review = llm.chat_json([{"role": "user", "content": task}], Review, max_tokens=8000,
+                               reasoning=db.setting("review_reasoning"), temperature=0.3)
     now = time.time()
     att = db.ex("""INSERT INTO attempts(artifact_id, kind, answers, status, result, score, total, progress, created_at, updated_at)
                    VALUES (?,?,?,?,?,?,?,1,?,?)""",

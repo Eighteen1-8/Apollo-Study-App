@@ -96,6 +96,31 @@ def test_subject_endpoints_match_their_types(library):
     check(next(d for d in overview["documents"] if d["id"] == did), "MaintDoc")
 
 
+def test_notes_endpoints_match_their_types(library):
+    sid = library["sid"]
+    note = client.post(f"/subjects/{sid}/notes", json={"title": "Contract", "html": "<p>x</p>"}).json()
+    try:
+        check(note, "Note")
+        check(client.get(f"/notes/{note['id']}").json(), "Note")
+        for n in client.get(f"/subjects/{sid}/notes").json():
+            check(n, "NoteSummary")
+        r = client.post("/reviews", json={"target": "note", "target_id": note["id"], "mode": "check"}).json()
+        check(r, "Review")
+        for x in client.get(f"/reviews?target=note&target_id={note['id']}").json():
+            check(x, "Review")
+        client.post(f"/reviews/{r['id']}/dismiss")
+        for c in client.get(f"/subjects/{sid}/chats").json():
+            check(c, "Chat")
+    finally:
+        client.delete(f"/notes/{note['id']}")
+    now = time.time()
+    aid = db.ex("INSERT INTO artifacts(subject_id, type, title, content, status, created_at, updated_at) "
+                "VALUES (?, 'notes', 'N', '{}', 'ready', ?, ?)", (sid, now, now))
+    m = client.post(f"/artifacts/{aid}/marks", json={"section": 0, "start": 0, "end": 1, "text": "x"}).json()
+    check(m, "Mark")
+    db.ex("DELETE FROM artifacts WHERE id=?", (aid,))
+
+
 def test_a_missing_field_is_caught():
     with pytest.raises(AssertionError, match="no longer sends"):
         check({"id": 1, "type": "ingest"}, "Job")

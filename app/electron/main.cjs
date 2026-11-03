@@ -1,5 +1,5 @@
 // Electron main process: starts the Python sidecar, locks the app to localhost, opens the window.
-const { app, BrowserWindow, ipcMain, dialog, nativeTheme, screen, session, shell } = require('electron');
+const { app, BrowserWindow, clipboard, ipcMain, dialog, Menu, nativeImage, nativeTheme, screen, session, shell } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
@@ -165,6 +165,18 @@ async function createWindow() {
   if (state.maximized) win.maximize();
   trackBounds(win);
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  // Electron shows no context menu of its own: text fields and selected text the page doesn't handle itself get the
+  // usual Cut / Copy / Paste / Select all (the page's own menus call preventDefault, so this never doubles up).
+  win.webContents.on('context-menu', (_e, p) => {
+    if (!p.isEditable && !p.selectionText.trim()) return;
+    const f = p.editFlags;
+    const items = p.isEditable
+      ? [{ role: 'undo', enabled: f.canUndo }, { role: 'redo', enabled: f.canRedo }, { type: 'separator' },
+        { role: 'cut', enabled: f.canCut }, { role: 'copy', enabled: f.canCopy }, { role: 'paste', enabled: f.canPaste },
+        { type: 'separator' }, { role: 'selectAll', enabled: f.canSelectAll }]
+      : [{ role: 'copy', enabled: f.canCopy }];
+    Menu.buildFromTemplate(items).popup({ window: win });
+  });
   win.webContents.on('will-navigate', (e, url) => {
     if (!url.startsWith('http://localhost:5173') && !url.startsWith('file://')) e.preventDefault();
   });
@@ -196,6 +208,28 @@ ipcMain.on('grant:dropped', (e, p) => { e.returnValue = typeof p === 'string' &&
 
 ipcMain.handle('shell:showItem', (_e, p) => { shell.showItemInFolder(p); });
 
+// Export to PDF: the page puts what to print in #print-root and its print styles hide everything else.
+ipcMain.handle('print:pdf', async (e, opts = {}) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  const name = String(opts.defaultName || 'export').replace(/[<>:"/\\|?*]+/g, ' ').trim() || 'export';
+  const res = await dialog.showSaveDialog(win, {
+    defaultPath: path.join(app.getPath('documents'), `${name}.pdf`), filters: [{ name: 'PDF', extensions: ['pdf'] }],
+  });
+  if (res.canceled || !res.filePath) return null;
+  const data = await e.sender.printToPDF({ printBackground: true, pageSize: 'A4', margins: { marginType: 'default' } });
+  fs.writeFileSync(res.filePath, data);
+  shell.showItemInFolder(res.filePath);
+  return res.filePath;
+});
+
+// A screenshot of part of the window (CSS pixels), for the chat or the clipboard.
+ipcMain.handle('capture:rect', async (e, r) => {
+  const rect = { x: Math.round(r.x), y: Math.round(r.y), width: Math.max(1, Math.round(r.width)), height: Math.max(1, Math.round(r.height)) };
+  const img = await e.sender.capturePage(rect);
+  return img.toPNG().toString('base64');
+});
+ipcMain.handle('clipboard:image', (_e, png) => { clipboard.writeImage(nativeImage.createFromBuffer(Buffer.from(String(png), 'base64'))); });
+
 ipcMain.on('backend:info', (e) => { e.returnValue = { url: `http://127.0.0.1:${backendPort}`, token: backendToken }; });
 
 ipcMain.on('window:chrome', (e, c) => {
@@ -211,6 +245,12 @@ ipcMain.on('window:chrome', (e, c) => {
 
 app.whenReady().then(async () => {
   app.setAppUserModelId('com.apollo.study'); // needed for Windows notifications later
+  // The menu bar is hidden; this keeps its shortcuts. Select all and Find are left to the page, which limits them to
+  // the document, notes or chat being read instead of the whole window.
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }] },
+    { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }] },
+  ]));
   lockToLocalhost();
   try {
     backendPort = await startBackend();

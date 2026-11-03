@@ -4,6 +4,7 @@ import { usePoll } from './hooks';
 import { OverlayProvider } from './components/overlay';
 import Minibar from './components/Minibar';
 import TooltipLayer from './components/Tooltip';
+import FindLayer from './components/FindBar';
 import ErrorBoundary from './components/ErrorBoundary';
 import Home from './views/Home';
 import SubjectView from './views/SubjectView';
@@ -77,6 +78,7 @@ export default function App() {
           <ErrorBoundary name="This page" resetKey={JSON.stringify(route)}>{view}</ErrorBoundary>
         </main>
         <TooltipLayer />
+        <FindLayer />
       </div>
     </OverlayProvider>
   );

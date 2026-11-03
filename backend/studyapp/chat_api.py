@@ -1,7 +1,10 @@
 """Chat with Qwen about a subject (optionally scoped to one topic). Content creation happens through tool calls:
 the model (or a quick-action button) creates a 'tool' message holding a form; submitting it starts a generation job."""
+import base64
+import hashlib
 import json
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -9,7 +12,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from . import context, db, figures, generate, grants, jobs, llm, search, study_api
+from . import config, context, db, figures, generate, grants, jobs, llm, notes_api, pipeline, review, search, study_api
 from .chat_files import _read_chat_file
 from .chat_prompt import (ATTACHED_RULES, DEFAULT_RULES, QUOTE_RULES, SEARCH_TOOL, _attachment_material, _history,
                           _other_topic_docs, _system_prompt)
@@ -39,6 +42,28 @@ TOOL_SPECS = [
     {"type": "function", "function": {"name": "create_cheatsheet", "description":
         "Create a one-page cheat sheet of key definitions and formulas.",
         "parameters": {"type": "object", "properties": {"focus": {"type": "string"}}}}},
+    {"type": "function", "function": {"name": "create_mindmap", "description":
+        "Create a mind map showing how the ideas in the student's material connect.",
+        "parameters": {"type": "object", "properties": {"focus": {"type": "string"}}}}},
+    {"type": "function", "function": {"name": "view_todos", "description":
+        "Read the student's revision to-do list (what's done and what's still to do). Use it when the student asks "
+        "about their to-dos, what to revise next, or their progress, or before planning their revision.",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "list_content", "description":
+        "List the student's own notes and the generated notes and cheat sheets in this subject, by title.",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "read_content", "description":
+        "Read one of the student's notes or a generated notes / cheat sheet (see list_content) to answer questions about it.",
+        "parameters": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]}}},
+    {"type": "function", "function": {"name": "review_content", "description":
+        "Check whether one of the student's notes or a generated notes / cheat sheet is correct (mode 'check'), or "
+        "change it as the student asks (mode 'revise': add, fix, shorten, reorganise...). Runs in the background; the "
+        "student sees the result on the note and decides whether to apply a revision.",
+        "parameters": {"type": "object", "properties": {
+            "title": {"type": "string", "description": "the title, as in list_content"},
+            "mode": {"type": "string", "enum": ["check", "revise"]},
+            "instruction": {"type": "string", "description": "for revise: what to change, in the student's terms"}},
+            "required": ["title", "mode"]}}},
     {"type": "function", "function": {"name": "add_todos", "description":
         "Add items to the student's revision to-do list (shown beside the chat). Use when the student asks you to plan "
         "their revision, set them tasks, or add/remember to-dos. Keep each item short and actionable.",
@@ -50,6 +75,41 @@ TOOL_SPECS = [
             "topic": {"type": "string", "description": "optional topic name the items belong to"}},
             "required": ["items"]}}},
 ]
+
+
+READ_TOOLS = ("search_other_topics", "view_todos", "list_content", "read_content")
+
+
+def _read_tool(chat, call, others: list[int], fallback_query: str) -> tuple[str, str]:
+    """(status shown to the student, result for the model) for a tool that only reads."""
+    args = call["arguments"] if isinstance(call["arguments"], dict) else {}
+    name = call["name"]
+    if name == "search_other_topics":
+        q = str(args.get("query") or fallback_query)
+        try:
+            hits = context._format_hits(search.search(q, others, k=8))
+        except Exception as e:  # e.g. embeddings offline
+            hits = f"(search failed: {e})"
+        return f"Searching your other topics for “{q[:60]}”", f"[Material from the student's other topics]\n{hits or '(nothing relevant found)'}"
+    if name == "view_todos":
+        todos = study_api.list_todos(chat["subject_id"])
+        if not todos:
+            return "Reading your to-do list", "(The to-do list is empty.)"
+        lines = [f"- [{'x' if t['done'] else ' '}] {t['text']}" + (f" ({t['topic_name']})" if t["topic_name"] else "")
+                 + (f": {t['note']}" if t["note"] else "") for t in todos]
+        return "Reading your to-do list", "[The student's revision to-do list; [x] = done]\n" + "\n".join(lines)
+    if name == "list_content":
+        items = notes_api.list_content(chat["subject_id"])
+        return "Looking through your notes", ("\n".join(f"- {i['title']} ({i['kind']})" for i in items)
+                                              or "(No notes or generated notes yet.)")
+    item = notes_api.find_content(chat["subject_id"], str(args.get("title", "")))
+    if item is None:
+        return "Looking for that note", f"(No note or generated content called “{args.get('title', '')}”. Use list_content.)"
+    _, secs = review.target_sections({"target": item["target"], "target_id": item["id"]})
+    text = "\n\n".join((f"## {sec['title']}\n" if len(secs) > 1 else "") + review.plain_text(sec["html"]) for sec in secs)
+    cut = len(text) > 24000
+    return f"Reading “{item['title'][:60]}”", (f"=== {item['title']} ({item['kind']}) ===\n{text[:24000]}"
+                                              + ("\n(… the rest was cut off)" if cut else "") + f"\n=== End of {item['title']} ===")
 
 
 def _chat(cid):
@@ -172,6 +232,28 @@ def inspect_chat_files(body: InspectBody):
     return out
 
 
+class ImageBody(BaseModel):
+    png: str  # base64 PNG: a screenshot of part of the app's own page (generated notes, a cheat sheet, a mind map)
+    name: str = "screenshot"
+
+
+@router.post("/chat-files/image")
+def save_chat_image(body: ImageBody):
+    """Keep a screenshot taken in the app (Electron captures the area) as a file the chat can attach, in the data
+    folder (always readable, see grants)."""
+    try:
+        png = base64.b64decode(body.png, validate=True)
+    except ValueError:
+        raise HTTPException(400, "Not an image")
+    if not png.startswith(b"\x89PNG") or len(png) > 20_000_000:
+        raise HTTPException(400, "Not a PNG screenshot")
+    stem = re.sub(r'[<>:"/\\|?*]+', " ", body.name).strip()[:60] or "screenshot"
+    out = config.assets_dir() / "chat" / f"{stem} {hashlib.sha256(png).hexdigest()[:6]}.png"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(png)
+    return {"path": str(out.resolve()), "name": out.name}
+
+
 def _create_user_message(chat, content: str, attachments: list[int], files: list[dict], quote: dict | None):
     attached = []
     for did in dict.fromkeys(attachments):
@@ -208,6 +290,13 @@ def _respond(cid: int, user_msg: dict, reasoning: str, announce_user: bool):
             return f"data: {json.dumps(obj)}\n\n"
         if announce_user:
             yield ev({"type": "user", "message": user_msg})
+        # shown in the jobs list while Apollo replies (and can be stopped from there)
+        with jobs.track("chat", chat["title"] if chat["title"] != "New chat" else user_msg["content"][:60],
+                        "Reading your material", ref_id=cid) as tracked:
+            yield from reply(tracked, ev)
+        yield ev({"type": "end"})
+
+    def reply(tracked, ev):
         try:
             system, full = _system_prompt(chat)
             hist = _history(cid)
@@ -247,6 +336,12 @@ def _respond(cid: int, user_msg: dict, reasoning: str, announce_user: bool):
             for round_ in range(3):  # each search of other topics feeds back in; at most two per turn
                 content, searches = "", []
                 for kind, data in llm.chat_stream(convo, tools=tools, max_tokens=6000 if level == "off" else 16000, reasoning=level):
+                    if tracked.cancelled():  # Cancel in the jobs list
+                        raise pipeline.Cancelled()
+                    if kind == "reasoning" and not reasoning_text:
+                        tracked.update("Thinking")
+                    elif kind == "content" and not content:
+                        tracked.update("Writing the reply")
                     if kind == "content":
                         if r_start and not r_end:
                             r_end = time.time()
@@ -259,7 +354,7 @@ def _respond(cid: int, user_msg: dict, reasoning: str, announce_user: bool):
                     elif kind == "tool_calls":
                         if r_start and not r_end:
                             r_end = time.time()
-                        searches = [c for c in data if c["name"] == "search_other_topics"]
+                        searches = [c for c in data if c["name"] in READ_TOOLS]
                         if len(searches) < len(data) and (prefix + content).strip():
                             yield ev({"type": "assistant", "message": _add_message(cid, "assistant", (prefix + content).strip(), meta())})
                             prefix = content = ""
@@ -268,22 +363,21 @@ def _respond(cid: int, user_msg: dict, reasoning: str, announce_user: bool):
                                 yield ev({"type": "tool", "message": _tool_message(chat, call["name"], call["arguments"])})
                             elif call["name"] == "add_todos":
                                 yield ev({"type": "tool", "message": _todo_message(chat, call["arguments"])})
+                            elif call["name"] == "review_content":
+                                yield ev({"type": "tool", "message": _review_message(chat, call["arguments"])})
                 if not searches or round_ == 2:
                     break
                 calls, results = [], []
                 for k, s in enumerate(searches):
-                    q = str((s["arguments"] or {}).get("query") or user_msg["content"])
-                    searched.append(q)
-                    yield ev({"type": "status", "text": f"Searching your other topics for “{q[:60]}”"})
-                    try:
-                        hits = context._format_hits(search.search(q, others, k=8))
-                    except Exception as e:  # e.g. embeddings offline
-                        hits = f"(search failed: {e})"
+                    if s["name"] == "search_other_topics":
+                        searched.append(str((s["arguments"] or {}).get("query") or user_msg["content"]))
+                    status, result = _read_tool(chat, s, others, user_msg["content"])
+                    yield ev({"type": "status", "text": status})
+                    tracked.update(status)
                     call_id = s.get("id") or f"call_{round_}_{k}"
                     calls.append({"id": call_id, "type": "function",
                                   "function": {"name": s["name"], "arguments": json.dumps(s["arguments"] or {})}})
-                    results.append({"role": "tool", "tool_call_id": call_id,
-                                    "content": f"[Material from the student's other topics]\n{hits or '(nothing relevant found)'}"})
+                    results.append({"role": "tool", "tool_call_id": call_id, "content": result})
                 convo += [{"role": "assistant", "content": content, "tool_calls": calls}, *results]
                 if content.strip():
                     prefix += content.strip() + "\n\n"
@@ -295,14 +389,18 @@ def _respond(cid: int, user_msg: dict, reasoning: str, announce_user: bool):
                 found = {}
                 for tag in list(dict.fromkeys(m.group(0) for m in figures.FIGURE_TAG.finditer(final)))[:3]:
                     yield ev({"type": "status", "text": "Finding the figure in your material"})
+                    tracked.update("Finding a figure in your material")
                     found.update(figures.resolve(chat["subject_id"], tag, limit=1))
                 m = meta()
                 if found:
                     m["figures"] = found
                 yield ev({"type": "assistant", "message": _add_message(cid, "assistant", final, m)})
+        except pipeline.Cancelled:
+            tracked.stop()
+            yield ev({"type": "error", "text": "Stopped from the jobs list."})
         except Exception as e:
+            tracked.fail(str(e))
             yield ev({"type": "error", "text": str(e)})
-        yield ev({"type": "end"})
 
     return StreamingResponse(events(), media_type="text/event-stream")
 
@@ -388,6 +486,25 @@ def _todo_message(chat, args):
             added.append(text.strip()[:200])
     meta = {"tool": "add_todos", "status": "done", "todos": added}
     return _add_message(chat["id"], "tool", f"Added {len(added)} to-do{'s' if len(added) != 1 else ''}", meta)
+
+
+def _review_message(chat, args):
+    """review_content: Apollo checks or revises a note in the background; the chat shows a card that follows it."""
+    args = args if isinstance(args, dict) else {}
+    item = notes_api.find_content(chat["subject_id"], str(args.get("title", "")))
+    mode = "revise" if args.get("mode") == "revise" else "check"
+    if item is None:
+        meta = {"tool": "review_content", "status": "failed", "error": f"No note called “{args.get('title', '')}” was found."}
+        return _add_message(chat["id"], "tool", "Couldn't find that note", meta)
+    try:
+        r = notes_api.create_review(chat["subject_id"], notes_api.NewReview(
+            target=item["target"], target_id=item["id"], mode=mode, instruction=str(args.get("instruction") or "")), chat["id"])
+    except HTTPException as e:
+        meta = {"tool": "review_content", "status": "failed", "error": str(e.detail)}
+        return _add_message(chat["id"], "tool", "Couldn't start that", meta)
+    meta = {"tool": "review_content", "status": "submitted", "review_id": r["id"], "mode": mode, "title": item["title"],
+            "target": item["target"], "target_id": item["id"], "instruction": r["instruction"]}
+    return _add_message(chat["id"], "tool", f"{'Checking' if mode == 'check' else 'Revising'} {item['title']}", meta)
 
 
 def _tool_message(chat, tool, args):

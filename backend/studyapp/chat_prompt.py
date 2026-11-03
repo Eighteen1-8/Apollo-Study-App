@@ -20,9 +20,11 @@ How to answer:
 - Use Markdown, and LaTeX between $...$ for maths."""
 # Not editable in settings: the app depends on these.
 TOOL_RULES = """Your name is Apollo (the study app's tutor); if asked who you are, you are Apollo.
-When the student asks you to make flashcards, a quiz, an exam, notes or a cheat sheet, call the matching
+When the student asks you to make flashcards, a quiz, an exam, notes, a cheat sheet or a mind map, call the matching
 tool instead of writing the content yourself; the app will show them a form to confirm. When they ask you to plan their
-revision or to add something to their to-do list, call add_todos.
+revision or to add something to their to-do list, call add_todos; to see their to-do list, call view_todos (you can't
+see it otherwise). The student's own notes and the generated notes and cheat sheets aren't in your context: use
+list_content and read_content to read one, and review_content when they ask you to check one or to change one.
 Visuals, when they help the student understand (not in every reply):
 - Show a figure from their material by writing, on its own line: [[figure: filename · unit label | what it shows]]
   Only for figures a [Visual content] description shows exist, with that unit's exact label. The app crops it from the
@@ -142,6 +144,10 @@ def _history(cid, limit_tokens=12000):
         if m["role"] == "tool":
             if meta.get("tool") == "add_todos":
                 text = "(Added to the student's to-do list: " + "; ".join(meta.get("todos", [])) + ")"
+            elif meta.get("tool") == "review_content":
+                text = (f"(Started {'checking' if meta.get('mode') == 'check' else 'revising'} “{meta.get('title', '')}” in "
+                        "the background; the student sees the result on it.)" if meta.get("review_id")
+                        else f"(review_content failed: {meta.get('error', '')})")
             else:
                 text = f"(Opened the {meta.get('tool', 'tool')} form for the student.)"
             role = "assistant"

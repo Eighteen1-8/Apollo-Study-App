@@ -13,6 +13,12 @@ declare global {
       /** Present when the window has no native title bar (the app draws it; see Titlebar). */
       titlebar?: boolean;
       setChrome?: (c: { color: string; symbol: string; bg: string; dark: boolean }) => void;
+      /** Print the element marked #print-root to a PDF the student saves (exportDoc.ts). null: cancelled. */
+      printPdf?: (opts: { defaultName: string }) => Promise<string | null>;
+      /** A PNG (base64) of an area of the window, in CSS pixels. */
+      capture?: (rect: { x: number; y: number; width: number; height: number }) => Promise<string>;
+      /** Put a PNG (base64) on the clipboard. */
+      copyImage?: (png: string) => Promise<void>;
     };
   }
 }
@@ -125,8 +131,10 @@ export interface ImportResult { subject_id: number; imported: number; skipped: {
 export interface Backup { name: string; kind: 'daily' | 'before-update' | 'before-restore' | 'manual'; size: number; created_at: number }
 export interface Backups { backups: Backup[]; pending_restore: string | null; folder: string; keep: Record<string, number> }
 
+/** chat / define / quiz_review: interactive model work, shown while it runs (backend jobs.track). */
+export type JobType = 'ingest' | 'vision' | 'embed' | 'audit' | 'generate' | 'mark' | 'review' | 'chat' | 'define' | 'quiz_review';
 export interface Job {
-  id: number; type: 'ingest' | 'vision' | 'embed' | 'audit' | 'generate' | 'mark'; document_id: number; filename: string | null; status: string;
+  id: number; type: JobType; document_id: number; filename: string | null; status: string;
   progress: number; message: string; error: string | null;
 }
 export interface SearchResult {
@@ -244,6 +252,36 @@ export const api = {
   folders: (subjectId: number) => req<FolderMap>('GET', `/subjects/${subjectId}/folders`),
   saveFolders: (subjectId: number, f: FolderMap) => req<FolderMap>('PUT', `/subjects/${subjectId}/folders`, f),
 
+  notes: (subjectId: number) => req<NoteSummary[]>('GET', `/subjects/${subjectId}/notes`),
+  createNote: (subjectId: number, body: { title?: string; topic_id?: number | null; html?: string } = {}) =>
+    req<Note>('POST', `/subjects/${subjectId}/notes`, body),
+  note: (id: number) => req<Note>('GET', `/notes/${id}`),
+  saveNote: (id: number, body: { title?: string; html?: string; topic_id?: number | null; set_topic?: boolean }) =>
+    req<Note>('PATCH', `/notes/${id}`, body),
+  deleteNote: (id: number) => req('DELETE', `/notes/${id}`),
+  /** Apollo checks a note / generated notes (or a highlighted passage of one) against the material, or revises it. */
+  startReview: (body: { target: ReviewTarget; target_id: number; mode: 'check' | 'revise'; quote?: string; section?: number | null; instruction?: string }) =>
+    req<Review>('POST', '/reviews', body),
+  reviews: (target: ReviewTarget, targetId: number) => req<Review[]>('GET', `/reviews?target=${target}&target_id=${targetId}`),
+  review: (id: number) => req<Review>('GET', `/reviews/${id}`),
+  applyReview: (id: number) => req<Review>('POST', `/reviews/${id}/apply`),
+  undoReview: (id: number) => req<Review>('POST', `/reviews/${id}/undo`),
+  dismissReview: (id: number) => req('POST', `/reviews/${id}/dismiss`),
+  marks: (artifactId: number) => req<Mark[]>('GET', `/artifacts/${artifactId}/marks`),
+  addMark: (artifactId: number, body: { section: number; start: number; end: number; text: string; color: string }) =>
+    req<Mark>('POST', `/artifacts/${artifactId}/marks`, body),
+  moveMark: (id: number, body: { start?: number; end?: number; color?: string }) => req<Mark>('PATCH', `/marks/${id}`, body),
+  deleteMark: (id: number) => req('DELETE', `/marks/${id}`),
+  /** Word export of HTML built by exportDoc.ts: saved at `path` (save dialog), or returned as a download. */
+  exportDocx: (body: { title: string; html: string; path: string }) => req<{ path: string }>('POST', '/export/docx', body),
+  exportDocxBlob: async (body: { title: string; html: string }) => {
+    const res = await fetch(BASE + '/export/docx', { method: 'POST', headers: { ...AUTH, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? String(res.status));
+    return res.blob();
+  },
+  /** A screenshot taken in the app, kept as a file the chat can attach. */
+  saveChatImage: (png: string, name: string) => req<{ path: string; name: string }>('POST', '/chat-files/image', { png, name }),
+
   chats: (subjectId: number) => req<Chat[]>('GET', `/subjects/${subjectId}/chats`),
   createChat: (subjectId: number, topic_id: number | null) => req<Chat>('POST', `/subjects/${subjectId}/chats`, { topic_id }),
   chat: (id: number) => req<Chat & { messages: Message[] }>('GET', `/chats/${id}`),
@@ -320,8 +358,27 @@ async function streamChat(path: string, body: unknown, onEvent: (e: ChatEvent) =
   }
 }
 
-export type ToolName = 'add_todos' | 'create_flashcards' | 'create_quiz' | 'create_exam' | 'create_notes' | 'create_cheatsheet';
-export type ArtifactType = 'flashcards' | 'quiz' | 'exam' | 'notes' | 'cheatsheet';
+export type ToolName = 'add_todos' | 'review_content' | 'create_flashcards' | 'create_quiz' | 'create_exam' | 'create_notes'
+  | 'create_cheatsheet' | 'create_mindmap';
+export type ArtifactType = 'flashcards' | 'quiz' | 'exam' | 'notes' | 'cheatsheet' | 'mindmap';
+
+/** The student's own note (rich text). Never ingested into the material. */
+export interface NoteSummary { id: number; subject_id: number; topic_id: number | null; topic_name: string | null; title: string; created_at: number; updated_at: number; size: number }
+export interface Note { id: number; subject_id: number; topic_id: number | null; title: string; html: string; created_at: number; updated_at: number }
+export type ReviewTarget = 'note' | 'artifact';
+export interface ReviewIssue { quote: string; problem: string; fix: string; source: string }
+export interface Review {
+  id: number; subject_id: number; target: ReviewTarget; target_id: number; section: number | null; quote: string; instruction: string;
+  mode: 'check' | 'revise'; status: string; progress: number; message: string; error: string | null; applied: number;
+  target_title?: string | null; created_at: number;
+  result: null | {
+    verdict?: 'correct' | 'mostly_correct' | 'incorrect' | 'unsure'; summary?: string; issues?: ReviewIssue[];
+    comment?: string; sections?: { index: number; html?: string; markdown?: string; figures?: Record<string, FigureRef> }[];
+  };
+}
+/** A highlight on generated notes: character offsets into a section's text. */
+export interface Mark { id: number; artifact_id: number; section: number; start: number; end: number; text: string; color: string }
+export interface MindNode { label: string; note: string; source: string; children: MindNode[] }
 
 export interface Chat { id: number; subject_id: number; topic_id: number | null; title: string; updated_at: number }
 export interface ArtifactSummary { id: number; type: ArtifactType; title: string; status: string; progress: number; message: string; error: string | null }
@@ -334,6 +391,8 @@ export interface Message {
     attachments?: { id: number; filename: string }[]; quote?: Quote;
     files?: { name: string; kind: 'text' | 'image'; words?: number; asset?: string; source?: AreaSource }[]; todos?: string[];
     searched_other_topics?: string[]; figures?: Record<string, FigureRef>;
+    /** review_content (Apollo checking or revising a note, asked in chat) */
+    review_id?: number; mode?: 'check' | 'revise'; title?: string; target?: ReviewTarget; target_id?: number; instruction?: string; error?: string;
   };
   artifact?: ArtifactSummary | null;
 }
@@ -356,6 +415,7 @@ export interface ArtifactContent {
   parts?: { name: string; instructions: string; type: string; questions: ExamQuestion[] }[];
   total_marks?: number; time_minutes?: number | null; difficulty?: string; practice_exam?: string; warning?: string | null;
   blueprint?: { title: string; instructions: string; difficulty_profile: string };
+  mindmap?: MindNode;
 }
 export interface Artifact extends ArtifactSummary {
   subject_id: number; topic_id: number | null; params: Record<string, unknown>; content: ArtifactContent | null;
@@ -387,8 +447,9 @@ export interface Annotation {
   created_at: number; updated_at: number;
 }
 
-/** Text highlighted in a document, with the sentence before and after it (what Qwen sees). */
-export interface Quote { document_id: number; filename: string; label: string; text: string; before: string; after: string }
+/** Text highlighted in a document (or in notes / generated content: no document_id), with the sentence before and
+ * after it (what Qwen sees). */
+export interface Quote { document_id: number | null; filename: string; label: string; text: string; before: string; after: string }
 
 export interface SlideItem {
   x: number; y: number; w: number; h: number; rot: number;

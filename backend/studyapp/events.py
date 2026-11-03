@@ -6,7 +6,8 @@ tables), and GET /events streams the names of the topics that changed as server-
 fallback poll in case the stream drops. A comment line every 15 s keeps the connection alive.
 
 Topics: jobs, documents (incl. chunk changes via vec_version), subjects (subjects and topics), library (generated
-content), todos, flags (vision flags), pause (paused models)."""
+content), todos, flags (vision flags), pause (paused models), notes (the student's notes), reviews (Apollo checking or
+revising them), chats (the chat list)."""
 import hashlib
 import json
 import threading
@@ -31,6 +32,9 @@ _SQL = {
     "todos": "SELECT group_concat(id || done || text || note || COALESCE(topic_id, ''), '|') FROM todos",
     "flags": "SELECT COUNT(*), SUM(dismissed), MAX(id) FROM vision_flags",
     "pause": "SELECT group_concat(value, '|') FROM settings WHERE key IN ('pause_llm', 'pause_embed')",
+    "notes": "SELECT COUNT(*), MAX(updated_at), SUM(LENGTH(title)) FROM user_notes",
+    "reviews": "SELECT COUNT(*), MAX(updated_at), SUM(dismissed) FROM reviews",
+    "chats": "SELECT COUNT(*), MAX(updated_at), SUM(LENGTH(title)) FROM chats",
 }
 
 _cond = threading.Condition()

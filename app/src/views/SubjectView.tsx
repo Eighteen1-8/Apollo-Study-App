@@ -14,6 +14,7 @@ import LibraryPanel from './LibraryPanel';
 import ResourcePanel from './ResourcePanel';
 import SourceView from './SourceView';
 import ArtifactViewer, { ArtifactPage } from './ArtifactViewer';
+import NoteEditor from './NoteEditor';
 import ErrorBoundary from '../components/ErrorBoundary';
 import { useAppearance } from '../theme';
 import { getPref, setPref } from '../prefs';
@@ -28,6 +29,7 @@ export const CREATE_ITEMS: { tool: ToolName; label: string }[] = [
   { tool: 'create_exam', label: 'Exam (from a practice exam)' },
   { tool: 'create_notes', label: 'Full notes' },
   { tool: 'create_cheatsheet', label: 'Cheat sheet' },
+  { tool: 'create_mindmap', label: 'Mind map' },
 ];
 
 /** Normalise filenames for citation matching (Qwen sometimes drops the extension or changes case). */
@@ -65,7 +67,10 @@ export default function SubjectView({ route, subjects, go, onChange }: {
   const [size, setSize] = useState<{ w: number; h: number } | null>(() => getPref<{ w: number; h: number } | null>('chatSize', null, JSON.parse));
   const [quote, setQuote] = useState<(Quote & { nonce: number }) | null>(null);
   const [viewing, setViewing] = useState<number | null>(null);
-  const [page, setPage] = useState<number | null>(null); // notes / cheat sheet shown in the centre
+  // shown in the centre: generated notes / cheat sheet / mind map, or one of the student's own notes
+  const [page, setPage] = useState<{ kind: 'artifact' | 'note'; id: number } | null>(null);
+  const [chatReq, setChatReq] = useState<{ id: number | null; nonce: number } | null>(null);
+  const [activeChat, setActiveChat] = useState<number | null>(null);
   const [launch, setLaunch] = useState(route.launch);
   const [box, setBox] = useState({ w: 0, h: 0 });
   const [drag, setDrag] = useState<{ dx: number; dy: number } | null>(null);
@@ -123,15 +128,29 @@ export default function SubjectView({ route, subjects, go, onChange }: {
     setChatFull(false);
   }, []);
 
-  /** Notes and cheat sheets open in the centre like a document; flashcards, quizzes and exams stay full screen. */
+  /** Notes, cheat sheets and mind maps open in the centre like a document; flashcards, quizzes and exams stay full screen. */
   const openArtifact = useCallback(async (id: number) => {
     const a = await api.artifact(id);
-    if (a.type === 'notes' || a.type === 'cheatsheet') {
+    if (a.type === 'notes' || a.type === 'cheatsheet' || a.type === 'mindmap') {
       setDoc(null);
-      setPage(id);
+      setPage({ kind: 'artifact', id });
       setChatFull(false);
     } else setViewing(id);
   }, []);
+
+  /** The student's own notes open in the centre, in the editor. */
+  const openNote = useCallback((id: number) => {
+    setDoc(null);
+    setPage({ kind: 'note', id });
+    setChatFull(false);
+  }, []);
+
+  /** A chat picked in the left sidebar (null: a new one) opens in the chat panel. */
+  const openChat = useCallback((id: number | null) => {
+    setChatReq({ id, nonce: Date.now() });
+    setChatCollapsed(false);
+  }, []);
+  const attach = useCallback((paths: string[]) => { setIncoming({ paths, nonce: Date.now() }); setChatCollapsed(false); }, []);
 
   /** A screenshot in the chat: open its document at the area it came from and outline it briefly. */
   const showArea = useCallback((s: AreaSource) => {
@@ -265,7 +284,8 @@ export default function SubjectView({ route, subjects, go, onChange }: {
   return (
     <div ref={workspace} className={`workspace${sizing ? ' sizing' : ''}${sides.left.open ? '' : ' left-folded'}${sides.right.open ? '' : ' right-folded'}`}
       style={{ '--left-w': `${sides.left.open ? sides.left.width : 0}px`, '--right-w': `${sides.right.open ? sides.right.width : 0}px` } as React.CSSProperties}>
-      <ErrorBoundary name="Generated content" compact><LibraryPanel subject={subject} onOpen={openArtifact} /></ErrorBoundary>
+      <ErrorBoundary name="Generated content" compact><LibraryPanel subject={subject} onOpen={openArtifact}
+        chats={{ activeId: activeChat, onOpen: openChat, onNew: () => openChat(null) }} /></ErrorBoundary>
       <SideResizer {...sideProps('left')} />
       <SideResizer {...sideProps('right')} />
 
@@ -276,7 +296,11 @@ export default function SubjectView({ route, subjects, go, onChange }: {
         )}
         {page !== null && !doc && (
           <div className="doc-pane">
-            <ErrorBoundary name="These notes" resetKey={page} onClose={closeDoc}><ArtifactPage key={page} id={page} onClose={closeDoc} onCite={openCitation} /></ErrorBoundary>
+            <ErrorBoundary name="These notes" resetKey={`${page.kind}${page.id}`} onClose={closeDoc}>
+              {page.kind === 'note'
+                ? <NoteEditor key={`n${page.id}`} id={page.id} subject={subject} onClose={closeDoc} onAsk={askAbout} onAttach={attach} />
+                : <ArtifactPage key={`a${page.id}`} id={page.id} onClose={closeDoc} onCite={openCitation} onAsk={askAbout} onAttach={attach} />}
+            </ErrorBoundary>
           </div>
         )}
         {doc && (
@@ -288,12 +312,12 @@ export default function SubjectView({ route, subjects, go, onChange }: {
               <SourceView key={doc.nonce} id={doc.id} focus={doc.focus} onClose={closeDoc}
                 pulse={doc.pulse ? { unit: doc.pulse.unit, rect: doc.pulse.rect } : undefined}
                 onDetails={() => setDoc({ ...doc, details: true })} onAsk={askAbout}
-                onAttach={(paths) => { setIncoming({ paths, nonce: Date.now() }); setChatCollapsed(false); }} />
+                onAttach={attach} />
             )}
           </ErrorBoundary></div>
         )}
         <div ref={shell} onPointerDown={startDrag}
-          className={`chat-shell${floating ? ' floating' : ''}${collapsed ? ' collapsed' : ''}${full ? ' full' : ''}${drag ? ' dragging' : ''}${resizing ? ' resizing' : ''}`}
+          className={`chat-shell dock-${side}${floating ? ' floating' : ''}${collapsed ? ' collapsed' : ''}${full ? ' full' : ''}${drag ? ' dragging' : ''}${resizing ? ' resizing' : ''}`}
           style={{ ...geo, transform: drag ? `translate(${drag.dx}px, ${drag.dy}px)` : undefined, visibility: box.w ? undefined : 'hidden' }}>
           {floating && !collapsed && !full && (
             <>
@@ -304,13 +328,14 @@ export default function SubjectView({ route, subjects, go, onChange }: {
           )}
           <ErrorBoundary name="The chat" compact><ChatView subject={subject} launch={launch} floating={floating} collapsed={collapsed} full={full}
             onToggleCollapse={() => setChatCollapsed(!chatCollapsed)} onToggleFull={() => setChatFull(!chatFull)}
-            onCite={openCitation} onOpenArtifact={openArtifact} onOpenDoc={(id) => openDoc(id)} onShowArea={showArea}
-            quote={quote} onClearQuote={() => setQuote(null)} incoming={incoming} /></ErrorBoundary>
+            onCite={openCitation} onOpenArtifact={openArtifact} onOpenDoc={(id) => openDoc(id)} onShowArea={showArea} onOpenNote={openNote}
+            quote={quote} onClearQuote={() => setQuote(null)} incoming={incoming} openRequest={chatReq} onActiveChat={setActiveChat} /></ErrorBoundary>
         </div>
       </section>
 
       <ErrorBoundary name="Resources" compact><ResourcePanel subject={subject} go={go} onChange={onChange} onOpenDoc={openDoc} onCreate={create}
-        onDocsChanged={docs.reload} sel={{ focus, onFocus: setFocus, cloudVisible: showCloud, openId: doc?.id ?? null }} /></ErrorBoundary>
+        onDocsChanged={docs.reload} sel={{ focus, onFocus: setFocus, cloudVisible: showCloud, openId: doc?.id ?? null }}
+        notes={{ openId: page?.kind === 'note' && !doc ? page.id : null, onOpen: openNote }} /></ErrorBoundary>
 
       {viewing !== null && (
         <ErrorBoundary name="This study set" resetKey={viewing} onClose={() => setViewing(null)}><ArtifactViewer id={viewing} subject={subject} onClose={() => setViewing(null)} /></ErrorBoundary>

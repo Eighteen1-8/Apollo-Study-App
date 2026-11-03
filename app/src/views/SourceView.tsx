@@ -509,7 +509,7 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
 
         <div className="source-body">
           <div className="source-main">
-          <div className="source-scroll" ref={scroller} style={{ '--zoom': zoom } as React.CSSProperties}
+          <div className="source-scroll" ref={scroller} data-find={doc?.filename ?? 'this document'} style={{ '--zoom': zoom } as React.CSSProperties}
             onMouseUp={onMouseUp} onKeyUp={placeAsk} onScroll={() => { if (askAt) placeAsk(); trackPage(); }} onContextMenu={contextMenu}
             onPointerDown={startSnap}>
             {error && <Empty title="Couldn't open this file">{error}</Empty>}

@@ -1,5 +1,6 @@
 """Persistent job queue with three lanes: 'ingest' (CPU parsing + embedding, and 'embed': re-embedding stored chunks),
-'vision' (vision notes, and 'audit': the model review of them) and 'generate' (content + marking).
+'vision' (vision notes, and 'audit': the model review of them) and 'generate' (content, marking, and 'review':
+Apollo checking or revising notes).
 Both Qwen lanes share llm's concurrency gate, so the server still sees at most `llm_concurrency` requests.
 Jobs survive restarts (running -> queued on startup) and can be cancelled between steps.
 
@@ -9,12 +10,17 @@ has a higher priority, and rejoins the back of the queue (its finished pages are
 every small upload for hours.
 
 Pausing a model (llm.paused) holds the lanes that need it: no new job starts there, and a running one waits at its
-next request to that model (llm.set_wait_hook) until it is resumed or cancelled."""
+next request to that model (llm.set_wait_hook) until it is resumed or cancelled.
+
+Interactive model work (chat replies, definitions, quiz reviews) runs in its request, not a lane, but `track()` gives it
+a row here too (db.INTERACTIVE_JOBS) so the jobs list shows everything the model is doing; cancelling one sets the
+row's cancel flag, which the request checks."""
+import contextlib
 import logging
 import threading
 import time
 
-from . import db, generate, llm, pipeline, vision_audit
+from . import db, generate, llm, pipeline, review, vision_audit
 
 log = logging.getLogger(__name__)
 
@@ -52,21 +58,21 @@ class Job:
             raise pipeline.Cancelled()
 
 
-LANES = {"ingest": ("ingest", "embed"), "vision": ("vision", "audit"), "generate": ("generate", "mark")}
+LANES = {"ingest": ("ingest", "embed"), "vision": ("vision", "audit"), "generate": ("generate", "mark", "review")}
 NEEDS = {"ingest": "embed", "vision": "llm", "generate": "llm"}  # the model each lane's jobs can't start without
 PAUSED_MSG = {"llm": "Paused: waiting for the language model to be resumed",
               "embed": "Paused: waiting for the embedding model to be resumed"}
 RECHECK = 1  # audit job ref_id: review units that were reviewed before too
 
 
-def enqueue(type_, document_id=None, ref_id=None):
+def enqueue(type_, document_id=None, ref_id=None, label=None):
     existing = db.q1("SELECT id FROM jobs WHERE type=? AND document_id IS ? AND ref_id IS ? AND status IN ('queued','running')",
                      (type_, document_id, ref_id))
     if existing:
         return existing["id"]
     now = time.time()
-    jid = db.ex("INSERT INTO jobs(type, document_id, ref_id, status, created_at, updated_at, queued_at) VALUES (?,?,?,?,?,?,?)",
-                (type_, document_id, ref_id, "queued", now, now, now))
+    jid = db.ex("INSERT INTO jobs(type, document_id, ref_id, label, status, created_at, updated_at, queued_at) VALUES (?,?,?,?,?,?,?,?)",
+                (type_, document_id, ref_id, label, "queued", now, now, now))
     _wake.set()
     return jid
 
@@ -135,6 +141,8 @@ def _run(lane):
                 generate.run_artifact(row["ref_id"], job)
             elif row["type"] == "mark":
                 generate.run_marking(row["ref_id"], job)
+            elif row["type"] == "review":
+                review.run_review(row["ref_id"], job)
             db.ex("UPDATE jobs SET status='done', progress=1, message='Done', updated_at=? WHERE id=?", (time.time(), row["id"]))
         except pipeline.Yield:
             db.ex("UPDATE jobs SET status='queued', priority=0, queued_at=?, updated_at=?, message='Waiting: other files go first' "
@@ -158,6 +166,61 @@ def _mark_owner(row, status, error):
         db.ex("UPDATE artifacts SET status=?, error=?, updated_at=? WHERE id=?", (status, error, now, row["ref_id"]))
     elif row["type"] == "mark":
         db.ex("UPDATE attempts SET status=?, message=?, updated_at=? WHERE id=?", (status, error or status, now, row["ref_id"]))
+    elif row["type"] == "review":
+        db.ex("UPDATE reviews SET status=?, error=?, updated_at=? WHERE id=?", (status, error, now, row["ref_id"]))
+
+
+class Tracked:
+    """A jobs-list row for interactive model work (see track)."""
+    def __init__(self, jid):
+        self.id = jid
+        self._checked = 0.0
+        self._cancel = False
+
+    def update(self, message, progress=None):
+        if progress is None:
+            db.ex("UPDATE jobs SET message=?, updated_at=? WHERE id=?", (message, time.time(), self.id))
+        else:
+            db.ex("UPDATE jobs SET message=?, progress=?, updated_at=? WHERE id=?", (message, progress, time.time(), self.id))
+
+    def fail(self, error: str):
+        db.ex("UPDATE jobs SET status='failed', error=?, message='Failed', updated_at=? WHERE id=?", (error[:500], time.time(), self.id))
+
+    def stop(self):
+        db.ex("UPDATE jobs SET status='cancelled', message='Stopped', updated_at=? WHERE id=?", (time.time(), self.id))
+
+    def cancelled(self) -> bool:
+        """Asked to stop from the jobs list (checked at most twice a second: it's called for every streamed token)."""
+        if not self._cancel and time.monotonic() - self._checked > 0.5:
+            self._checked = time.monotonic()
+            row = db.q1("SELECT cancel FROM jobs WHERE id=?", (self.id,))
+            self._cancel = row is None or bool(row["cancel"])
+        return self._cancel
+
+
+@contextlib.contextmanager
+def track(type_: str, label: str, message: str = "Working", ref_id=None):
+    """Show interactive model work (type_ in db.INTERACTIVE_JOBS) in the jobs list while the block runs: running, then
+    done, failed or (when the block raised pipeline.Cancelled) cancelled."""
+    now = time.time()
+    jid = db.ex("INSERT INTO jobs(type, ref_id, label, status, message, created_at, updated_at, queued_at) VALUES (?,?,?,?,?,?,?,?)",
+                (type_, ref_id, label[:120], "running", message, now, now, now))
+    t = Tracked(jid)
+    try:
+        yield t
+    except pipeline.Cancelled:
+        db.ex("UPDATE jobs SET status='cancelled', message='Stopped', updated_at=? WHERE id=?", (time.time(), jid))
+        raise
+    except BaseException as e:
+        # GeneratorExit: the student closed the chat stream mid-reply
+        failed = not isinstance(e, GeneratorExit)
+        db.ex("UPDATE jobs SET status=?, error=?, message=?, updated_at=? WHERE id=?",
+              ("failed" if failed else "cancelled", str(e)[:500] if failed else None, "Failed" if failed else "Stopped",
+               time.time(), jid))
+        raise
+    else:
+        db.ex("UPDATE jobs SET status='done', progress=1, message='Done', updated_at=? WHERE id=? AND status='running'",
+              (time.time(), jid))
 
 
 def backfill_vision_chunks():

@@ -81,10 +81,13 @@ const citeLink = (file: string, label: string) => {
  * parsing so `_`/`*`/`<` inside them survive, then restored; everything is sanitised.
  * `figures`: resolved figure tags (message/section meta). Without it (a reply still streaming) figures show as pending.
  */
-export function renderMarkdown(src: string, opts: { citations?: boolean; figures?: Record<string, FigureRef>; html?: boolean } = {}): string {
+export function renderMarkdown(src: string, opts: { citations?: boolean; figures?: Record<string, FigureRef>; html?: boolean; mathText?: boolean; inline?: boolean } = {}): string {
   const keep: string[] = [];
   const hold = (html: string) => { keep.push(html); return `@@KEEP${keep.length - 1}@@`; };
-  const math = (tex: string, display: boolean) => hold(katex.renderToString(tex, { throwOnError: false, displayMode: display, output: 'html' }));
+  // mathText (Word export): Word can't take KaTeX's HTML, so the LaTeX stays as text
+  const math = (tex: string, display: boolean) => hold(opts.mathText
+    ? `<span class="tex">${esc(display ? `$$${tex}$$` : `$${tex}$`)}</span>`
+    : katex.renderToString(tex, { throwOnError: false, displayMode: display, output: 'html' }));
   let text = src;
   text = text.replace(opts.html ? PLOT_HTML : PLOT_MD, (_, json: string) => hold(plotHtml(unesc(json.trim()))));
   text = text.replace(FIGURE, (tag: string, file: string, label: string, hint: string) => {
@@ -100,7 +103,9 @@ export function renderMarkdown(src: string, opts: { citations?: boolean; figures
     .replace(/\\\[([\s\S]+?)\\\]/g, (_, t) => math(t, true))
     .replace(/\\\((.+?)\\\)/g, (_, t) => math(t, false))
     .replace(/\$([^$\n]+?)\$/g, (_, t) => math(t, false));
-  const body = opts.html ? text : (marked.parse(repairTables(text), { async: false }) as string);
+  const body = opts.html ? text
+    : opts.inline ? (marked.parseInline(text, { async: false }) as string)  // one line, no <p> around it
+    : (marked.parse(repairTables(text), { async: false }) as string);
   return DOMPurify.sanitize(body.replace(/@@KEEP(\d+)@@/g, (_, i) => keep[Number(i)]), PURIFY);
 }
 

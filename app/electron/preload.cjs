@@ -20,5 +20,8 @@ contextBridge.exposeInMainWorld('studyApp', {
   grantFor: (p) => grants.get(p) || '',
   showItem: (p) => ipcRenderer.invoke('shell:showItem', p),
   setChrome: (c) => ipcRenderer.send('window:chrome', c),
+  printPdf: (opts) => ipcRenderer.invoke('print:pdf', opts),
+  capture: (rect) => ipcRenderer.invoke('capture:rect', rect),
+  copyImage: (png) => ipcRenderer.invoke('clipboard:image', png),
   titlebar: true,
 });

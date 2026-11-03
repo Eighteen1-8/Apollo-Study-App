@@ -4,7 +4,9 @@ import { usePoll } from '../hooks';
 import { Pill, Progress } from './ui';
 
 const ACTIVE = ['running', 'queued'];
-const USES: Record<'llm' | 'embed', string[]> = { llm: ['vision', 'audit', 'generate', 'mark'], embed: ['ingest', 'embed'] };
+const USES: Record<'llm' | 'embed', string[]> = { llm: ['vision', 'audit', 'generate', 'mark', 'review', 'chat', 'define', 'quiz_review'], embed: ['ingest', 'embed'] };
+/** What each kind of job is called in the list (chat replies, definitions and quiz reviews run while you wait). */
+const TYPE_NAME: Record<string, string> = { quiz_review: 'quiz review', generate: 'create', audit: 'vision check', mark: 'marking' };
 
 /** Jobs indicator for the mini sidebar: a check while idle; while anything is queued, an hourglass that drains and
  * flips inside a ring that fills with the running job's progress. Click for the full list; finished jobs can be dismissed from it.
@@ -72,7 +74,7 @@ export default function JobsPanel() {
       {open && (
         <div className="jobs-popover jobs-popover-side" role="dialog" aria-label="Background jobs">
           <div className="jobs-popover-head">
-            <span>Background jobs <span className="muted">(last hour)</span></span>
+            <span>Jobs <span className="muted">(last hour)</span></span>
             {finished > 0 && <button className="link-btn" onClick={() => dismiss()}>Clear finished</button>}
           </div>
           <div className="pause-row" role="group" aria-label="Pause models">
@@ -101,7 +103,7 @@ export default function JobsPanel() {
             return (
               <div key={j.id} className="job-row">
                 <div className="job-row-top">
-                  <span className="job-type">{j.type}</span>
+                  <span className={`job-type jt-${j.type}`}>{TYPE_NAME[j.type] ?? j.type}</span>
                   <span className="job-file" title={j.filename ?? ''}>{j.filename ?? `#${j.document_id}`}</span>
                   <Pill status={j.status} />
                   {!live && <button className="x-btn job-x" title="Dismiss" onClick={() => dismiss(j.id)}>×</button>}
@@ -114,7 +116,7 @@ export default function JobsPanel() {
                       {j.status === 'queued' && (
                         <button className="link-btn" title="Start this one before the others waiting" onClick={() => api.prioritizeJob(j.id).then(jobs.reload)}>Run next</button>
                       )}
-                      <button className="link-btn" onClick={() => api.cancelJob(j.id).then(jobs.reload)}>Cancel</button>
+                      <button className="link-btn" onClick={() => api.cancelJob(j.id).then(jobs.reload)}>{j.type === 'chat' ? 'Stop' : 'Cancel'}</button>
                     </div>
                   </>
                 )}

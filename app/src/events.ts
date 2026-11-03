@@ -1,7 +1,7 @@
 import { authUrl, BASE } from './api';
 
 /** What changed on the backend (backend events.py): panels reload when their topic changes instead of polling. */
-export type Topic = 'jobs' | 'documents' | 'subjects' | 'library' | 'todos' | 'flags' | 'pause';
+export type Topic = 'jobs' | 'documents' | 'subjects' | 'library' | 'todos' | 'flags' | 'pause' | 'notes' | 'reviews' | 'chats';
 
 const listeners = new Map<Topic, Set<() => void>>();
 let source: EventSource | null = null;

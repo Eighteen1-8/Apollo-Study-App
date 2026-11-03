@@ -1,4 +1,4 @@
-"""Content generators (flashcards, quiz, notes, cheat sheet, exam) and exam marking.
+"""Content generators (flashcards, quiz, notes, cheat sheet, mind map, exam) and exam marking.
 
 Every generator works group by group (see context.material_groups). Within a group the system message
 (rules + material) is identical for every call, so only the first call pays the prefill cost."""
@@ -19,8 +19,10 @@ TOOLS = {
     "create_exam": "exam",
     "create_notes": "notes",
     "create_cheatsheet": "cheatsheet",
+    "create_mindmap": "mindmap",
 }
-TYPE_TITLES = {"flashcards": "Flashcards", "quiz": "Quiz", "exam": "Exam", "notes": "Notes", "cheatsheet": "Cheat sheet"}
+TYPE_TITLES = {"flashcards": "Flashcards", "quiz": "Quiz", "exam": "Exam", "notes": "Notes", "cheatsheet": "Cheat sheet",
+               "mindmap": "Mind map"}
 
 DIFFICULTY = {
     "easy": "EASY: keep the same structure and marks, but make every question simpler than the practice exam: "
@@ -235,6 +237,46 @@ def gen_cheatsheet(art, params, groups, prog):
     return {"sections": out}
 
 
+# ---------------------------------------------------------------- mind map
+
+class MapNode(BaseModel):
+    label: str = Field(description="2-6 words")
+    note: str = Field(default="", description="optional one-line detail: a definition, formula ($...$) or example")
+    source: str = Field(default="", description="'filename · unit label' this idea comes from")
+    children: list["MapNode"] = []
+
+
+class MindMap(BaseModel):
+    central: str
+    branches: list[MapNode]
+
+
+def _prune(nodes: list[MapNode], depth: int) -> list[dict]:
+    """Plain dicts, at most 4 levels below the centre (deeper levels the model sometimes adds would not fit)."""
+    return [{"label": n.label.strip()[:80], "note": n.note.strip()[:300], "source": n.source.strip(),
+             "children": _prune(n.children, depth + 1) if depth < 4 else []} for n in nodes if n.label.strip()]
+
+
+def gen_mindmap(art, params, groups, prog):
+    trees = []
+    for gi, g in enumerate(groups):
+        prog(0.1 + 0.85 * gi / len(groups), f"Mapping the material {gi + 1}/{len(groups)}" if len(groups) > 1 else "Mapping the material")
+        task = ("Build a mind map of ALL the material above, showing how its ideas connect. The centre is the overall "
+                "subject of this material. Use 4-8 main branches (the big themes, in the order the material teaches them), "
+                "each with 2-6 children, going up to 3 levels deeper where the material has detail. Labels are 2-6 words; "
+                "put a key definition, formula or example in `note` (one line), and the source of each idea in `source`."
+                + _focus_text(params))
+        res = llm.chat_json([{"role": "system", "content": _system(art["scope"], g)}, {"role": "user", "content": task}],
+                            MindMap, max_tokens=12000, reasoning=db.setting("generation_reasoning"), temperature=0.3)
+        trees.append(res)
+    if len(trees) == 1:
+        root = {"label": trees[0].central.strip()[:80], "note": "", "source": "", "children": _prune(trees[0].branches, 1)}
+    else:  # one branch per group of material
+        root = {"label": art["scope"].split(" › ")[-1], "note": "", "source": "",
+                "children": [{"label": t.central.strip()[:80], "note": "", "source": "", "children": _prune(t.branches, 2)} for t in trees]}
+    return {"mindmap": root}
+
+
 # ---------------------------------------------------------------- exam
 
 class BPPart(BaseModel):
@@ -376,7 +418,8 @@ def gen_exam(art, params, groups, prog):
             "parts": parts_out, "total_marks": total, "time_minutes": bp.time_minutes}
 
 
-GENERATORS = {"flashcards": gen_flashcards, "quiz": gen_quiz, "notes": gen_notes, "cheatsheet": gen_cheatsheet, "exam": gen_exam}
+GENERATORS = {"flashcards": gen_flashcards, "quiz": gen_quiz, "notes": gen_notes, "cheatsheet": gen_cheatsheet, "exam": gen_exam,
+              "mindmap": gen_mindmap}
 
 
 def run_artifact(artifact_id: int, job):

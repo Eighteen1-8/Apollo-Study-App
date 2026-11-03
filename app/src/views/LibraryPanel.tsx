@@ -1,14 +1,19 @@
 import { useState } from 'react';
-import { api, ArtifactType, LibraryItem, Subject } from '../api';
+import { api, ArtifactType, Chat, LibraryItem, Subject } from '../api';
 import { usePoll } from '../hooks';
 import { useOverlay } from '../components/overlay';
+import { artifactHtml, exportAs, ExportFormat } from '../components/exportDoc';
 import { getPref, setPref } from '../prefs';
 
-export const TYPE_ICON: Record<ArtifactType, string> = { flashcards: '▤', quiz: '?', exam: '✎', notes: '¶', cheatsheet: '≡' };
-const TYPE_LABEL: Record<ArtifactType, string> = { flashcards: 'Flashcards', quiz: 'Quiz', exam: 'Exam', notes: 'Notes', cheatsheet: 'Cheat sheet' };
+export const TYPE_ICON: Record<ArtifactType, string> = { flashcards: '▤', quiz: '?', exam: '✎', notes: '¶', cheatsheet: '≡', mindmap: '✺' };
+const TYPE_LABEL: Record<ArtifactType, string> = { flashcards: 'Flashcards', quiz: 'Quiz', exam: 'Exam', notes: 'Notes', cheatsheet: 'Cheat sheet', mindmap: 'Mind map' };
+const EXPORTABLE: ArtifactType[] = ['notes', 'cheatsheet', 'exam'];
 
-/** Left sidebar: everything generated for this subject, grouped by the topic it was made from. */
-export default function LibraryPanel({ subject, onOpen }: { subject: Subject; onOpen: (id: number) => void }) {
+/** The chat the centre shows, and how the sidebar opens or starts one. */
+export interface ChatNav { activeId: number | null; onOpen: (id: number) => void; onNew: () => void }
+
+/** Left sidebar: the subject's chats (searchable, newest first) above everything generated for it, grouped by topic. */
+export default function LibraryPanel({ subject, onOpen, chats }: { subject: Subject; onOpen: (id: number) => void; chats: ChatNav }) {
   const ov = useOverlay();
   const lib = usePoll(() => api.library(subject.id), 1000, [subject.id], ['library']);
   const items = lib.data ?? [];
@@ -30,9 +35,26 @@ export default function LibraryPanel({ subject, onOpen }: { subject: Subject; on
     groups.set(key, [...(groups.get(key) ?? []), it]);
   }
 
+  const exportItem = async (it: LibraryItem, format: ExportFormat, answers = false) => {
+    try {
+      const a = await api.artifact(it.id);
+      await exportAs(format, answers ? `${a.title} (with answers)` : a.title, (word) => artifactHtml(a, word, answers));
+    } catch (e) {
+      ov.confirm({ title: 'Export failed', body: String(e).replace(/^Error: /, ''), confirmText: 'OK' });
+    }
+  };
+
   const menu = (e: React.MouseEvent, it: LibraryItem) => ov.menu(e, [
     { label: 'Open', disabled: it.status !== 'ready', onClick: () => onOpen(it.id) },
-    { label: 'Regenerate', disabled: it.status === 'queued' || it.status === 'running', onClick: async () => { await api.retryArtifact(it.id); lib.reload(); } },
+    ...(EXPORTABLE.includes(it.type) && it.status === 'ready' ? [
+      { label: 'Export to Word…', separatorBefore: true, onClick: () => exportItem(it, 'docx') },
+      { label: 'Export to PDF…', onClick: () => exportItem(it, 'pdf') },
+      ...(it.type === 'exam' ? [
+        { label: 'Export to Word with answers…', onClick: () => exportItem(it, 'docx', true) },
+        { label: 'Export to PDF with answers…', onClick: () => exportItem(it, 'pdf', true) },
+      ] : []),
+    ] : []),
+    { label: 'Regenerate', separatorBefore: true, disabled: it.status === 'queued' || it.status === 'running', onClick: async () => { await api.retryArtifact(it.id); lib.reload(); } },
     { label: 'Rename…', onClick: async () => {
       const t = await ov.prompt({ title: 'Rename', initial: it.title });
       if (t) { await api.renameArtifact(it.id, t); lib.reload(); }
@@ -47,11 +69,12 @@ export default function LibraryPanel({ subject, onOpen }: { subject: Subject; on
 
   return (
     <aside className="side side-left">
-      <div className="side-head"><div className="side-title">Generated</div></div>
+      <ChatHistory subject={subject} nav={chats} />
+      <div className="side-head side-head-sub"><div className="side-title">Generated</div></div>
       <div className="side-scroll">
         {items.length === 0 && (
           <div className="files-empty side-empty">
-            Flashcards, quizzes, exams and notes you create in chat are saved here, grouped by topic.
+            Flashcards, quizzes, exams, notes and mind maps you create in chat are saved here, grouped by topic.
           </div>
         )}
         {[...groups.entries()].filter(([, list]) => list.length).map(([name, list]) => (
@@ -86,5 +109,85 @@ export default function LibraryPanel({ subject, onOpen }: { subject: Subject; on
         ))}
       </div>
     </aside>
+  );
+}
+
+const DAY = 86400;
+function when(t: number) {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const today = start.getTime() / 1000;
+  if (t >= today) return 'Today';
+  if (t >= today - DAY) return 'Yesterday';
+  if (t >= today - 6 * DAY) return 'Previous 7 days';
+  if (t >= today - 29 * DAY) return 'Previous 30 days';
+  return new Date(t * 1000).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+}
+
+/** The subject's chats: search by title, grouped by when they were last used; right-click to rename or delete. */
+function ChatHistory({ subject, nav }: { subject: Subject; nav: ChatNav }) {
+  const ov = useOverlay();
+  const chats = usePoll(() => api.chats(subject.id), 600, [subject.id], ['chats']);
+  const [q, setQ] = useState('');
+  const [folded, setFolded] = useState(() => getPref('chatsFolded', false, (v) => v === '1'));
+  const list = (chats.data ?? []).filter((c) => !q.trim() || c.title.toLowerCase().includes(q.trim().toLowerCase()));
+  const topic = (id: number | null) => subject.topics.find((t) => t.id === id)?.name;
+
+  const groups: [string, Chat[]][] = [];
+  for (const c of list) {
+    const g = when(c.updated_at);
+    if (groups.length && groups[groups.length - 1][0] === g) groups[groups.length - 1][1].push(c);
+    else groups.push([g, [c]]);
+  }
+
+  const menu = (e: React.MouseEvent, c: Chat) => ov.menu(e, [
+    { label: 'Open', onClick: () => nav.onOpen(c.id) },
+    { label: 'Rename…', onClick: async () => {
+      const t = await ov.prompt({ title: 'Rename chat', initial: c.title });
+      if (t) { await api.renameChat(c.id, t); chats.reload(); }
+    } },
+    { label: 'Delete', danger: true, separatorBefore: true, onClick: async () => {
+      if (await ov.confirm({ title: `Delete “${c.title}”?`, danger: true, confirmText: 'Delete', body: 'Generated content stays in the library.' })) {
+        await api.deleteChat(c.id);
+        chats.reload();
+        if (c.id === nav.activeId) nav.onNew();
+      }
+    } },
+  ]);
+  const fold = () => { setFolded(!folded); setPref('chatsFolded', folded ? '0' : '1'); };
+
+  return (
+    <section className={`chat-history${folded ? ' folded' : ''}`}>
+      <div className="side-head">
+        <button className="side-title ch-title" onClick={fold} title={folded ? 'Show chats' : 'Hide chats'}>
+          <span className="lib-caret">▾</span> Chats {chats.data && <span className="lib-count">{chats.data.length}</span>}
+        </button>
+        <button className="icon-btn" data-tip="New chat" onClick={nav.onNew}>＋</button>
+      </div>
+      {!folded && (
+        <>
+          {(chats.data?.length ?? 0) > 5 && (
+            <input className="ch-search" placeholder="Search chats" value={q} onChange={(e) => setQ(e.target.value)}
+              onKeyDown={(e) => e.key === 'Escape' && setQ('')} />
+          )}
+          <div className="ch-scroll">
+            {chats.data && !chats.data.length && <div className="files-empty side-empty">Your conversations with Apollo will be listed here.</div>}
+            {q && !list.length && <div className="files-empty side-empty">No chat titles match.</div>}
+            {groups.map(([g, cs]) => (
+              <div key={g}>
+                <div className="ch-group">{g}</div>
+                {cs.map((c) => (
+                  <button key={c.id} className={`ch-item${c.id === nav.activeId ? ' active' : ''}`} title={c.title}
+                    onClick={() => nav.onOpen(c.id)} onContextMenu={(e) => menu(e, c)}>
+                    <span className="ch-name">{c.title}</span>
+                    {topic(c.topic_id) && <span className="ch-topic">{topic(c.topic_id)}</span>}
+                  </button>
+                ))}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </section>
   );
 }
