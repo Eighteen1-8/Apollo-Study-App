@@ -17,6 +17,7 @@ CLAUDE.md
 PLAN.md
 .PLAN.md
 .claude/
+scripts/
 UI_ROADMAP.md
 
 # --- Local data & generated artifacts ---
@@ -57,3 +58,4 @@ backend/build/
 # --- Test output ---
 app/test-results/
 app/playwright-report/
+
