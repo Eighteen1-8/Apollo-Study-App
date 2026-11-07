@@ -5,6 +5,8 @@ import { api, DocDetail, DocLayout, DocxBlock, SlideItem } from '../../api';
 import Markdown from '../../components/Markdown';
 import { Empty, MathText } from '../../components/ui';
 import { UnitOverlay } from '../annotate';
+import { FindHit, registerFind } from '../../components/FindBar';
+import { findAll } from '../../components/textRange';
 
 export const BASE_WIDTH = 920; // px at 100%, or the pane width if narrower
 export const pct = (v: number, of: number) => `${(v / of) * 100}%`;
@@ -34,7 +36,7 @@ export function PdfView({ url, zoom, onReady, slides }: { url: string; zoom: num
 
   useEffect(() => {
     let alive = true;
-    const task = pdfjs.getDocument({ url, isEvalSupported: false });
+    const task = pdfjs.getDocument({ url }); // pdf.js 6 never evaluates code from a file (isEvalSupported is gone)
     task.promise.then(async (d) => {
       // Every page's size up front, so placeholders are exact and scrolling to a cited page lands precisely.
       const out = [];
@@ -49,6 +51,61 @@ export function PdfView({ url, zoom, onReady, slides }: { url: string; zoom: num
 
   const width = Math.min(Math.max(avail - 48, 200), BASE_WIDTH) * zoom;
   useEffect(() => { if (sizes.length && avail) onReady(); }, [sizes.length, avail, onReady]);
+
+  // Ctrl+F searches every page's text, not just the pages drawn so far (they render as they scroll into view)
+  useEffect(() => {
+    const root = wrap.current?.closest('[data-find]');
+    if (!pdf || !root) return;
+    const texts = new Map<number, Promise<string>>();
+    const pageText = (n: number) => {
+      if (!texts.has(n)) {
+        // the same strings, in the same order, as the text layer's spans (so the nth match lines up)
+        texts.set(n, pdf.getPage(n).then((pg) => pg.getTextContent()).then((c) =>
+          c.items.map((it) => ('str' in it ? it.str : '')).join('').toLowerCase()));
+      }
+      return texts.get(n)!;
+    };
+    // reading a big textbook's text takes seconds (3.8 s for 917 pages): pages are asked for 8 at a time, so pdf.js's
+    // worker stays busy, and a search reports its matches every few pages instead of only at the end
+    const AHEAD = 8;
+    let warming = false;
+    const warm = async () => {
+      if (warming) return;
+      warming = true;
+      for (let n = 1; n <= pdf.numPages && alive; n += AHEAD) {
+        await Promise.all(Array.from({ length: Math.min(AHEAD, pdf.numPages - n + 1) }, (_, k) => pageText(n + k).catch(() => '')));
+      }
+    };
+    let alive = true;
+    const off = registerFind(root, {
+      warm: () => { void warm(); },
+      search: async (q, partial) => {
+        const needle = q.toLowerCase();
+        const out: FindHit[] = [];
+        let shown = performance.now();
+        for (let n = 1; n <= pdf.numPages && alive; n++) {
+          for (let k = n + 1; k < Math.min(n + AHEAD, pdf.numPages + 1); k++) void pageText(k).catch(() => '');
+          const t = await pageText(n).catch(() => '');
+          let k = 0;
+          for (let i = t.indexOf(needle); i >= 0 && out.length < 5000; i = t.indexOf(needle, i + needle.length)) out.push({ page: n, index: k++ });
+          if (partial && performance.now() - shown > 150) { shown = performance.now(); partial(out.slice()); }
+        }
+        return out;
+      },
+      reveal: async (hit, q) => {
+        const el = wrap.current?.querySelector<HTMLElement>(`[data-unit="${hit.page}"]`);
+        if (!el) return null;
+        el.scrollIntoView({ block: 'center' });
+        for (let i = 0; i < 60; i++) { // up to ~6 s for the page to draw its text layer
+          const layer = el.querySelector('.textLayer');
+          if (layer) return findAll(layer, q)[hit.index] ?? null;
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        return null;
+      },
+    });
+    return () => { alive = false; off(); };
+  }, [pdf]);
 
   return (
     <div ref={wrap} className="src-pages">
@@ -91,7 +148,7 @@ export function PdfPage({ pdf, n, size, width }: { pdf: pdfjs.PDFDocumentProxy |
       const canvas = document.createElement('canvas');
       canvas.width = Math.floor(vp.width * dpr);
       canvas.height = Math.floor(vp.height * dpr);
-      task = page.render({ canvasContext: canvas.getContext('2d')!, viewport: vp, transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined });
+      task = page.render({ canvas, viewport: vp, transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined });
       await task.promise;
       if (cancelled) return;
       const layer = document.createElement('div');
@@ -105,7 +162,7 @@ export function PdfPage({ pdf, n, size, width }: { pdf: pdfjs.PDFDocumentProxy |
 
   return (
     <div ref={ref} className="src-page pdf-page" data-unit={n}
-      style={{ width, height: size.h * scale, '--scale-factor': scale } as React.CSSProperties}>
+      style={{ width, height: size.h * scale, '--scale-factor': scale, '--total-scale-factor': scale } as React.CSSProperties}>
       <div ref={render} className="pdf-render" />
       <UnitOverlay unit={n} />
     </div>

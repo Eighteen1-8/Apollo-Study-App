@@ -1,6 +1,7 @@
 """Sidecar entry point: `python -m studyapp.main --port 47615 [--data-dir DIR]`."""
 import argparse
 import ctypes
+import logging
 import os
 import secrets
 import sys
@@ -42,6 +43,13 @@ def main():
     config.token_file().write_text(config.API_TOKEN, encoding="utf-8")
     db.start_backup_schedule()
     jobs.start_workers()
+    try:
+        from .chat_api import purge_deleted_chats
+        from .study_api import purge_deleted
+        purge_deleted_chats()
+        purge_deleted()
+    except Exception:
+        logging.getLogger(__name__).warning("couldn't purge deleted chats, content or notes", exc_info=True)
     if args.parent_pid and os.name == "nt":
         threading.Thread(target=_watch_parent, args=(args.parent_pid,), daemon=True).start()
     from .api import app

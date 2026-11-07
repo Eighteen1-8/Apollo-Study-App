@@ -23,5 +23,19 @@ contextBridge.exposeInMainWorld('studyApp', {
   printPdf: (opts) => ipcRenderer.invoke('print:pdf', opts),
   capture: (rect) => ipcRenderer.invoke('capture:rect', rect),
   copyImage: (png) => ipcRenderer.invoke('clipboard:image', png),
+  // spell check. The note editor shows its own right-click menu; Chromium's spelling result for the word under the
+  // pointer comes back through menuParams (call it from the contextmenu handler, without cancelling the event).
+  spell: {
+    menuParams: () => new Promise((resolve) => {
+      const on = (_e, p) => { clearTimeout(t); resolve(p); };
+      const t = setTimeout(() => { ipcRenderer.removeListener('menu:params', on); resolve(null); }, 600);
+      ipcRenderer.once('menu:params', on);
+      ipcRenderer.sendSync('menu:claim');
+    }),
+    replace: (word) => ipcRenderer.invoke('spell:replace', String(word)),
+    add: (word) => ipcRenderer.invoke('spell:add', String(word)),
+    info: () => ipcRenderer.invoke('spell:info'),
+    set: (languages) => ipcRenderer.invoke('spell:set', languages),
+  },
   titlebar: true,
 });

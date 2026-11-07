@@ -7,6 +7,10 @@ import JobsPanel from './JobsPanel';
 import { Modal, useOverlay } from './overlay';
 import StaleBadge from './StaleBadge';
 import SubjectIcon, { PALETTE } from './SubjectIcon';
+import { useReorder } from './reorder';
+import { useChatStreams } from '../chatStreams';
+import { redo, undo, useUndo } from '../undo';
+import { openPalette } from './CommandPalette';
 
 /** Narrow icon bar: home, one tile per subject, add, background jobs, settings. */
 export default function Minibar({ subjects, route, go, onChange, online }: {
@@ -16,6 +20,9 @@ export default function Minibar({ subjects, route, go, onChange, online }: {
   const act = useLibraryActions(subjects, go, onChange);
   const [colorFor, setColorFor] = useState<Subject | null>(null);
   const active = route.name === 'subject' ? route.id : null;
+  const reorder = useReorder('subjects', subjects.map((s) => s.id), async (ids) => { await api.orderSubjects(ids); onChange(); }, 'reorder subjects');
+  const streams = useChatStreams();
+  const history = useUndo();
 
   const menu = (e: React.MouseEvent, s: Subject) => ov.menu(e, [
     { label: 'Open', onClick: () => go({ name: 'subject', id: s.id }) },
@@ -48,10 +55,14 @@ export default function Minibar({ subjects, route, go, onChange, online }: {
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go({ name: 'home' }); } }} />
       <div className="mini-sep" />
       <div className="mini-subjects">
-        {subjects.map((s) => (
-          <button key={s.id} className={`mini-subject${active === s.id ? ' active' : ''}`} data-tip={s.name}
+        {reorder.order.map((id) => subjects.find((x) => x.id === id)!).map((s) => (
+          <button key={s.id} className={`mini-subject${active === s.id ? ' active' : ''}`} data-tip={s.name} {...reorder.item(s.id)}
             onClick={() => go({ name: 'subject', id: s.id })} onContextMenu={(e) => menu(e, s)}>
             <SubjectIcon s={s} />
+            {(() => {
+              const st = streams.subjectState(s.id);
+              return st && <span className={`mini-dot dot-${st}`} aria-label={st === 'live' ? 'Apollo is replying' : st === 'error' ? 'A reply failed' : 'New reply'} />;
+            })()}
             <StaleBadge count={s.stale_docs} where={s.name} className="on-tile"
               onReingest={async () => { await api.reingestStale(s.id); onChange(); }} />
           </button>
@@ -59,6 +70,19 @@ export default function Minibar({ subjects, route, go, onChange, online }: {
         <button className="mini-add" data-tip="New subject" onClick={act.newSubject}>+</button>
       </div>
       <div className="mini-bottom">
+        <button className="mini-icon mini-search" data-tip="Search and go anywhere (Ctrl+K)" onClick={openPalette}>
+          <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>
+        </button>
+        <div className="mini-history">
+          <button className="mini-icon mini-half" disabled={!history.canUndo} onClick={undo}
+            data-tip={history.canUndo ? `Undo ${history.undoLabel} (Ctrl+Z)` : 'Nothing to undo'}>
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 14 4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" /></svg>
+          </button>
+          <button className="mini-icon mini-half" disabled={!history.canRedo} onClick={redo}
+            data-tip={history.canRedo ? `Redo ${history.redoLabel} (Ctrl+Y)` : 'Nothing to redo'}>
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 14 5-5-5-5" /><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" /></svg>
+          </button>
+        </div>
         {online.length > 0 && (
           <button className="mini-online" onClick={() => go({ name: 'settings' })}
             data-tip={`Online: ${online.join(' and ')} via OpenRouter. Data is logged externally and may be used for training`}>

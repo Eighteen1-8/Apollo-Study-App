@@ -132,8 +132,9 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
 
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement;
-      if (t.closest('input, textarea, [contenteditable]') || e.ctrlKey || e.metaKey || e.altKey) return;
+      // the target can be the window or document (a key with nothing focused), which have no closest()
+      const t = e.target;
+      if ((t instanceof Element && t.closest('input, textarea, [contenteditable]')) || e.ctrlKey || e.metaKey || e.altKey) return;
       if (e.key === 'Escape') { setTool('select'); setAreaBoth(null); }
       else if (KEYS[e.key.toLowerCase()] && root.current?.contains(document.activeElement ?? null) !== false) setTool(KEYS[e.key.toLowerCase()]);
     };

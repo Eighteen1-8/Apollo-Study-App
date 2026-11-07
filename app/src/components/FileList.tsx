@@ -3,6 +3,7 @@ import { api, Doc } from '../api';
 import { fmtTokens } from '../hooks';
 import { MenuItem, useOverlay } from './overlay';
 import { Pill, Progress } from './ui';
+import { useReorder } from './reorder';
 
 const ICON: Record<string, string> = { '.pdf': 'PDF', '.pptx': 'PPT', '.docx': 'DOC' };
 
@@ -40,10 +41,14 @@ function statusOf(d: Doc): [string, string] {
 
 /** Compact file rows: click opens (or, with `onSelect`, click selects and double-click opens), drag moves or
  * attaches, hover shows ×, right-click gives more actions (plus `menu`'s). */
-export default function FileList({ docs, onOpen, onSelect, onDetails, onChange, empty, compact, selectedId, openId, menu, picker }: {
+export default function FileList({ docs, onOpen, onOpenSide, onSelect, onDetails, onChange, empty, compact, selectedId, openId, menu, picker, reorder }: {
   docs: Doc[]; onOpen: (d: Doc) => void; onSelect?: (d: Doc) => void; onDetails?: (d: Doc) => void; onChange: () => void;
+  /** Open beside what's already open (split view). */
+  onOpenSide?: (d: Doc) => void;
   empty?: string; compact?: boolean; selectedId?: number | null; openId?: number | null; menu?: (d: Doc) => MenuItem[];
   picker?: Picker;
+  /** Drag a file among its siblings to reorder them (`group`: this list; `commit` saves the order). */
+  reorder?: { group: string; commit: (ids: number[]) => Promise<unknown> };
 }) {
   const ov = useOverlay();
   // clicking the already-selected file again (when a click only selects) shows a "double-click to open" hint
@@ -60,6 +65,8 @@ export default function FileList({ docs, onOpen, onSelect, onDetails, onChange, 
   };
   const cancelHint = () => { window.clearTimeout(hintTimer.current); setHint(null); };
   docs.forEach((d) => picker?.register(d));
+  const order = useReorder(reorder?.group ?? 'files:none', docs.map((d) => d.id), (ids) => reorder?.commit(ids), 'reorder files');
+  const sorted = reorder ? order.order.map((id) => docs.find((d) => d.id === id)!).filter(Boolean) : docs;
   const remove = async (d: Doc) => {
     if (await ov.confirm({ title: `Remove ${d.filename}?`, body: 'Its extracted text, embeddings and vision notes are deleted from the app.', confirmText: 'Remove', danger: true })) {
       await api.deleteDocument(d.id);
@@ -69,11 +76,12 @@ export default function FileList({ docs, onOpen, onSelect, onDetails, onChange, 
   if (!docs.length) return <div className="files-empty">{empty ?? 'No files yet.'}</div>;
   return (
     <div className={`files${compact ? ' files-compact' : ''}`}>
-      {docs.map((d) => {
+      {sorted.map((d) => {
         const [tone, label] = statusOf(d);
+        const r = reorder ? order.item(d.id) : null;
         const busy = BUSY.includes(d.status);
         return (
-          <div key={d.id} draggable data-focus data-pick={pickKey(d)}
+          <div key={d.id} draggable data-focus data-pick={pickKey(d)} data-drop={r?.['data-drop']}
             className={`file${d.id === selectedId ? ' selected' : ''}${d.id === openId ? ' open' : ''}${picker?.has(pickKey(d)) ? ' picked' : ''}`}
             onClick={(e) => {
               if (picker && isPickClick(e)) { e.preventDefault(); picker.click(pickKey(d), e); return; }
@@ -83,11 +91,18 @@ export default function FileList({ docs, onOpen, onSelect, onDetails, onChange, 
             }}
             onDoubleClick={(e) => { if (isPickClick(e)) return; cancelHint(); if (onSelect) onOpen(d); }}
             onDragStart={(e) => {
-              e.dataTransfer.setData(DOC_DRAG, JSON.stringify(picker?.drag(d) ?? asDragged(d)));
+              const many = picker?.drag(d);
+              e.dataTransfer.setData(DOC_DRAG, JSON.stringify(many ?? asDragged(d)));
               e.dataTransfer.effectAllowed = 'copyMove';
+              if (r && !many) r.onDragStart(e); // a single file can also be dropped among its siblings to reorder
             }}
+            onDragEnd={() => r?.onDragEnd()}
+            onDragOver={(e) => { r?.onDragOver(e); }}
+            onDragLeave={(e) => { r?.onDragLeave(e); }}
+            onDrop={(e) => { r?.onDrop(e); }}
             onContextMenu={(e) => { const bulk = picker?.menu(pickKey(d)); if (bulk) return ov.menu(e, bulk); ov.menu(e, [
               { label: 'Open', onClick: () => onOpen(d) },
+              ...(onOpenSide ? [{ label: 'Open side by side', onClick: () => onOpenSide(d) }] : []),
               ...(onDetails ? [{ label: 'View ingested details', onClick: () => onDetails(d) }] : []),
               { label: 'Run / resume vision', onClick: () => api.vision(d.id).then(onChange), disabled: busy || d.vision_total <= d.vision_done },
               { label: 'Re-ingest', onClick: () => api.reingest(d.id).then(onChange), disabled: busy },

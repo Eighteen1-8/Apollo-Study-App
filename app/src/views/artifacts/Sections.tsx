@@ -15,7 +15,8 @@ export function Sections({ content, onCite }: { content: ArtifactContent; onCite
         <nav className="notes-toc">
           {secs.map((s, i) => <a key={i} href={`#sec-${i}`} onClick={(e) => {
             e.preventDefault();
-            const el = document.getElementById(`sec-${i}`);
+            // scoped to this page: with split view, two pages can be open at once
+            const el = e.currentTarget.closest('.notes')?.querySelector<HTMLElement>(`[data-sec="${i}"]`);
             const pane = el?.closest<HTMLElement>('.artifact-scroll, .fs-body');
             if (el && pane) pane.scrollTo({ top: el.getBoundingClientRect().top - pane.getBoundingClientRect().top + pane.scrollTop - 12, behavior: 'smooth' });
           }}>{s.title}</a>)}

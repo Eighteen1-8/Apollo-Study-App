@@ -260,3 +260,34 @@ def test_api_key_not_in_tracked_files():
     assert tracked.stdout.strip() == "", f"OpenRouter key committed in: {tracked.stdout}"
     ignored = subprocess.run(["git", "check-ignore", "-q", ".env"], cwd=REPO)
     assert ignored.returncode == 0, ".env must stay gitignored"
+
+
+def test_server_profile_shapes_requests(settings):
+    """The local server's quirks come from the `server_profile` setting, not from code."""
+    settings(llm_provider="local", server_profile={})
+    assert llm.reasoning_fields("off") == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert llm.reasoning_fields("xhigh") == {"chat_template_kwargs": {"enable_thinking": True}, "reasoning_effort": "xhigh"}
+    # a server whose top level is "high", with no template switch
+    settings(server_profile={"thinking_switch": "none", "reasoning_levels": ["low", "high"]})
+    assert llm.reasoning_fields("off") == {}
+    assert llm.reasoning_fields("xhigh") == {"reasoning_effort": "high"}
+    assert llm.reasoning_fields("medium") in ({"reasoning_effort": "low"}, {"reasoning_effort": "high"})
+    # no reasoning field at all
+    settings(server_profile={"reasoning_param": ""})
+    assert llm.reasoning_fields("low") == {"chat_template_kwargs": {"enable_thinking": True}}
+
+
+def test_strip_think():
+    assert llm.strip_think("<think>a</think> Answer ") == "Answer"
+    assert llm.strip_think("reasoning only in template</think>Answer") == "Answer"
+    assert llm.strip_think("Answer<think>ran out mid-thou") == "Answer"
+    assert llm.strip_think("") == ""
+
+
+def test_retired_openrouter_model_is_named_plainly():
+    class R:
+        status_code = 400
+        text = '{"error":{"message":"google/old:free is not a valid model ID"}}'
+    with pytest.raises(RuntimeError, match="isn't offered any more"):
+        llm._raise_model_gone({"online": True}, {"model": "google/old:free", "messages": []}, R())
+    llm._raise_model_gone({"online": False}, {"model": "x", "messages": []}, R())  # local: left to the normal error

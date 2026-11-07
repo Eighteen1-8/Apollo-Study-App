@@ -54,9 +54,15 @@ If electron-builder fails with "Cannot create symbolic link" while unpacking `wi
 ## Tests
 ```
 cd backend
-uv run pytest            # offline unit tests (HTTP mocked, throwaway data dir)
+uv run pytest            # offline tests (HTTP mocked, throwaway data dir)
 uv run pytest --online   # also live OpenRouter checks (sends synthetic test text only)
+
+cd app
+npm test                 # Vitest unit tests (tests/unit)
+npm run test:e2e         # Playwright run against a throwaway backend and a fake model server (uses installed Edge)
+npm run check            # everything: types, build, unit, backend, Playwright and an Electron smoke run (--quick skips build/e2e)
 ```
+No model or key is needed for any of these. `.github/workflows/check.yml` runs `npm run check` on Windows for every push.
 
 ## Using it
 
@@ -71,9 +77,28 @@ uv run pytest --online   # also live OpenRouter checks (sends synthetic test tex
 ### Chat Window
 - Pick a **topic** (or *All topics*) and a **reasoning level** (Off / Low / Medium / XHigh — levels set in Settings), then ask.
 - Apollo answers from your material and **cites** it inline — click a citation to open that slide/page.
-- Quick actions under the input — **Flashcards, Quiz, Exam, Full notes, Cheat sheet** — open a short form, then generate and save to the *Generated* panel (grouped by topic).
+- Quick actions under the input — **Flashcards, Quiz, Exam, Full notes, Cheat sheet, Mind map** — open a short form, then generate and save to the *Generated* panel (grouped by topic).
 - Ask Apollo to generate you this content - it can also tailor it to what you struggle with most.
-- Opening a document floats the chat bottom-left (collapse with ▾).
+- A reply keeps writing in its own chat while you switch chats or subjects (a dot marks replies you haven't seen). **Stop** keeps what was written so far.
+- **Slash commands** run in the app and never reach the model: `/stats`, `/effort`, `/create`, `/topic`, `/context`, `/todo`, `/new`, `/rename`, `/title`, `/stop`, `/delete`, `/help`. The meter beside the input shows how full the context window is.
+- Opening a document floats the chat in a bottom corner: drag its header to move it (or onto a note's Comments panel), drag its inner corner to resize, collapse with ▾. Two header buttons put it **side by side** with what's open (drag the divider) or **full screen**; leaving full screen goes back to the layout you came from.
+- Only one blank chat exists per subject. Deleted chats can be brought back with Undo.
+
+### Notes
+- **My notes** (right sidebar) are your own rich-text notes. They're never added to Apollo's material, since they may be wrong, but Apollo can read them when you ask it to.
+- The toolbar has headings, lists, colours, highlights and **tables**: pick a size from the grid (the first row is a header), Tab moves between cells (Tab in the last cell adds a row), and right-click a cell for rows, columns or deleting the table.
+- Highlight text and ask Apollo to **check** or **revise** it; suggestions appear in the Comments panel and only change the note when you apply them (undoable).
+- Spell check is offline (Australian English by default; British or US English in Settings). Export a note to Word or PDF.
+
+### Finding things
+- **Ctrl+K** searches everything in every subject: subjects, topics, files, chats, generated content and notes.
+- **Ctrl+F** finds within the file, note or generated content you last clicked (every page of a PDF, not just the drawn ones). Drag the bar by its grip (double-click the grip to put it back); it closes by itself when you switch to something else.
+- The file search at the top of the right sidebar matches file names and the text inside files, and opens a file with the find bar already filled in.
+
+### Organising
+- Drag to reorder subjects, topics, to-dos, files and generated content (generated content moves within its own day). Shift/Ctrl-click to select several files or folders.
+- **Ctrl+Z / Ctrl+Y** (outside text fields) undo and redo deletes, renames, reorders, highlights and navigation. Deleted chats, generated content and notes stay recoverable for a week.
+- The revision to-do list folds away from its heading, like the chat list and My notes.
 
 ### Viewing documents
 Click a document in a topic to open the viewer. A toolbar in the top right helps you annotate and work through content.
@@ -82,13 +107,19 @@ Click a document in a topic to open the viewer. A toolbar in the top right helps
 - **Quizzes/Flashcards** open fullscreen. With flashcards, mark `✓` / `✗`under each card for confidence. Marking `✗` lets Apollo know in chat the topics you are struggling with.
 
 ### Settings
-- Endpoints, model ids and keys (local or OpenRouter - online mode is optional), themes, accent colour, Reduce motion, 3D knowledge cloud.
+- Endpoints, model ids and keys (local or OpenRouter - online mode is optional; the OpenRouter models are listed to pick from). **Test connections** also checks what the model server supports (reasoning levels, JSON, tools, streamed usage).
+- Appearance: themes, accent colour, Reduce motion, 3D knowledge cloud, its idle drift, and its **frame rate** (30 for laptops, 60, 120, or match the display).
+- **Maintenance**: disk use, clean-up, re-embedding and re-reading files, vision flags, the log, and database backups (daily and on demand, restored at the next start).
+- **Share**: export or import a subject, topic or files as a study pack.
+- Where everything is kept, and how to move to a new PC: [`docs/DATA.md`](docs/DATA.md).
 - **Browser preview of the UI** (dev only): `http://localhost:5173/?backend=PORT` points the page at a backend on another port.
 
 ## Layout
-- `backend/studyapp/`: `parsers.py` (PPTX/DOCX/PDF/text/images, native Python), `omml.py` (equations → LaTeX), `dedupe.py` (exact, deterministic), `pipeline.py` (parse → dedupe → chunk → embed → vision notes), `jobs.py` (persistent queue), `search.py` (BM25 + vectors), `context.py` (material Qwen reads), `generate.py` (flashcards/quiz/notes/cheat sheet/exam + marking), `chat_api.py` (streaming chat + tool forms), `api.py`
+- `backend/studyapp/`: `parsers.py` (PPTX/DOCX/PDF/text/images, native Python), `omml.py` (equations → LaTeX), `dedupe.py` (exact, deterministic), `pipeline.py` (parse → dedupe → chunk → embed → vision notes), `jobs.py` (persistent queue), `search.py` (BM25 + vectors), `context.py` (material Qwen reads), `generate.py` (flashcards/quiz/notes/cheat sheet/exam/mind map + marking), `chats.py` / `chat_reply.py` / `chat_tools.py` / `chat_api.py` (chats, the streaming turn, tool forms), `notes_api.py` + `review.py` (your notes and reviews), `projection.py` (the knowledge cloud), `api.py`
 - `app/electron/`: main process (spawns backend, blocks all non-localhost traffic from the UI; online model calls go through the backend), preload
-- `app/src/`: React UI
+- `app/src/`: React UI (`views/` screens, `components/` shared parts, `styles/` one cascade in five files)
+- `app/tests/`: unit, Playwright, Electron, CSS and PDF checks; `backend/tests/`: pytest, incl. golden Office parsing tests
+- `docs/`: `DATA.md` (where data lives), `APP_ANALYSIS.md` (known weak spots), `FIX_PLAN.md` and `IMPROVEMENT_PLAN.md` (recent work and its status)
 - `spike/`: Phase 0 experiments
 
 ## Note

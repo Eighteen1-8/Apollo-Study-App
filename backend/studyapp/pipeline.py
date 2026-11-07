@@ -365,10 +365,7 @@ TRUNCATED = "[truncated: output limit reached]"
 def clean_vision_output(text: str) -> str:
     """The description without the model's reasoning: closed <think> blocks, a reply whose opening tag was in the
     chat template (only </think> appears), and an unclosed block where the reply ran out mid-thought."""
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
-    if "</think>" in text:
-        text = text.rsplit("</think>", 1)[1]
-    return text.split("<think>", 1)[0].strip()
+    return llm.strip_think(text)
 
 
 def run_vision(doc_id, job):

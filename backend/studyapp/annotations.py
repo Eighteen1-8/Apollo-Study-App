@@ -146,7 +146,7 @@ def define(did: int, body: DefineBody):
     with jobs.track("define", f"Define “{term[:50]}”", "Writing a definition"):
         res = llm.chat([{"role": "system", "content": DEFINE_SYSTEM}, {"role": "user", "content": prompt}],
                        max_tokens=600, reasoning="off", temperature=0.2)
-    return {"definition": re.sub(r"<think>.*?</think>", "", res["content"], flags=re.S).strip()}
+    return {"definition": llm.strip_think(res["content"])}
 
 
 # ---------------------------------------------------------------- export

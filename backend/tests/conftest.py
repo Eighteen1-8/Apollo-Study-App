@@ -8,6 +8,7 @@ from studyapp import config, db
 
 def pytest_addoption(parser):
     parser.addoption("--online", action="store_true", help="also run live tests against OpenRouter (sends test text only)")
+    parser.addoption("--update-golden", action="store_true", help="rewrite tests/golden/samples.json from the real samples")
 
 
 def pytest_collection_modifyitems(config, items):

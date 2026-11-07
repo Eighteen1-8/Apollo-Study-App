@@ -1,24 +1,28 @@
-import { useEffect, useRef, useState } from 'react';
-import { api, AreaSource, ArtifactSummary, Chat, ChatEvent, ChatFileCheck, inElectron, Message, Quote, Reasoning, Review, Subject, ToolName } from '../api';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { api, AreaSource, Chat, ChatEvent, ChatFileCheck, Message, Quote, Reasoning, Subject, ToolName } from '../api';
 import type { Launch } from '../App';
 import { DOC_DRAG, DraggedDoc, draggedDocs } from '../components/FileList';
-import Markdown, { RESOLVED } from '../components/Markdown';
 import { useOverlay } from '../components/overlay';
-import { Progress } from '../components/ui';
-import { TYPE_ICON } from './LibraryPanel';
-import { CREATE_ITEMS } from './SubjectView';
 import { logError } from '../log';
 import { onChange } from '../events';
 import { getPref, setPref } from '../prefs';
+import { clearError, isLive, onReplyFinished, setViewing, startReply, useChatStreams } from '../chatStreams';
+import { confirmDeleteChats, renameChatUndoable } from './chatActions';
+import { LEVEL_LABEL, ChatMode } from './chat/types';
+import { LiveBubble, MessageView } from './chat/messages';
+import { runCommand as runSlashCommand } from './chat/commands';
+import { Composer } from './chat/Composer';
 
-const TERMINAL = ['ready', 'failed', 'cancelled'];
-const LEVEL_LABEL: Record<string, string> = { off: 'Off', low: 'Low', medium: 'Medium', xhigh: 'XHigh' };
+export { LEVEL_LABEL } from './chat/types';
+export type { ChatMode } from './chat/types';
+type Card = { id: number; chatId: number | null; node: React.ReactNode };
 
-
-export default function ChatView({ subject, launch, floating, collapsed, full, onToggleCollapse, onToggleFull, onCite, onOpenArtifact,
+export default function ChatView({ subject, launch, floating, collapsed, mode, onMode, sideBySide, onToggleCollapse, onCite, onOpenArtifact,
   onOpenDoc, onOpenNote, quote, onClearQuote, incoming, onShowArea, openRequest, onActiveChat }: {
-  subject: Subject; launch?: Launch; floating: boolean; collapsed: boolean; full: boolean; onToggleCollapse: () => void;
-  onToggleFull: () => void; onCite: (file: string, label: string) => void; onOpenArtifact: (id: number) => void;
+  subject: Subject; launch?: Launch; floating: boolean; collapsed: boolean; mode: ChatMode; onMode: (m: ChatMode) => void;
+  /** Side by side is the chosen layout (also while full screen, so leaving full screen goes back to it). */
+  sideBySide: boolean;
+  onToggleCollapse: () => void; onCite: (file: string, label: string) => void; onOpenArtifact: (id: number) => void;
   onOpenDoc: (id: number) => void; quote: (Quote & { nonce: number }) | null; onClearQuote: () => void;
   /** Jump to where a screenshot came from. */
   onShowArea: (s: AreaSource) => void;
@@ -31,20 +35,29 @@ export default function ChatView({ subject, launch, floating, collapsed, full, o
   onActiveChat: (id: number | null) => void;
 }) {
   const ov = useOverlay();
+  const streams = useChatStreams();
   const [chats, setChats] = useState<Chat[]>([]);
   const [chat, setChat] = useState<Chat | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [levels, setLevels] = useState<string[]>(['low', 'medium', 'xhigh']);
   const [reasoning, setReasoning] = useState<Reasoning>('off');
-  const [streaming, setStreaming] = useState<{ text: string; reasoning: string; status: string; started: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attached, setAttached] = useState<DraggedDoc[]>([]);
   const [tempFiles, setTempFiles] = useState<ChatFileCheck[]>([]);
   const [dropping, setDropping] = useState(false);
+  const [cards, setCards] = useState<Card[]>([]);
+  const [finishedTick, setFinishedTick] = useState(0);
   const bottom = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const handledLaunch = useRef<number | null>(null);
+  const chatRef = useRef<Chat | null>(null);
+  chatRef.current = chat;
+  const creating = useRef<Promise<Chat> | null>(null);
+
+  const live = streams.live(chat?.id);
+  const busy = !!live;
+  const streamError = streams.error(chat?.id);
 
   // A new highlight from a document: show it as a reply banner and put the cursor in the composer.
   useEffect(() => { if (quote) setTimeout(() => textarea.current?.focus(), 50); }, [quote?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -86,12 +99,26 @@ export default function ChatView({ subject, launch, floating, collapsed, full, o
     const c = await api.chat(id);
     setChat(c);
     setMessages(c.messages);
+    setError(null);
   };
-  const newChat = async (topicId: number | null) => {
-    const c = await api.createChat(subject.id, topicId);
-    await loadChats();
-    await openChat(c.id);
-    return c;
+  /** Never more than one blank chat: an empty open chat is reused, and so is a request already on its way (the
+   * backend also hands back the subject's existing empty chat). */
+  const newChat = async (topicId: number | null): Promise<Chat> => {
+    const cur = chatRef.current;
+    if (cur && !messages.length && !isLive(cur.id)) {
+      if ((cur.topic_id ?? null) !== topicId) setChat(await api.setChatTopic(cur.id, topicId));
+      setTimeout(() => textarea.current?.focus(), 50);
+      return cur;
+    }
+    if (creating.current) return creating.current;
+    creating.current = (async () => {
+      const c = await api.createChat(subject.id, topicId);
+      await loadChats();
+      await openChat(c.id);
+      setTimeout(() => textarea.current?.focus(), 50);
+      return c;
+    })();
+    try { return await creating.current; } finally { creating.current = null; }
   };
 
   useEffect(() => {
@@ -104,19 +131,44 @@ export default function ChatView({ subject, launch, floating, collapsed, full, o
         const c = await newChat(launch.topicId);
         const m = await api.openTool(c.id, launch.tool);
         setMessages((ms) => [...ms, m]);
-      } else if (!chat && list.length) {
+      } else if (!chatRef.current && list.length) {
         await openChat(list[0].id);
       }
     })();
   }, [subject.id, launch?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Scroll only the message list (scrollIntoView would also scroll the clipped chat shell and the window).
+  // A reply that ends in the chat on screen: show the messages as the server stored them.
+  useEffect(() => onReplyFinished((chatId, fresh) => {
+    if (chatRef.current?.id === chatId && fresh) setMessages(fresh);
+    setFinishedTick((t) => t + 1);
+    loadChats().catch((e) => logError('chat', e, 'warning'));
+  }), [subject.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The chat on screen has no unread dot (and a reply ending in it adds none).
   useEffect(() => {
+    setViewing(collapsed ? null : chat?.id ?? null);
+    return () => setViewing(null);
+  }, [chat?.id, collapsed]);
+
+  // Scroll only the message list (scrollIntoView would also scroll the clipped chat shell and the window).
+  const scrollDown = useCallback(() => {
     const list = bottom.current?.parentElement;
     if (list) list.scrollTo({ top: list.scrollHeight, behavior: 'smooth' });
-  }, [messages.length, streaming?.text, streaming?.status, collapsed]);
+  }, []);
+  useEffect(scrollDown, [messages.length, live?.status, live?.messages.length, cards.length, collapsed]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { onActiveChat(chat?.id ?? null); }, [chat?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Apollo names a chat in the background after its first reply: pick the new title up for the header and menu.
+  useEffect(() => onChange(['chats'], () => {
+    loadChats().then((list) => {
+      setChat((c) => {
+        if (!c) return c;
+        const fresh = list.find((x) => x.id === c.id);
+        if (!fresh) return c; // deleted elsewhere: handled by the sidebar
+        return fresh.title !== c.title ? { ...c, title: fresh.title } : c;
+      });
+    }).catch((e) => logError('chat', e, 'warning'));
+  }), [subject.id]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!openRequest) return;
     if (openRequest.id === null) newChat(chat?.topic_id ?? null);
@@ -125,11 +177,18 @@ export default function ChatView({ subject, launch, floating, collapsed, full, o
   }, [openRequest?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const ensureChat = async () => chat ?? (await newChat(null));
+  const card = (node: React.ReactNode) => setCards((cs) => [...cs, { id: Date.now() + Math.random(), chatId: chatRef.current?.id ?? null, node }]);
 
   const send = async () => {
     const text = input.trim();
-    if (!text || streaming) return;
+    if (!text) return;
+    if (text.startsWith('/')) {
+      setInput('');
+      await runCommand(text).catch((e) => card(<div className="banner banner-bad">{String(e).replace(/^Error: /, '')}</div>));
+      return;
+    }
     const c = await ensureChat();
+    if (isLive(c.id)) return;
     const extra = { attachments: attached.map((d) => d.id), files: tempFiles.map((f) => f.path), quote: quote ? stripNonce(quote) : null };
     const before = { attached, tempFiles };
     let accepted = false;
@@ -137,47 +196,22 @@ export default function ChatView({ subject, launch, floating, collapsed, full, o
     setAttached([]);
     setTempFiles([]);
     setError(null);
-    setStreaming({ text: '', reasoning: '', status: 'Sending…', started: null });
     try {
-      await api.ask(c.id, text, reasoning, (e) => {
+      await startReply(c.id, subject.id, reasoning, (on) => api.ask(c.id, text, reasoning, on, extra), (e) => {
         if (e.type === 'user') { accepted = true; onClearQuote(); }
-        onEvent(e);
-      }, extra);
-    } catch (err) {
-      setError(String(err).replace(/^Error: /, ''));
-      if (!accepted) { setInput(text); setAttached(before.attached); setTempFiles(before.tempFiles); } // refused: give it back
-    } finally {
-      setStreaming(null);
-      loadChats();
+      });
+    } catch {
+      // refused before it started: give the text back (only if the student is still in that chat)
+      if (!accepted && chatRef.current?.id === c.id) { setInput(text); setAttached(before.attached); setTempFiles(before.tempFiles); }
     }
-  };
-
-  /** Applies one streamed chat event to the message list / live reply. */
-  const onEvent = (e: ChatEvent) => {
-    if (e.type === 'user' || e.type === 'assistant' || e.type === 'tool') {
-      setMessages((ms) => [...ms, e.message]);
-      if (e.type === 'assistant') setStreaming((s) => s && { ...s, text: '', reasoning: '' });
-    } else if (e.type === 'delta') setStreaming((s) => s && { ...s, text: s.text + e.text, status: '' });
-    else if (e.type === 'reasoning') setStreaming((s) => s && { ...s, reasoning: s.reasoning + e.text, status: '', started: s.started ?? Date.now() });
-    else if (e.type === 'status') setStreaming((s) => s && { ...s, status: e.text });
-    else if (e.type === 'error') setError(e.text);
   };
 
   /** Edit or regenerate: drop the replaced messages locally, then stream the new turn. */
   const rerun = async (keep: (m: Message) => boolean, start: (on: (e: ChatEvent) => void) => Promise<void>) => {
-    if (streaming || !chat) return;
+    if (busy || !chat) return;
     setMessages((ms) => ms.filter(keep));
     setError(null);
-    setStreaming({ text: '', reasoning: '', status: 'Sending…', started: null });
-    try {
-      await start(onEvent);
-    } catch (err) {
-      setError(String(err).replace(/^Error: /, ''));
-      openChat(chat.id); // resync with what the server kept
-    } finally {
-      setStreaming(null);
-      loadChats();
-    }
+    try { await startReply(chat.id, subject.id, reasoning, start); } catch { /* shown as the chat's error */ }
   };
   const editMessage = (m: Message, text: string) => rerun((x) => x.id < m.id, (on) => api.editMessage(m.id, text, reasoning, on));
   const regenerate = (m: Message) => {
@@ -185,10 +219,10 @@ export default function ChatView({ subject, launch, floating, collapsed, full, o
     if (asked) rerun((x) => x.id <= asked.id, (on) => api.regenerate(m.id, reasoning, on));
   };
   const rollback = async (m: Message) => {
-    if (streaming) return;
+    if (busy) return;
     const later = messages.filter((x) => x.id > m.id).length;
     const ok = await ov.confirm({
-      title: 'Undo from this message?', confirmText: 'Undo',
+      title: 'Undo from this message?', confirmText: 'Undo', danger: true,
       body: `This message${later ? ` and the ${later} after it` : ''} will be removed and its text put back in the box below so you can change it. Anything generated stays in the library.`,
     });
     if (!ok) return;
@@ -199,9 +233,9 @@ export default function ChatView({ subject, launch, floating, collapsed, full, o
     loadChats();
   };
 
-  const quick = async (tool: ToolName) => {
+  const quick = async (tool: ToolName, args: Record<string, unknown> = {}) => {
     const c = await ensureChat();
-    const m = await api.openTool(c.id, tool);
+    const m = await api.openTool(c.id, tool, args);
     setMessages((ms) => [...ms, m]);
   };
 
@@ -209,15 +243,32 @@ export default function ChatView({ subject, launch, floating, collapsed, full, o
     const c = await ensureChat();
     setChat(await api.setChatTopic(c.id, topicId));
   };
+  const pickLevel = (l: string) => { setReasoning(l as Reasoning); setPref('chatReasoning', l); };
 
   const pickReasoning = (e: React.MouseEvent) => ov.menu(e, ['off', ...levels].map((l) => ({
     label: `${l === reasoning ? '✓ ' : '   '}${LEVEL_LABEL[l] ?? l}${l === 'off' ? ' (fastest)' : l === levels[levels.length - 1] ? ' (most thorough)' : ''}`,
-    onClick: () => { setReasoning(l as Reasoning); setPref('chatReasoning', l); },
+    onClick: () => pickLevel(l),
   })), { anchor: e.currentTarget, place: 'above' });
 
   const pickTopic = (e: React.MouseEvent) => ov.menu(e, [null, ...subject.topics.map((t) => t.id)].map((id) => ({
     label: `${(chat?.topic_id ?? null) === id ? '✓ ' : '   '}${topicName(id)}`, onClick: () => setTopic(id),
   })), { anchor: e.currentTarget, place: 'above' });
+
+  const afterDelete = async (ids: number[]) => {
+    if (!chatRef.current || !ids.includes(chatRef.current.id)) { loadChats(); return; }
+    setChat(null);
+    setMessages([]);
+    const list = await loadChats();
+    if (list[0]) openChat(list[0].id);
+  };
+  const deleteThis = async () => {
+    if (chat && await confirmDeleteChats(ov, [chat])) afterDelete([chat.id]);
+  };
+  const renameThis = async () => {
+    if (!chat) return;
+    const t = await ov.prompt({ title: 'Rename chat', initial: chat.title });
+    if (t) { setChat(await renameChatUndoable(chat, t)); loadChats(); }
+  };
 
   const historyMenu = (e: React.MouseEvent) => ov.menu(e, [
     { label: '+ New chat', onClick: () => newChat(chat?.topic_id ?? null) },
@@ -225,22 +276,20 @@ export default function ChatView({ subject, launch, floating, collapsed, full, o
       label: `${c.id === chat?.id ? '● ' : '   '}${c.title.slice(0, 48)}`, separatorBefore: i === 0, onClick: () => openChat(c.id),
     })),
     ...(chat ? [
-      { label: 'Rename this chat…', separatorBefore: true, onClick: async () => {
-        const t = await ov.prompt({ title: 'Rename chat', initial: chat.title });
-        if (t) { setChat(await api.renameChat(chat.id, t)); loadChats(); }
-      } },
-      { label: 'Delete this chat', danger: true, onClick: async () => {
-        if (await ov.confirm({ title: 'Delete this chat?', danger: true, confirmText: 'Delete', body: 'Generated content stays in the library.' })) {
-          await api.deleteChat(chat.id);
-          setChat(null);
-          setMessages([]);
-          const list = await loadChats();
-          if (list[0]) openChat(list[0].id);
-        }
-      } },
+      { label: 'Rename this chat…', separatorBefore: true, onClick: renameThis },
+      { label: 'Delete this chat…', danger: true, onClick: deleteThis },
     ] : []),
   ], { anchor: e.currentTarget, place: 'below' });
 
+  // two separate toggles: side by side (with the document) and full screen; leaving full screen goes back to
+  // whichever of floating / side by side it came from
+  const toggleSplit = () => onMode(mode === 'split' ? 'float' : 'split');
+  const toggleFull = () => onMode(mode === 'full' ? (sideBySide ? 'split' : 'float') : 'full');
+
+  const runCommand = (text: string) => runSlashCommand(text, {
+    chat, subject, levels, reasoning, busy, card, ensureChat, pickLevel, quick, setTopic, newChat, renameThis, deleteThis,
+    setChat, loadChats,
+  });
   const replace = (m: Message) => setMessages((ms) => ms.map((x) => (x.id === m.id ? m : x)));
   const topicName = (id: number | null | undefined) => subject.topics.find((t) => t.id === id)?.name ?? 'All topics';
 
@@ -255,13 +304,18 @@ export default function ChatView({ subject, launch, floating, collapsed, full, o
     setTimeout(() => textarea.current?.focus(), 50);
   };
 
+  const shown = new Set(messages.map((m) => m.id));
+  const liveMessages = (live?.messages ?? []).filter((m) => !shown.has(m.id));
+  const myCards = cards.filter((c) => c.chatId === (chat?.id ?? null));
+  const msgActions = { busy, onEdit: editMessage, onRollback: rollback, onRegenerate: regenerate };
+
   return (
     <div className={`chat${dropping ? ' chat-dropping' : ''}`}
       onDragOver={(e) => { if (isDocDrag(e)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setDropping(true); } }}
       onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropping(false); }}
       onDrop={onDrop}>
       {dropping && <div className="chat-drop-hint">Drop to ask Apollo about this file</div>}
-      <div className="chat-head" title={floating ? 'Drag to move to the other corner' : undefined}>
+      <div className="chat-head" title={floating && mode !== 'full' ? 'Drag to move to the other side' : undefined}>
         <button className="chat-title-btn" onClick={historyMenu} title="Past chats">
           <span className="chat-title-text">{chat?.title ?? 'New chat'}</span>
           <svg className="chat-title-chevron" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
@@ -270,10 +324,17 @@ export default function ChatView({ subject, launch, floating, collapsed, full, o
         </button>
         <button className="icon-btn" data-tip="New chat" onClick={() => newChat(chat?.topic_id ?? null)}>＋</button>
         <span className="spacer" />
-        {streaming && collapsed && <span className="chat-busy">Apollo is replying…</span>}
+        {collapsed && streams.anyLive() && <span className="chat-busy">Apollo is replying…</span>}
+        {floating && !collapsed && mode !== 'full' && (
+          <button className={`icon-btn head-tool${mode === 'split' ? ' on' : ''}`} aria-pressed={mode === 'split'}
+            data-tip={mode === 'split' ? 'Back to a floating chat' : 'Side by side with what’s open (half and half)'} onClick={toggleSplit}>
+            <SplitIcon />
+          </button>
+        )}
         {floating && !collapsed && (
-          <button className="icon-btn head-tool" data-tip={full ? 'Back to the corner' : 'Full screen'} onClick={onToggleFull}>
-            {full ? <ShrinkIcon /> : <ExpandIcon />}
+          <button className={`icon-btn head-tool${mode === 'full' ? ' on' : ''}`} aria-pressed={mode === 'full'}
+            data-tip={mode === 'full' ? 'Exit full screen' : 'Full screen'} onClick={toggleFull}>
+            {mode === 'full' ? <ShrinkIcon /> : <ExpandIcon />}
           </button>
         )}
         {floating && (
@@ -283,99 +344,46 @@ export default function ChatView({ subject, launch, floating, collapsed, full, o
 
       <div className="chat-body" aria-hidden={collapsed}>
           <div className="chat-scroll" data-find="the chat">
-            {messages.length === 0 && !streaming && (
+            {messages.length === 0 && !live && !myCards.length && (
               <div className="chat-empty">
                 <div className="chat-empty-title">Ask anything about {subject.name}</div>
-                <div className="muted">Pick a topic below, then ask a question, or ask Apollo to make flashcards, a quiz, an exam, notes, a cheat sheet or a mind map.</div>
+                <div className="muted">Pick a topic below, then ask a question, or ask Apollo to make flashcards, a quiz, an exam, notes, a cheat sheet or a mind map. Type <b>/</b> for commands.</div>
               </div>
             )}
-            {messages.map((m) => (
+            {[...messages, ...liveMessages].map((m) => (
               <MessageView key={m.id} m={m} subject={subject} chatTopic={chat?.topic_id ?? null}
                 onReplace={replace} onOpenArtifact={onOpenArtifact} onCite={onCite} onOpenDoc={onOpenDoc} onOpenNote={onOpenNote}
-                actions={{ busy: !!streaming, onEdit: editMessage, onRollback: rollback, onRegenerate: regenerate }} onShowArea={onShowArea} />
+                actions={msgActions} onShowArea={onShowArea} />
             ))}
-            {streaming && (
-              <div className="msg msg-assistant">
-                {streaming.reasoning && (
-                  <ReasoningBlock text={streaming.reasoning} live={!streaming.text} started={streaming.started ?? undefined} level={reasoning} />
-                )}
-                {streaming.text ? <Markdown text={streaming.text} onCite={onCite} />
-                  : !streaming.reasoning && <div className="typing">{streaming.status || 'Thinking'}<span className="dots" /></div>}
+            {live && <LiveBubble chatId={live.chatId} onCite={onCite} onGrow={scrollDown} />}
+            {myCards.map((c) => (
+              <div key={c.id} className="msg msg-local">
+                {c.node}
+                <button className="x-btn msg-local-x" title="Dismiss" onClick={() => setCards((cs) => cs.filter((x) => x.id !== c.id))}>×</button>
+              </div>
+            ))}
+            {(error || streamError) && (
+              <div className="banner banner-bad">{error || streamError}
+                <button className="x-btn" title="Dismiss" onClick={() => { setError(null); if (chat) clearError(chat.id); }}>×</button>
               </div>
             )}
-            {error && <div className="banner banner-bad">{error}</div>}
             <div ref={bottom} />
           </div>
 
-          <div className="composer">
-            {quote && (
-              <div className="reply-banner">
-                <div className="reply-main">
-                  <div className="reply-label">Replying to a highlight in <b>{quote.filename}</b>{quote.label && ` · ${quote.label.split(' · ')[0]}`}</div>
-                  <div className="reply-text">“{quote.text}”</div>
-                </div>
-                <button className="x-btn" title="Remove highlight" onClick={onClearQuote}>×</button>
-              </div>
-            )}
-            {attached.length > 0 && (
-              <div className="attach-row">
-                {attached.map((d) => (
-                  <span key={d.id} className="attach-chip" title={d.filename}>
-                    <span className="attach-icon">📎</span><span className="attach-name">{d.filename}</span>
-                    <button className="x-btn" title="Remove" onClick={() => setAttached((a) => a.filter((x) => x.id !== d.id))}>×</button>
-                  </span>
-                ))}
-              </div>
-            )}
-            {tempFiles.length > 0 && (
-              <div className="attach-row">
-                {tempFiles.map((f) => (
-                  <span key={f.path} className="attach-chip attach-temp"
-                    title={`${f.name}: sent with this message only, not added to your library${f.words ? ` (${f.words.toLocaleString()} words)` : ''}`}>
-                    <span className="attach-icon">{f.kind === 'image' ? '🖼' : '📄'}</span>
-                    {f.source
-                      ? <button className="attach-name attach-jump" title="Show where this screenshot came from" onClick={() => onShowArea(f.source!)}>{f.name}</button>
-                      : <span className="attach-name">{f.name}</span>}
-                    <span className="attach-tag">temporary</span>
-                    <button className="x-btn" title="Remove" onClick={() => setTempFiles((a) => a.filter((x) => x.path !== f.path))}>×</button>
-                  </span>
-                ))}
-              </div>
-            )}
-            <div className="composer-input">
-              <textarea ref={textarea} rows={2}
-                placeholder={quote ? 'Ask about the highlighted text…' : attached.length || tempFiles.length ? 'Ask about the attached file…' : `Message Apollo about ${topicName(chat?.topic_id)}…`}
-                value={input} onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }} />
-              <button className="send-btn" disabled={!input.trim() || !!streaming} onClick={send} title="Send (Enter)">↑</button>
-            </div>
-            <div className="composer-bar">
-              <button className="pill-btn attach-btn" disabled={!inElectron} title="Attach a file to this message (not added to your library)"
-                onClick={async () => addFiles(await window.studyApp!.openFiles({ multi: true }))}>
-                <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 4.5 5.8 9.2a1.5 1.5 0 0 0 2.1 2.1l5-5a3 3 0 0 0-4.2-4.2l-5 5a4.5 4.5 0 0 0 6.4 6.4l4.2-4.2" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
-              </button>
-              <button className="pill-btn" onClick={pickTopic} title="Which material Apollo uses">
-                <span className="pill-select-label">Topic</span> <b>{topicName(chat?.topic_id)}</b> <span className="caret">▾</span>
-              </button>
-              <button className={`pill-btn reasoning-btn lvl-${reasoning}`} onClick={pickReasoning} title="How much Apollo thinks before answering">
-                <span className="brain">◔</span> Reasoning: <b>{LEVEL_LABEL[reasoning] ?? reasoning}</b> <span className="caret">▾</span>
-              </button>
-              <span className="spacer" />
-              {!floating && CREATE_ITEMS.map((c) => (
-                <button key={c.tool} className="chip" onClick={() => quick(c.tool)}>{c.label.replace(' (from a practice exam)', '')}</button>
-              ))}
-              {floating && (
-                <button className="pill-btn" onClick={(e) => ov.menu(e, CREATE_ITEMS.map((c) => ({ label: c.label, onClick: () => quick(c.tool) })),
-                  { anchor: e.currentTarget, place: 'above' })}>Create <span className="caret">▾</span></button>
-              )}
-            </div>
-          </div>
+          <Composer quote={quote} onClearQuote={onClearQuote} attached={attached} setAttached={setAttached}
+            tempFiles={tempFiles} setTempFiles={setTempFiles} onShowArea={onShowArea} input={input} setInput={setInput}
+            textarea={textarea} busy={busy} stopping={!!live?.stopping} chat={chat} send={send} runCommand={runCommand}
+            card={card} addFiles={addFiles} pickTopic={pickTopic} pickReasoning={pickReasoning} reasoning={reasoning}
+            topicName={topicName} finishedTick={finishedTick} messageCount={messages.length} floating={floating} quick={quick} />
       </div>
     </div>
   );
 }
 
 const stripNonce = ({ nonce: _n, ...q }: Quote & { nonce: number }): Quote => q;
+const SplitIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M8 2.5v11" stroke="currentColor" strokeWidth="1.4" /></svg>
+);
 
 const ExpandIcon = () => (
   <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5 9 7M2.5 13.5 7 9" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
@@ -384,307 +392,3 @@ const ShrinkIcon = () => (
   <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 6.5h-4v-4M2.5 9.5h4v4M9.5 6.5 14 2M6.5 9.5 2 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
 );
 
-function ReasoningBlock({ text, live, seconds, started, level }: {
-  text: string; live?: boolean; seconds?: number | null; started?: number; level?: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!live) return;
-    const t = setInterval(() => setNow(Date.now()), 250);
-    return () => clearInterval(t);
-  }, [live]);
-  const secs = live && started ? (now - started) / 1000 : seconds;
-  return (
-    <div className={`reasoning-block${open ? ' open' : ''}${live ? ' live' : ''}`}>
-      <button className="reasoning-head" onClick={() => setOpen(!open)}>
-        <span className="reasoning-chevron">{open ? '▾' : '▸'}</span>
-        <span className="reasoning-label">{live ? 'Reasoning' : 'Reasoned'}{secs != null ? ` for ${secs.toFixed(1)}s` : ''}</span>
-        {level && level !== 'off' && <span className="reasoning-level">{LEVEL_LABEL[level] ?? level}</span>}
-      </button>
-      {open && <div className="reasoning-body">{text || '…'}</div>}
-    </div>
-  );
-}
-
-type MsgActions = { busy: boolean; onEdit: (m: Message, text: string) => void; onRollback: (m: Message) => void; onRegenerate: (m: Message) => void };
-
-function MessageView({ m, subject, chatTopic, onReplace, onOpenArtifact, onCite, onOpenDoc, onOpenNote, actions, onShowArea }: {
-  m: Message; subject: Subject; chatTopic: number | null; onReplace: (m: Message) => void;
-  onOpenArtifact: (id: number) => void; onCite: (file: string, label: string) => void; onOpenDoc: (id: number) => void;
-  onOpenNote: (id: number) => void;
-  actions: MsgActions; onShowArea: (s: AreaSource) => void;
-}) {
-  const [editing, setEditing] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-  if (m.role === 'user') {
-    const q = m.meta.quote;
-    if (editing !== null) {
-      const save = () => { if (editing.trim()) { actions.onEdit(m, editing.trim()); setEditing(null); } };
-      return (
-        <div className="msg msg-user msg-editing">
-          <textarea className="edit-box" autoFocus value={editing} rows={Math.min(10, editing.split('\n').length + 1)}
-            onChange={(e) => setEditing(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); save(); }
-              if (e.key === 'Escape') setEditing(null);
-            }} />
-          <div className="edit-actions">
-            <span className="muted small">Everything after this message will be replaced.</span>
-            <button className="btn btn-sm" onClick={() => setEditing(null)}>Cancel</button>
-            <button className="btn btn-sm btn-primary" disabled={!editing.trim() || actions.busy} onClick={save}>Save &amp; send</button>
-          </div>
-        </div>
-      );
-    }
-    return (
-      <div className="msg msg-user">
-        {q && (
-          <button className="bubble-quote" title="Show in the document" onClick={() => onCite(q.filename, q.label)}>
-            <span className="bubble-quote-src">{q.filename}{q.label && ` · ${q.label.split(' · ')[0]}`}</span>
-            <span className="bubble-quote-text">“{q.text}”</span>
-          </button>
-        )}
-        {m.meta.files?.length ? (
-          <div className="attach-row attach-row-sent">
-            {m.meta.files.map((f, i) => (f.source ? (
-              <button key={i} className="attach-chip attach-temp" title="Show where this screenshot came from" onClick={() => onShowArea(f.source!)}>
-                <span className="attach-icon">🖼</span><span className="attach-name">{f.name}</span><span className="attach-tag">↗ source</span>
-              </button>
-            ) : (
-              <span key={i} className="attach-chip attach-temp" title="Sent with this message only">
-                <span className="attach-icon">{f.kind === 'image' ? '🖼' : '📄'}</span><span className="attach-name">{f.name}</span>
-              </span>
-            )))}
-          </div>
-        ) : null}
-        {m.meta.attachments?.length ? (
-          <div className="attach-row attach-row-sent">
-            {m.meta.attachments.map((a) => (
-              <button key={a.id} className="attach-chip" title={`Open ${a.filename}`} onClick={() => onOpenDoc(a.id)}>
-                <span className="attach-icon">📎</span><span className="attach-name">{a.filename}</span>
-              </button>
-            ))}
-          </div>
-        ) : null}
-        <div className="bubble">{m.content}</div>
-        {!actions.busy && (
-          <div className="msg-actions">
-            <button className="msg-act" title="Edit and resend" onClick={() => setEditing(m.content)}>✎ Edit</button>
-            <button className="msg-act" title="Remove this message and everything after it" onClick={() => actions.onRollback(m)}>↶ Undo from here</button>
-          </div>
-        )}
-      </div>
-    );
-  }
-  if (m.role === 'assistant') {
-    return (
-      <div className="msg msg-assistant">
-        {m.meta.reasoning && <ReasoningBlock text={m.meta.reasoning} seconds={m.meta.reasoning_seconds} level={m.meta.reasoning_level} />}
-        {m.meta.searched_other_topics?.length ? (
-          <div className="searched-note">⌕ Searched your other topics for {m.meta.searched_other_topics.map((s) => `“${s}”`).join(', ')}</div>
-        ) : null}
-        <Markdown text={m.content} onCite={onCite} figures={m.meta.figures ?? RESOLVED} />
-        {!actions.busy && (
-          <div className="msg-actions">
-            <button className="msg-act" title="Write a new answer" onClick={() => actions.onRegenerate(m)}>↻ Regenerate</button>
-            <button className="msg-act" title="Copy the answer" onClick={() => {
-              navigator.clipboard.writeText(m.content);
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1200);
-            }}>{copied ? '✓ Copied' : '⧉ Copy'}</button>
-          </div>
-        )}
-      </div>
-    );
-  }
-  if (m.meta.tool === 'add_todos') {
-    return (
-      <div className="msg todo-card">
-        <div className="todo-card-title">✓ Added to your revision to-do list</div>
-        <ul>{(m.meta.todos ?? []).map((t, i) => <li key={i}>{t}</li>)}</ul>
-      </div>
-    );
-  }
-  if (m.meta.tool === 'review_content') {
-    if (!m.meta.review_id) return <div className="msg msg-note small bad">{m.meta.error || m.content}</div>;
-    return <ReviewMsgCard id={m.meta.review_id} title={m.meta.title ?? ''} mode={m.meta.mode ?? 'check'}
-      onOpen={() => (m.meta.target === 'note' ? onOpenNote(m.meta.target_id!) : onOpenArtifact(m.meta.target_id!))} />;
-  }
-  if (m.meta.status === 'form') return <ToolForm m={m} subject={subject} chatTopic={chatTopic} onReplace={onReplace} />;
-  if (m.meta.status === 'dismissed') return <div className="msg msg-note muted small">Cancelled: {m.content.toLowerCase()}</div>;
-  return m.meta.artifact_id ? <ArtifactCard id={m.meta.artifact_id} initial={m.artifact ?? null} onOpen={onOpenArtifact} /> : null;
-}
-
-const FORM_TITLES: Record<string, string> = {
-  flashcards: 'Create flashcards', quiz: 'Create a quiz', exam: 'Create an exam', notes: 'Compile full notes', cheatsheet: 'Create a cheat sheet',
-  mindmap: 'Create a mind map',
-};
-
-/** Apollo checking or revising a note because the student asked in chat: follows the review, opens the note. */
-function ReviewMsgCard({ id, title, mode, onOpen }: { id: number; title: string; mode: 'check' | 'revise'; onOpen: () => void }) {
-  const [r, setR] = useState<Review | null>(null);
-  const [gone, setGone] = useState(false);
-  useEffect(() => {
-    let alive = true;
-    const tick = () => api.review(id).then((x) => alive && setR(x)).catch(() => alive && setGone(true));
-    tick();
-    const off = onChange(['reviews'], tick);
-    return () => { alive = false; off(); };
-  }, [id]);
-  const busy = !r || r.status === 'queued' || r.status === 'running';
-  const verdict = r?.result?.verdict;
-  return (
-    <div className={`msg artifact-card status-${r?.status ?? 'queued'}`}>
-      <div className="artifact-icon t-notes">{mode === 'check' ? '✓' : '✎'}</div>
-      <div className="artifact-main">
-        <div className="artifact-title">{mode === 'check' ? 'Checking' : 'Revising'} {title}</div>
-        {gone && <div className="muted small">This comment was dismissed.</div>}
-        {!gone && busy && <><div className="muted small">{r?.status === 'running' ? r.message : 'Waiting for Apollo…'}</div><Progress value={r?.progress ?? 0} /></>}
-        {r?.status === 'failed' && <div className="small bad">{r.error}</div>}
-        {r?.status === 'ready' && (
-          <div className="muted small">
-            {mode === 'check'
-              ? `${{ correct: 'Looks correct', mostly_correct: 'Mostly correct', incorrect: 'Has errors', unsure: 'Not covered by your material' }[verdict ?? 'unsure']}`
-                + (r.result?.issues?.length ? ` · ${r.result.issues.length} issue${r.result.issues.length === 1 ? '' : 's'}` : '')
-              : r.applied ? 'Applied' : 'Ready: open it to see the changes and apply them'}
-          </div>
-        )}
-      </div>
-      <div className="artifact-actions"><button className="btn btn-sm btn-primary" onClick={onOpen}>Open</button></div>
-    </div>
-  );
-}
-
-function ToolForm({ m, subject, chatTopic, onReplace }: { m: Message; subject: Subject; chatTopic: number | null; onReplace: (m: Message) => void }) {
-  const type = m.meta.type!;
-  const args = m.meta.args ?? {};
-  const [topic, setTopic] = useState<number | null>(m.meta.topic_id ?? chatTopic);
-  const [count, setCount] = useState<number>(Number(args.count) || (type === 'quiz' ? 10 : 20));
-  const [focus, setFocus] = useState<string>(String(args.focus ?? ''));
-  const [difficulty, setDifficulty] = useState<string>(String(args.difficulty ?? ''));
-  const [exam, setExam] = useState<string>('');
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  const ready = type !== 'exam' || (exam && difficulty);
-  const submit = async () => {
-    setBusy(true);
-    setErr(null);
-    try {
-      const a: Record<string, unknown> = type === 'exam' ? { difficulty, practice_exam_path: exam }
-        : type === 'flashcards' || type === 'quiz' ? { count, focus } : { focus };
-      onReplace(await api.submitTool(m.id, a, topic));
-    } catch (e) {
-      setErr(String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="msg tool-card">
-      <div className="tool-title">{FORM_TITLES[type]}</div>
-      <div className="tool-grid">
-        <label className="field">
-          <span className="field-label">Material from</span>
-          <select value={topic ?? ''} onChange={(e) => setTopic(e.target.value ? Number(e.target.value) : null)}>
-            <option value="">All topics in {subject.name}</option>
-            {subject.topics.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-          </select>
-        </label>
-        {(type === 'flashcards' || type === 'quiz') && (
-          <label className="field">
-            <span className="field-label">{type === 'quiz' ? 'Questions' : 'Cards'}</span>
-            <input className="input" type="number" min={1} max={type === 'quiz' ? 60 : 200} value={count} onChange={(e) => setCount(Number(e.target.value))} />
-          </label>
-        )}
-        {type !== 'exam' && (
-          <label className="field field-wide">
-            <span className="field-label">Focus (optional)</span>
-            <input className="input" value={focus} placeholder="e.g. refraction and Snell's law" onChange={(e) => setFocus(e.target.value)} />
-          </label>
-        )}
-        {type === 'exam' && (
-          <>
-            <div className="field field-wide">
-              <span className="field-label">Practice exam</span>
-              <div className="file-pick">
-                <button className="btn btn-sm" disabled={!inElectron} onClick={async () => {
-                  const p = await window.studyApp!.openFiles({ multi: false });
-                  if (p[0]) setExam(p[0]);
-                }}>{exam ? 'Change…' : 'Choose file…'}</button>
-                <span className={exam ? '' : 'muted'}>{exam ? exam.split(/[\\/]/).pop() : 'Upload an exam you were given for this subject (PDF, Word, image).'}</span>
-              </div>
-              <span className="field-help">Only its structure is used (parts, question types, marks). It is not added to your material. Use an exam from the same subject.</span>
-            </div>
-            <div className="field field-wide">
-              <span className="field-label">Difficulty</span>
-              <div className="seg">
-                {[['easy', 'Easy'], ['normal', 'Normal'], ['hard', 'Hard']].map(([k, l]) => (
-                  <button key={k} className={difficulty === k ? 'active' : ''} onClick={() => setDifficulty(k)}>{l}</button>
-                ))}
-              </div>
-              <span className="field-help">
-                {difficulty === 'easy' ? 'Same structure, simpler questions than the practice exam.'
-                  : difficulty === 'hard' ? 'Same structure, harder questions than the practice exam.'
-                  : difficulty === 'normal' ? 'Same structure and difficulty as the practice exam.' : 'Choose how hard the new exam should be.'}
-              </span>
-            </div>
-          </>
-        )}
-      </div>
-      {err && <div className="small bad">{err}</div>}
-      <div className="tool-actions">
-        <button className="btn btn-sm" onClick={async () => onReplace(await api.dismissTool(m.id))}>Cancel</button>
-        <button className="btn btn-sm btn-primary" disabled={!ready || busy} onClick={submit}>{busy ? 'Starting…' : 'Generate'}</button>
-      </div>
-    </div>
-  );
-}
-
-function ArtifactCard({ id, initial, onOpen }: { id: number; initial: ArtifactSummary | null; onOpen: (id: number) => void }) {
-  const [a, setA] = useState<ArtifactSummary | null>(initial);
-  const [gen, setGen] = useState(0); // bump to restart polling after a retry
-  useEffect(() => {
-    let alive = true;
-    let done = false;
-    const tick = async () => {
-      if (done) return;
-      try {
-        const r = await api.artifact(id);
-        if (!alive) return;
-        setA(r);
-        done = TERMINAL.includes(r.status);
-      } catch { if (alive) setA(null); }
-    };
-    tick();
-    const off = onChange(['library'], tick);  // progress arrives as library changes, not by polling
-    return () => { alive = false; off(); };
-  }, [id, gen]);
-  if (!a) return <div className="msg msg-note muted small">This content was deleted.</div>;
-  return (
-    <div className={`msg artifact-card status-${a.status}`}>
-      <div className={`artifact-icon t-${a.type}`}>{TYPE_ICON[a.type]}</div>
-      <div className="artifact-main">
-        <div className="artifact-title">{a.title}</div>
-        {a.status === 'ready' && <div className="muted small">Ready · saved to the library</div>}
-        {(a.status === 'queued' || a.status === 'running') && (
-          <>
-            <div className="muted small">{a.status === 'queued' ? 'Waiting for the model…' : a.message}</div>
-            <Progress value={a.progress} />
-          </>
-        )}
-        {a.status === 'failed' && <div className="small bad">{a.error}</div>}
-        {a.status === 'cancelled' && <div className="muted small">Cancelled</div>}
-      </div>
-      <div className="artifact-actions">
-        {a.status === 'ready' && <button className="btn btn-sm btn-primary" onClick={() => onOpen(a.id)}>Open</button>}
-        {(a.status === 'queued' || a.status === 'running') && <button className="link-btn" onClick={() => api.cancelArtifact(a.id)}>Cancel</button>}
-        {(a.status === 'failed' || a.status === 'cancelled') && (
-          <button className="btn btn-sm" onClick={async () => { await api.retryArtifact(a.id); setGen((g) => g + 1); }}>Retry</button>
-        )}
-      </div>
-    </div>
-  );
-}

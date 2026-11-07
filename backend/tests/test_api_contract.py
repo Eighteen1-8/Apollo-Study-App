@@ -125,3 +125,16 @@ def test_a_missing_field_is_caught():
     with pytest.raises(AssertionError, match="no longer sends"):
         check({"id": 1, "type": "ingest"}, "Job")
     assert {"document_id", "filename", "status", "progress", "message", "error"} <= required_fields("Job")
+
+
+def test_chat_endpoints_match_their_types(library, monkeypatch):
+    from studyapp import chats
+    sid = library["sid"]
+    monkeypatch.setattr(chats, "_system_prompt", lambda chat: ("rules", False))
+    chat = client.post(f"/subjects/{sid}/chats", json={"topic_id": None}).json()
+    check(chat, "Chat")
+    check(client.get(f"/chats/{chat['id']}/stats?scope=subject").json(), "ChatStats")
+    check(client.get(f"/chats/{chat['id']}/context").json(), "ChatContext")
+    pal = client.get("/palette").json()
+    check(pal, "PaletteData")
+    assert pal["subjects"] and pal["documents"]

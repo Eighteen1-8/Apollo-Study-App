@@ -7,7 +7,7 @@
    Display only: nothing here feeds retrieval. */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, EmbeddingMap } from '../api';
-import { REF_COLOR, reducedMotion, topicColor } from '../theme';
+import { cloudDrift, cloudFps, REF_COLOR, reducedMotion, topicColor } from '../theme';
 import { logError } from '../log';
 import { onChange } from '../events';
 
@@ -91,10 +91,13 @@ function buildScene(map: EmbeddingMap | null, topics: Topics | undefined): Scene
       lastOfDoc.set(docId, i);
     });
     const real = P.length;
-    const per = Math.max(4, Math.min(40, Math.round(1400 / real)));
+    // ambient dust: up to 40 specks per node in a small library, DUST_BUDGET in all for a big one (each speck is a
+    // sprite drawn every frame, so a fixed total keeps a 3,000-chunk cloud as cheap as a 300-chunk one)
+    const per = dustPerNode(real);
     for (let i = 0; i < real; i++) {
       const p = P[i];
-      for (let j = 0; j < per; j++) {
+      const count = Math.floor(per) + (r() < per - Math.floor(per) ? 1 : 0);
+      for (let j = 0; j < count; j++) {
         const s = 0.05 + r() * 0.09;
         P.push({ x: p.x + gauss(r) * s, y: p.y + gauss(r) * s, z: p.z + gauss(r) * s, size: 0.25 + r() * 0.35,
           alpha: 0.25 + r() * 0.35, color: p.color, grp: p.grp, doc: p.doc, phase: r() * 6.28 });
@@ -164,6 +167,12 @@ function makeSprite([r, g, b]: RGB, light: boolean) {
 }
 
 const easeOut = (t: number) => 1 - (1 - t) ** 3;
+const DUST_BUDGET = 2500;
+/** Dust specks per node: as before, 1400 / nodes, at least 4 and at most 40 a node, but never more than DUST_BUDGET
+ * in all (a fraction means some nodes get one more speck than others). */
+export const dustPerNode = (real: number) => Math.min(40, Math.max(Math.round(1400 / real), Math.min(4, DUST_BUDGET / real)));
+/** Longest step the animation takes in one frame (ms): after a stall it catches up smoothly instead of jumping. */
+const MAX_STEP = 100;
 const VIEW = { yaw: -0.6, pitch: 0.32 };
 const DIST = 3.1; // camera distance from the orbit centre; fixed, see project()
 /** Points the cloud's signature changes with; a poll only rebuilds the scene when it differs. */
@@ -187,6 +196,9 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
   const focusRef = useRef<CloudFocus>(focus);
   focusRef.current = focus;
   const hoverRef = useRef<number>(-1);
+  /** Asks the (sleeping) render loop for a frame: anything that changes what's drawn calls it. */
+  const wakeRef = useRef<() => void>(() => {});
+  const reloadRef = useRef<() => void>(() => {});
   const cb = useRef({ onOpenSubject, onOpenDoc });
   cb.current = { onOpenSubject, onOpenDoc };
   const subjectMode = subjectId != null;
@@ -206,8 +218,11 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
     let pending: number | undefined;
     const off = onChange(['documents'], () => { clearTimeout(pending); pending = window.setTimeout(load, 4000); });
     const t = setInterval(load, 60000);
+    reloadRef.current = load;
     return () => { alive = false; off(); clearTimeout(pending); clearInterval(t); };
   }, [subjectId]);
+  /** The layout is kept as new files arrive (the axes are stored); this fits new axes to everything now embedded. */
+  const rearrange = () => api.refitCloud(subjectId).then(() => reloadRef.current()).catch((e) => logError('knowledge map', e));
 
   const scene = useMemo(() => (loaded ? buildScene(map, topics) : null), [map, loaded, topicKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -230,6 +245,7 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
       ring = cs.getPropertyValue('--cloud-ring').trim() || ring;
       thread = hexRgb(cs.getPropertyValue('--accent').trim() || '#8b9bff');
       sprites = scene.colors.map((c) => makeSprite(c, light));
+      wakeRef.current();
     };
     readTheme();
     const themeObs = new MutationObserver(readTheme);
@@ -242,12 +258,14 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
       w = r.width; h = r.height;
       cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
       cv.style.width = `${w}px`; cv.style.height = `${h}px`;
+      wakeRef.current();
     };
     resize();
     const ro = new ResizeObserver(resize);
     ro.observe(el);
 
     const still = reducedMotion();
+    const drift = !still && cloudDrift();
     // dense libraries would saturate to white under additive blending: dim dust most, nodes a little
     const dens = Math.min(1, Math.sqrt(350 / Math.max(1, real)));
     // c*/zoom/rad chase their t* targets, so a focus change glides the camera onto the files it keeps
@@ -255,6 +273,16 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
     let shownFocus: CloudFocus | undefined; // last focus the targets were computed for
     const t0 = performance.now();
     let last = t0, raf = 0, visible = true, dragging = false, moved = 0, px = 0, py = 0;
+    let winFocus = document.hasFocus();
+    /* Draw on demand, in step with the display (requestAnimationFrame) at the frame rate chosen in Settings
+       (`cloudFps`; 0 = the display's own rate). Frames are only drawn while something moves (intro, drag, momentum,
+       a zoom or focus glide, fading points) or the idle drift is on (not with drift off, reduced motion, or the
+       window in the background); otherwise the loop sleeps until `wake`. */
+    const wake = () => {
+      if (raf || !visible) return;
+      raf = requestAnimationFrame(frame);
+    };
+    wakeRef.current = wake;
 
     /** Frame the kept points: centroid, and the radius holding 90% of them. */
     const retarget = (f: CloudFocus) => {
@@ -322,22 +350,26 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
     };
 
     const frame = (t: number) => {
-      raf = requestAnimationFrame(frame);
+      raf = 0;
       if (!visible || !w) return;
-      const dt = Math.min(50, t - last); last = t;
+      // a frame-rate cap: skip display frames until the next one is due (2 ms early is fine: vsync jitters)
+      const fps = cloudFps();
+      if (fps && t - last < 1000 / fps - 2) { raf = requestAnimationFrame(frame); return; }
+      const dt = Math.min(MAX_STEP, t - last); last = t;
       if (focusRef.current !== shownFocus) retarget(focusRef.current);
       if (!dragging) {
         cam.idle += dt;
         cam.yaw += cam.vy; cam.pitch += cam.vp;
         cam.vy *= 0.94; cam.vp *= 0.94;
-        if (!still && cam.idle > 1200 && hoverRef.current < 0) cam.yaw += dt * 0.00009; // slow drift when untouched
+        if (drift && winFocus && cam.idle > 1200 && hoverRef.current < 0) cam.yaw += dt * 0.00009; // slow drift when untouched
       }
       cam.pitch = Math.max(-1.35, Math.min(1.35, cam.pitch));
       const ease = still ? 1 : Math.min(1, dt / 260);
       cam.cx += (cam.tx - cam.cx) * ease; cam.cy += (cam.ty - cam.cy) * ease; cam.cz += (cam.tz - cam.cz) * ease;
       cam.zoom += (cam.tzoom - cam.zoom) * ease; cam.rad += (cam.trad - cam.rad) * ease;
       const fade = still ? 1 : Math.min(1, dt / 160);
-      for (let i = 0; i < n; i++) vis[i] += (want[i] - vis[i]) * fade;
+      let fading = 0;
+      for (let i = 0; i < n; i++) { const d = want[i] - vis[i]; vis[i] += d * fade; fading = Math.max(fading, Math.abs(d)); }
       const intro = project(t);
 
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -369,7 +401,7 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
         ctx.beginPath(); ctx.moveTo(sx[a], sy[a]); ctx.lineTo(sx[b], sy[b]); ctx.stroke();
       }
 
-      order.sort((a, b) => sz[b] - sz[a]); // far to near
+      if (light) order.sort((a, b) => sz[b] - sz[a]); // far to near (additive blending on dark themes is order-free)
       ctx.globalCompositeOperation = light ? 'source-over' : 'lighter';
       for (let k = 0; k < n; k++) {
         const i = order[k];
@@ -382,7 +414,7 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
         const near = Math.min(1, Math.max(0, (sz[i] - 0.3) / 0.5)); // fade what passes the camera
         let a = alpha[i] * fog * near * (grp[i] === STAR ? 1 : intro * v * (isReal ? 0.45 + 0.55 * dens : dens));
         if (dim && grp[i] !== STAR) a *= lit(i) ? 1.15 : 0.12;
-        if (grp[i] !== STAR && !still) a *= 0.85 + 0.15 * Math.sin(t / 900 + phase[i] * 3); // twinkle
+        if (grp[i] !== STAR && drift) a *= 0.85 + 0.15 * Math.sin(t / 900 + phase[i] * 3); // twinkle
         ctx.globalAlpha = Math.min(1, a);
         const sp = sprites[colorIdx[i]];
         const d = Math.min(64, i === hov ? px_ * 1.8 : px_);
@@ -395,17 +427,26 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
         ctx.strokeStyle = `rgb(${thread[0]},${thread[1]},${thread[2]})`;
         ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.arc(sx[hov], sy[hov], 9 + 2 * Math.sin(t / 220), 0, Math.PI * 2);
+        ctx.arc(sx[hov], sy[hov], 9 + (drift ? 2 * Math.sin(t / 220) : 0), 0, Math.PI * 2);
         ctx.stroke();
       }
       ctx.globalAlpha = 1;
+
+      const near = (a: number, b: number) => Math.abs(a - b) < 1e-3;
+      const moving = intro < 1 || dragging || Math.abs(cam.vy) > 1e-5 || Math.abs(cam.vp) > 1e-5 || fading > 0.004
+        || !near(cam.cx, cam.tx) || !near(cam.cy, cam.ty) || !near(cam.cz, cam.tz) || !near(cam.zoom, cam.tzoom) || !near(cam.rad, cam.trad);
+      if (moving || (drift && winFocus)) raf = requestAnimationFrame(frame);
     };
     raf = requestAnimationFrame(frame);
 
-    const io = new IntersectionObserver(([e]) => { visible = e.isIntersecting && !document.hidden; });
+    const io = new IntersectionObserver(([e]) => { visible = e.isIntersecting && !document.hidden; if (visible) wake(); });
     io.observe(el);
-    const onVis = () => { visible = !document.hidden; };
+    const onVis = () => { visible = !document.hidden; if (visible) wake(); };
     document.addEventListener('visibilitychange', onVis);
+    const onFocusWin = () => { winFocus = true; wake(); };
+    const onBlurWin = () => { winFocus = false; };
+    window.addEventListener('focus', onFocusWin);
+    window.addEventListener('blur', onBlurWin);
 
     const pick = (cx: number, cy: number) => {
       let best = -1, bd = 16 * 16;
@@ -421,6 +462,7 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
     const down = (e: PointerEvent) => {
       if (e.button !== 0) return;
       dragging = true; moved = 0; px = e.clientX; py = e.clientY; cam.vy = cam.vp = 0;
+      wake();
       cv.setPointerCapture(e.pointerId);
       el.classList.add('grabbing');
     };
@@ -431,6 +473,7 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
         cam.yaw += dx * 0.006; cam.pitch += dy * 0.006;
         cam.vy = dx * 0.006; cam.vp = dy * 0.006; cam.idle = 0;
         if (hoverRef.current >= 0) { hoverRef.current = -1; setHover(null); }
+        wake();
         return;
       }
       const [x, y] = local(e);
@@ -438,6 +481,7 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
       if (i !== hoverRef.current) {
         hoverRef.current = i;
         setHover(i >= 0 ? { i, x: sx[i], y: sy[i] } : null);
+        wake();
       }
       cv.style.cursor = i >= 0 ? 'pointer' : '';
     };
@@ -445,6 +489,7 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
       if (!dragging) return;
       dragging = false; cam.idle = 0;
       el.classList.remove('grabbing');
+      wake();
       if (moved < 4) {
         const [x, y] = local(e);
         const i = pick(x, y);
@@ -452,14 +497,15 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
         else if (i >= 0 && grp[i] >= 0) cb.current.onOpenSubject?.(grp[i]);
       }
     };
-    const leave = () => { if (!dragging && hoverRef.current >= 0) { hoverRef.current = -1; setHover(null); } };
+    const leave = () => { if (!dragging && hoverRef.current >= 0) { hoverRef.current = -1; setHover(null); wake(); } };
     const wheel = (e: WheelEvent) => {
       e.preventDefault();
       cam.tzoom = Math.max(0.55, Math.min(cam.fit * 3.2, cam.tzoom * Math.exp(-e.deltaY * 0.0012)));
       cam.zoom = cam.tzoom; // wheel zoom is direct, not eased
       cam.idle = 0;
+      wake();
     };
-    const reset = () => { Object.assign(cam, VIEW, { vy: 0, vp: 0, tzoom: cam.fit }); };
+    const reset = () => { Object.assign(cam, VIEW, { vy: 0, vp: 0, tzoom: cam.fit }); wake(); };
     cv.addEventListener('pointerdown', down);
     cv.addEventListener('pointermove', move);
     cv.addEventListener('pointerup', up);
@@ -470,8 +516,11 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
 
     return () => {
       cancelAnimationFrame(raf);
+      wakeRef.current = () => {};
       ro.disconnect(); io.disconnect(); themeObs.disconnect();
       document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('focus', onFocusWin);
+      window.removeEventListener('blur', onBlurWin);
       cv.removeEventListener('pointerdown', down);
       cv.removeEventListener('pointermove', move);
       cv.removeEventListener('pointerup', up);
@@ -481,6 +530,8 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
       cv.removeEventListener('dblclick', reset);
     };
   }, [scene]);
+  // a focus, legend hover or outside highlight changes what's drawn: ask the sleeping loop for a frame
+  useEffect(() => { wakeRef.current(); }, [focus, hoverGroup, highlight]);
 
   /** Legend: subjects on the home page, topics (and textbooks) in a subject, with chunk counts. */
   const legend = useMemo(() => {
@@ -557,7 +608,9 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
           </div>
         )}
       </div>
-      <div className="cloud-hint">Drag to orbit · Scroll to zoom · Double-click to reset{subjectMode ? ' · Click a point to open it' : ''}</div>
+      <div className="cloud-hint">Drag to orbit · Scroll to zoom · Double-click to reset{subjectMode ? ' · Click a point to open it' : ''}
+        {scene && !scene.demo && <> · <button className="link-btn cloud-refit" onClick={rearrange} title="New files join the existing layout; this lays the cloud out again from everything now embedded">Re-arrange</button></>}
+      </div>
       {tip && hover && (
         <div className="cloud-tip" style={{ left: hover.x, top: hover.y }}>
           <div className="cloud-tip-label">{tip.label}</div>

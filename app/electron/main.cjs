@@ -9,6 +9,10 @@ const crypto = require('crypto');
 
 const isDev = process.argv.includes('--dev');
 const DEV_PORT = 47615; // fixed in dev so the UI can also be opened in a plain browser
+// Testing an unpackaged build without touching the student's data (never in the packaged app):
+// APOLLO_USER_DATA = a throwaway Electron profile (window state, spelling, local storage), APOLLO_DATA_DIR (below) =
+// a throwaway data folder for the backend.
+if (!app.isPackaged && process.env.APOLLO_USER_DATA) app.setPath('userData', path.resolve(process.env.APOLLO_USER_DATA));
 let backend = null;
 let backendPort = null;
 // Every request to the backend carries this per-launch secret (backend api.require_token), so web pages open in a
@@ -81,8 +85,8 @@ function backendCommand(port, dataDir) {
 }
 
 async function startBackend() {
-  // APOLLO_DATA_DIR (dev only) runs against another data folder, e.g. a throwaway one for testing.
-  const dataDir = (isDev && process.env.APOLLO_DATA_DIR) || path.join(app.getPath('userData'), 'data');
+  // APOLLO_DATA_DIR (unpackaged only) runs against another data folder, e.g. a throwaway one for testing.
+  const dataDir = (!app.isPackaged && process.env.APOLLO_DATA_DIR) || path.join(app.getPath('userData'), 'data');
   if (isDev && (await healthy(DEV_PORT))) {
     // Reuse a backend started by hand on this data: it wrote its token beside the database.
     try { backendToken = fs.readFileSync(path.join(dataDir, 'backend-token'), 'utf8').trim(); } catch { /* none */ }
@@ -121,6 +125,52 @@ function lockToLocalhost() {
     cb({ cancel: !ok });
   });
 }
+
+// Spell check (text fields, the note editor): Hunspell dictionaries bundled in assets/dictionaries are copied to
+// where Chromium looks for them, and it is never allowed to download any (the app stays offline): a language without a
+// bundled dictionary just isn't available. The chosen languages are kept per machine in spelling.json (default en-AU).
+const DICT_SRC = path.join(__dirname, '..', 'assets', 'dictionaries');
+const spellFile = () => path.join(app.getPath('userData'), 'spelling.json');
+const bundledDicts = () => { try { return fs.readdirSync(DICT_SRC).filter((f) => f.endsWith('.bdic')); } catch { return []; } };
+/** Languages with a bundled dictionary: "en-AU-10-1.bdic" → "en-AU". */
+const spellLanguages = () => [...new Set(bundledDicts().map((f) => f.replace(/-\d+-\d+\.bdic$/, '')))];
+function loadSpelling() {
+  try { const v = JSON.parse(fs.readFileSync(spellFile(), 'utf8')); return Array.isArray(v.languages) ? v.languages : ['en-AU']; }
+  catch { return ['en-AU']; }
+}
+function applySpelling(languages) {
+  const s = session.defaultSession;
+  const usable = languages.filter((l) => spellLanguages().includes(l));
+  s.setSpellCheckerEnabled(usable.length > 0);
+  if (usable.length) s.setSpellCheckerLanguages(usable);
+  return usable;
+}
+function setupSpelling() {
+  const dir = path.join(app.getPath('userData'), 'Dictionaries');
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    for (const f of bundledDicts()) {
+      const to = path.join(dir, f);
+      if (!fs.existsSync(to) || fs.statSync(to).size !== fs.statSync(path.join(DICT_SRC, f)).size) fs.copyFileSync(path.join(DICT_SRC, f), to);
+    }
+  } catch (e) { console.warn('[spelling]', e.message); }
+  // anything missing would otherwise be fetched from Google: point the download at a closed local port instead
+  session.defaultSession.setSpellCheckerDictionaryDownloadURL('http://127.0.0.1:9/');
+  applySpelling(loadSpelling());
+}
+ipcMain.handle('spell:info', () => ({ languages: loadSpelling(), available: spellLanguages() }));
+ipcMain.handle('spell:set', (_e, languages) => {
+  const langs = Array.isArray(languages) ? languages.filter((l) => typeof l === 'string').slice(0, 3) : [];
+  try { fs.writeFileSync(spellFile(), JSON.stringify({ languages: langs })); } catch { /* not saved */ }
+  return applySpelling(langs);
+});
+ipcMain.handle('spell:add', (_e, word) => { if (typeof word === 'string' && word.length < 100) session.defaultSession.addWordToSpellCheckerDictionary(word); });
+ipcMain.handle('spell:replace', (e, word) => { if (typeof word === 'string' && word.length < 100) e.sender.replaceMisspelling(word); });
+// Chromium only reports the misspelled word under the pointer with its own context menu, which a page cancelling the
+// right-click suppresses. So a page that wants it doesn't cancel: it claims the next menu first (synchronously, so
+// the claim is in before Chromium's menu request), and gets the spelling result back instead of a native menu.
+const menuClaims = new Set();
+ipcMain.on('menu:claim', (e) => { menuClaims.add(e.sender.id); setTimeout(() => menuClaims.delete(e.sender.id), 1000); e.returnValue = true; });
 
 // Size, position and maximised state come back on the next launch (if that spot is still on a screen).
 const stateFile = () => path.join(app.getPath('userData'), 'window-state.json');
@@ -168,10 +218,22 @@ async function createWindow() {
   // Electron shows no context menu of its own: text fields and selected text the page doesn't handle itself get the
   // usual Cut / Copy / Paste / Select all (the page's own menus call preventDefault, so this never doubles up).
   win.webContents.on('context-menu', (_e, p) => {
+    // a page menu that wants Chromium's spelling result (the note editor) claimed this one: hand it the result instead
+    if (menuClaims.delete(win.webContents.id)) {
+      win.webContents.send('menu:params', { misspelledWord: p.misspelledWord, suggestions: p.dictionarySuggestions.slice(0, 6) });
+      return;
+    }
     if (!p.isEditable && !p.selectionText.trim()) return;
     const f = p.editFlags;
+    // a misspelled word: suggestions first (the chat box and other text fields; the note editor has its own menu)
+    const spelling = p.isEditable && p.misspelledWord ? [
+      ...p.dictionarySuggestions.slice(0, 5).map((w) => ({ label: w, click: () => win.webContents.replaceMisspelling(w) })),
+      ...(p.dictionarySuggestions.length ? [] : [{ label: 'No suggestions', enabled: false }]),
+      { label: 'Add to dictionary', click: () => session.defaultSession.addWordToSpellCheckerDictionary(p.misspelledWord) },
+      { type: 'separator' },
+    ] : [];
     const items = p.isEditable
-      ? [{ role: 'undo', enabled: f.canUndo }, { role: 'redo', enabled: f.canRedo }, { type: 'separator' },
+      ? [...spelling, { role: 'undo', enabled: f.canUndo }, { role: 'redo', enabled: f.canRedo }, { type: 'separator' },
         { role: 'cut', enabled: f.canCut }, { role: 'copy', enabled: f.canCopy }, { role: 'paste', enabled: f.canPaste },
         { type: 'separator' }, { role: 'selectAll', enabled: f.canSelectAll }]
       : [{ role: 'copy', enabled: f.canCopy }];
@@ -252,6 +314,7 @@ app.whenReady().then(async () => {
     { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }] },
   ]));
   lockToLocalhost();
+  setupSpelling();
   try {
     backendPort = await startBackend();
   } catch (e) {

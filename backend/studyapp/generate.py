@@ -179,13 +179,14 @@ def _page_call(system, task, reasoning, page_tokens) -> tuple[str, str]:
     max_tokens = page_tokens if reasoning == "off" else max(page_tokens, min(room, 48000))
     res = llm.chat([{"role": "system", "content": system}, {"role": "user", "content": task}],
                    max_tokens=max(2000, min(max_tokens, room)), reasoning=reasoning, temperature=0.3)
-    return re.sub(r"<think>.*?</think>", "", res["content"], flags=re.S).strip(), res["finish"]
+    return llm.strip_think(res["content"]), res["finish"]
 
 
-def _page(system, task, art, prog, label, max_tokens=16000) -> dict:
+def _page(system, task, art, prog, label, max_tokens=16000, allow_empty=False) -> dict | None:
     """One notes/cheat-sheet page: HTML from the component brief, then the figures it asked for.
     An empty or cut-off page (the model spent its budget thinking) is retried once with low reasoning; a page that's
-    still empty fails the job rather than being saved blank."""
+    still empty fails the job rather than being saved blank (or is skipped, with `allow_empty`, for a later part
+    that was told to add only what the earlier parts didn't cover)."""
     task = f"{task}\n\n{notehtml.DESIGN}"
     reasoning = db.setting("generation_reasoning")
     raw, finish = _page_call(system, task, reasoning, max_tokens)
@@ -195,6 +196,8 @@ def _page(system, task, art, prog, label, max_tokens=16000) -> dict:
         if len(raw2) > len(raw):
             raw = raw2
     if len(raw) < 200:
+        if allow_empty:
+            return None
         raise ValueError(f"Apollo returned an empty page for {label.split(': ', 1)[-1]}. Try again, or lower "
                          "'Generating flashcards, quizzes, exams, notes' reasoning in Settings.")
     content, is_html = notehtml.clean(raw)
@@ -204,36 +207,78 @@ def _page(system, task, art, prog, label, max_tokens=16000) -> dict:
     return {"html": content, "figures": figures.resolve(art["subject_id"], content, limit=3)}
 
 
+def _covered(pages: list[tuple[str, dict]], limit=4000) -> str:
+    """Outline of the pages written so far (the most recent kept when it gets long), so the next page doesn't repeat them."""
+    blocks = []
+    for title, page in pages:
+        lines = notehtml.outline(page.get("html") or page.get("markdown") or "")
+        if lines:
+            blocks.append(f"[{title}]\n" + "\n".join(lines))
+    text = ""
+    for b in reversed(blocks):
+        if len(text) + len(b) > limit:
+            break
+        text = b + ("\n" + text if text else "")
+    return text
+
+
 def gen_notes(art, params, groups, prog):
     sections = [(gi, s) for gi, g in enumerate(groups) for s in g["sections"]]
-    out = []
+    focus = (params.get("focus") or "").strip()
+    out, written = [], []
     for k, (gi, sec) in enumerate(sections):
         label = f"Writing notes {k + 1}/{len(sections)}: {sec['title']}"
         prog(0.05 + 0.9 * k / len(sections), label)
+        task = (f"Write comprehensive, visually clear study notes for the document section '{sec['title']}', as a page "
+                "of the student's notebook. Follow the material's structure with <h2>/<h3> headings. Include every "
+                "definition (def), law and formula (formula, with symbols and units), turn the material's diagrams "
+                "into figures (or draw/plot them when that explains better), add worked examples where the material "
+                "has calculations, flag exam tips and common mistakes, and finish with a callout key 'Summary' of the "
+                "key points. Use ONLY this section's content; do not include content from other documents.")
+        if focus:  # per section: a focus list must not pull the same topics into every page
+            task += (f"\nThe student is focusing on: {focus}. Give extra depth to those topics where THIS section covers "
+                     "them; never bring them in from other documents, and write the section's other content normally.")
+        covered = _covered(written)
+        if covered:
+            task += ("\n\nEarlier pages of these notes already cover the following. Do not repeat their definitions, "
+                     "formulas, tables or explanations: when this section treats the same idea, write only what it adds "
+                     "(a new detail, example or angle) and refer back briefly ('see <page title>').\n" + covered)
         page = _page(_system(art["scope"], groups[gi]),
-                     f"Write comprehensive, visually clear study notes for the document section '{sec['title']}', as a page "
-                     "of the student's notebook. Follow the material's structure with <h2>/<h3> headings. Include every "
-                     "definition (def), law and formula (formula, with symbols and units), turn the material's diagrams "
-                     "into figures (or draw/plot them when that explains better), add worked examples where the material "
-                     "has calculations, flag exam tips and common mistakes, and finish with a callout key 'Summary' of the "
-                     "key points. Do not include content from other documents."
-                     + _focus_text(params) + _textbook(art["subject_id"], sec["title"], art["topic_id"]), art, prog, label)
+                     task + _textbook(art["subject_id"], sec["title"], art["topic_id"]), art, prog, label)
         out.append({"title": sec["title"], "topic": sec["topic"], **page})
+        written.append((sec["title"], page))
     return {"sections": out}
 
 
+def _group_title(g: dict) -> str:
+    topics = list(dict.fromkeys(s["topic"] for s in g["sections"]))
+    return ", ".join(topics[:3]) + (f" +{len(topics) - 3}" if len(topics) > 3 else "")
+
+
 def gen_cheatsheet(art, params, groups, prog):
-    out = []
+    """One page per material group. Later parts see an outline of the earlier ones and add only what is new, so a
+    large scope (or a focus list every group touches) doesn't produce the same cheat sheet several times over."""
+    out, written = [], []
     for gi, g in enumerate(groups):
         label = f"Writing cheat sheet {gi + 1}/{len(groups)}"
         prog(0.1 + 0.85 * gi / len(groups), label)
-        page = _page(_system(art["scope"], g),
-                     "Write a dense, scannable one-page cheat sheet for ALL the material above. Group it by topic in "
-                     "grid2/card blocks; every formula as a formula block (symbols and units); key definitions as def "
-                     "blocks; key relationships as a compact table; one callout warn with common mistakes. Short phrases, "
-                     "no filler. Use at most 2 figures or plots, only for the most important diagrams." + _focus_text(params),
-                     art, prog, label, max_tokens=12000)
-        out.append({"title": f"Part {gi + 1}" if len(groups) > 1 else "Cheat sheet", **page})
+        task = ("Write a dense, scannable one-page cheat sheet for ALL the material above. Group it by topic in "
+                "grid2/card blocks; every formula as a formula block (symbols and units); key definitions as def "
+                "blocks; key relationships as a compact table; one callout warn with common mistakes. Short phrases, "
+                "no filler. Use at most 2 figures or plots, only for the most important diagrams." + _focus_text(params))
+        covered = _covered(written)
+        if covered:
+            task += (f"\n\nThis is part {gi + 1} of a cheat sheet split into parts because the material is large. The "
+                     "earlier parts already cover the headings and terms below. Do NOT repeat them: no second copy of a "
+                     "definition, formula, table or comparison listed here. For a topic already covered, add only facts "
+                     "the earlier parts lack, under a heading like '<topic> (more)'; leave out topics with nothing new. "
+                     "Spend the page on what this material adds.\n" + covered)
+        page = _page(_system(art["scope"], g), task, art, prog, label, max_tokens=12000, allow_empty=gi > 0)
+        if page is None:
+            continue  # this part had nothing new
+        title = f"Part {gi + 1} · {_group_title(g)}" if len(groups) > 1 else "Cheat sheet"
+        out.append({"title": title, **page})
+        written.append((title, page))
     return {"sections": out}
 
 

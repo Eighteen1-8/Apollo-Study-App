@@ -70,6 +70,8 @@ DEFAULT_SETTINGS = {
     "vision_default_reference": "all",
     # Qwen reasoning effort per use: "off" | "low" | "medium" | "xhigh" (the levels the chat template supports)
     "reasoning_levels": ["low", "medium", "xhigh"],
+    # what the local model server accepts (llm.DEFAULT_PROFILE until Settings → Test connections probes it)
+    "server_profile": {},
     "chat_reasoning_default": "off",
     "vision_reasoning": "medium",
     "generation_reasoning": "xhigh",
@@ -92,6 +94,7 @@ DEFAULT_SETTINGS = {
     "chat_assistive": 1,  # show methods / worked steps
     "chat_concise": 1,  # 0 detailed, 1 balanced, 2 concise
     "chat_interactive": 0,  # guide with smaller questions instead of giving answers
+    "chat_auto_title": True,  # Apollo names a chat after its first reply
     # Paused models (the jobs panel): background jobs wait, chat reports it. Lets Qwen be unloaded to free VRAM.
     "pause_llm": False,
     "pause_embed": False,

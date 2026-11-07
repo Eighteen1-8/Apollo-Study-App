@@ -231,22 +231,29 @@ def test_files_read_by_an_older_parser_are_listed_and_can_be_read_again(subject,
 
 def test_search_vector_cache_follows_changes(subject, embeds):
     from studyapp import search
+
+    def vecs(d):  # (chunk ids, matrix) of one document, as the cache holds it
+        ids, mats = search._vectors([d], "test-embed")
+        return (list(ids[0]), mats[0]) if ids else ([], None)
     d = _doc(subject["sid"], subject["a"], "cache.pdf", [("First page.", "h-c1")])
-    ids, mat = search._vectors([d], "test-embed")
+    ids, mat = vecs(d)
     entry = search._docs[(d, "test-embed")]
     assert len(ids) == 1
-    again_ids, again = search._vectors([d], "test-embed")
+    again_ids, again = vecs(d)
     assert again is mat and search._docs[(d, "test-embed")] is entry  # unchanged: nothing read again
     # a chunk deleted and re-added under the same id with a different vector is noticed
     top = db.q1("SELECT id, text FROM chunks WHERE document_id=? ORDER BY id DESC LIMIT 1", (d,))
     db.ex("UPDATE chunks SET embedding=? WHERE id=?", (np.array([9, 1, 1], dtype=np.float32).tobytes(), top["id"]))
-    assert not np.array_equal(search._vectors([d], "test-embed")[1], mat)
+    assert not np.array_equal(vecs(d)[1], mat)
     cid = db.ex("INSERT INTO chunks(document_id, unit_start, unit_end, label, text, token_count) VALUES (?, 0, 0, 'x', 'Second.', 2)", (d,))
     pipeline.embed_chunks(d)
-    ids, mat = search._vectors([d], "test-embed")
+    ids, mat = vecs(d)
     assert cid in ids and len(ids) == 2
+    # similarities over a scope: one score per chunk, no combined copy kept
+    sid_ids, sims = search.similarities([d], "test-embed", np.array([1, 0, 0], dtype=np.float32))
+    assert list(sid_ids) == ids and sims.shape == (2,)
     db.ex("DELETE FROM chunks WHERE id=?", (cid,))
-    assert len(search._vectors([d], "test-embed")[0]) == 1
+    assert len(vecs(d)[0]) == 1
 
 
 def test_run_next_and_long_jobs_yield(subject, monkeypatch):

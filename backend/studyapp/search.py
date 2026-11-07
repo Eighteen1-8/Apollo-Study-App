@@ -2,9 +2,12 @@
 Chunks are extracted text or a unit's vision notes (source='vision'). Every result carries the vision notes of the
 units it spans; a vision hit becomes its unit (extracted text + notes). Each unit's notes appear once per search.
 
-Vectors are kept in memory (`_vectors`): per document, and the combined matrix for the last few scopes searched, so a
-question doesn't decode every BLOB in scope again. An entry is reused while its signature (`_signatures`) is
-unchanged; SQLite triggers change it on every add, rebuild or re-embed. The least recently used are dropped past CACHE_BYTES."""
+Vectors are kept in memory (`_vectors`), one float32 matrix per document, so a question doesn't decode every BLOB in
+scope again. A scope is searched document by document and the similarities joined, never by copying its matrices into
+one (that doubled the memory: measured faster too, 5 ms against 7 ms over 11k chunks of 4,096 dims). float16 would
+halve memory again but made each search 15-30 times slower, so it isn't used. An entry is reused while its signature
+(`_signatures`) is unchanged; SQLite triggers change it on every add, rebuild or re-embed. The least recently used are
+dropped past CACHE_BYTES."""
 import re
 import threading
 from collections import OrderedDict
@@ -16,7 +19,6 @@ from . import db, llm
 RRF_K = 60
 CACHE_BYTES = 512 << 20
 _docs: "OrderedDict[tuple, tuple]" = OrderedDict()  # (doc_id, model) -> (signature, chunk ids, matrix)
-_scopes: "OrderedDict[tuple, tuple]" = OrderedDict()  # (doc ids, model) -> (signature, chunk ids, matrix), last few
 _cache_lock = threading.Lock()
 
 
@@ -29,21 +31,13 @@ def _signatures(doc_ids: list[int], model: str) -> dict[int, tuple]:
 
 
 def _evict():
-    while sum(v[2].nbytes for v in (*_docs.values(), *_scopes.values()) if v[2] is not None) > CACHE_BYTES and len(_docs) > 1:
+    while sum(v[2].nbytes for v in _docs.values() if v[2] is not None) > CACHE_BYTES and len(_docs) > 1:
         _docs.popitem(last=False)
-    while len(_scopes) > 4:
-        _scopes.popitem(last=False)
 
 
-def _vectors(doc_ids: list[int], model: str) -> tuple[np.ndarray, np.ndarray]:
-    """(chunk ids, matrix) of the current model's vectors for these documents, from the cache where it's current."""
+def _vectors(doc_ids: list[int], model: str) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """Per document with current-model vectors: (chunk ids, matrix), from the cache where it's current."""
     sigs = _signatures(doc_ids, model)
-    scope_key, scope_sig = (tuple(sorted(sigs)), model), tuple(sorted(sigs.items()))
-    with _cache_lock:
-        hit = _scopes.get(scope_key)
-        if hit and hit[0] == scope_sig:
-            _scopes.move_to_end(scope_key)
-            return hit[1], hit[2]
     ids, mats = [], []
     for did, sig in sigs.items():
         with _cache_lock:
@@ -57,22 +51,26 @@ def _vectors(doc_ids: list[int], model: str) -> tuple[np.ndarray, np.ndarray]:
                      np.vstack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows]) if rows else None)
             with _cache_lock:
                 _docs[(did, model)] = entry
+                _evict()
         if entry[2] is None:  # nothing embedded with this model (yet)
             continue
         ids.append(entry[1])
         mats.append(entry[2])
-    if not mats:
-        return np.array([], dtype=int), np.zeros((0, 0), dtype=np.float32)
     dims = {m.shape[1] for m in mats}
     if len(dims) > 1:  # one model always gives one size; mixed sizes mean stale rows, keep the common one
         common = max(dims, key=lambda d: sum(m.shape[0] for m in mats if m.shape[1] == d))
         ids = [i for i, m in zip(ids, mats) if m.shape[1] == common]
         mats = [m for m in mats if m.shape[1] == common]
-    out = (np.concatenate(ids), np.vstack(mats))
-    with _cache_lock:
-        _scopes[scope_key] = (scope_sig, *out)
-        _evict()
-    return out
+    return ids, mats
+
+
+def similarities(doc_ids: list[int], model: str, qv: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(chunk ids, cosine similarity to the query vector) over these documents' current-model vectors."""
+    ids, mats = _vectors(doc_ids, model)
+    mats = [(i, m) for i, m in zip(ids, mats) if m.shape[1] == len(qv)]
+    if not mats:
+        return np.array([], dtype=int), np.zeros(0, dtype=np.float32)
+    return np.concatenate([i for i, _ in mats]), np.concatenate([m @ qv for _, m in mats])
 
 
 def scope_documents(topic_id=None, subject_id=None, include_reference=True) -> list[int]:
@@ -106,10 +104,11 @@ def search(query: str, doc_ids: list[int], k=10):
 
     # Only vectors from the current model are comparable (a different model may not even have the same size).
     if not llm.paused("embed"):  # paused embedding model: keyword matches only
-        chunk_ids, mat = _vectors(doc_ids, llm.embed_model())
-        if len(chunk_ids):
+        model = llm.embed_model()
+        if db.q1(f"SELECT 1 FROM chunks WHERE document_id IN ({marks}) AND embedding IS NOT NULL AND embed_model=? LIMIT 1",
+                 (*doc_ids, model)):
             qv = llm.embed([query], query=True)[0]
-            sims = mat @ qv
+            chunk_ids, sims = similarities(doc_ids, model, qv)
             for r, i in enumerate(np.argsort(-sims)[:50]):
                 ranks.setdefault(int(chunk_ids[i]), {}).update(vector_rank=r + 1, similarity=float(sims[i]))
 

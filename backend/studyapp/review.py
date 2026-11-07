@@ -68,11 +68,11 @@ def plain_text(html: str) -> str:
 def target_sections(r: dict) -> tuple[dict, list[dict]]:
     """(owner row with subject_id/topic_id/title, sections [{title, html}]) for a review's target."""
     if r["target"] == "note":
-        n = db.q1("SELECT * FROM user_notes WHERE id=?", (r["target_id"],))
+        n = db.q1("SELECT * FROM user_notes WHERE id=? AND deleted_at IS NULL", (r["target_id"],))
         if n is None:
             raise ValueError("That note was deleted.")
         return n, [{"title": n["title"], "html": n["html"]}]
-    a = db.q1("SELECT * FROM artifacts WHERE id=?", (r["target_id"],))
+    a = db.q1("SELECT * FROM artifacts WHERE id=? AND deleted_at IS NULL", (r["target_id"],))
     if a is None or not a["content"]:
         raise ValueError("That content was deleted or isn't ready.")
     secs = json.loads(a["content"]).get("sections") or []
@@ -104,7 +104,7 @@ def _system(rules: str, owner: dict, query: str) -> str:
 
 
 def _strip_think(s: str) -> str:
-    return re.sub(r"<think>.*?</think>", "", s, flags=re.S).strip()
+    return llm.strip_think(s)
 
 
 def run_review(review_id: int, job):

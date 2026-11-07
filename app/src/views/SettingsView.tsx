@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
-import { api, Settings } from '../api';
+import { api, OpenRouterModel, ServerProfile, Settings } from '../api';
 import type { SettingsTab } from '../App';
 import MaintenanceView from './MaintenanceView';
 import ShareView from './ShareView';
 import { useOverlay } from '../components/overlay';
 import { Button } from '../components/ui';
-import { ACCENTS, THEMES, useAppearance } from '../theme';
+import { ACCENTS, CLOUD_FPS, THEMES, useAppearance } from '../theme';
 import { logError } from '../log';
 
 type Field = {
@@ -94,6 +94,44 @@ const ONLINE_FIELDS: Field[] = [
   { key: 'openrouter_concurrency', label: 'Max simultaneous requests', type: 'number', help: 'Free models are rate limited; keep this low.' },
 ];
 
+/** What the probe found, in words. */
+const profileText = (p: ServerProfile) => [
+  p.reasoning_levels.length ? `reasoning ${p.reasoning_levels.join(' / ')}` : 'no reasoning levels',
+  p.thinking_switch === 'template' ? 'thinking on/off' : 'no thinking switch',
+  p.tools ? 'tool calls' : 'no tool calls',
+  p.stream_usage ? 'token counts' : 'no token counts',
+  p.json_schema ? 'JSON schemas' : 'no JSON schemas (the schema goes in the prompt)',
+].join(', ');
+
+/** OpenRouter's current chat models as suggestions for the model field (free ones first), loaded on request. */
+function OpenRouterModelField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [models, setModels] = useState<OpenRouterModel[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const load = async () => {
+    setLoading(true); setError(null);
+    try { setModels(await api.openrouterModels()); } catch (e) { setError(String(e).replace(/^Error: /, '')); } finally { setLoading(false); }
+  };
+  const known = models?.find((m) => m.id === value);
+  return (
+    <label className="field">
+      <span className="field-label">Chat model id</span>
+      <div className="row-inline">
+        <input className="input" list="openrouter-models" value={value} onChange={(e) => onChange(e.target.value)} placeholder="e.g. google/gemma-4-26b-a4b-it:free" />
+        <button type="button" className="btn btn-sm" onClick={load} disabled={loading}>{loading ? 'Loading…' : models ? 'Reload list' : 'Choose from list'}</button>
+      </div>
+      <datalist id="openrouter-models">
+        {models?.map((m) => <option key={m.id} value={m.id}>{`${m.name}${m.free ? ' · free' : ''}${m.context ? ` · ${Math.round(m.context / 1000)}k` : ''}${m.vision ? ' · images' : ''}`}</option>)}
+      </datalist>
+      <span className="field-help">
+        {error ?? (models ? (known ? `${known.name}${known.free ? ' (free)' : ''}, context ${known.context?.toLocaleString() ?? '?'} tokens${known.vision ? ', reads images' : ''}.`
+          : value ? 'Not in OpenRouter’s current list: it may have been retired. Pick another.' : `${models.length} models; free ones first.`)
+          : 'Free models come and go; choose from OpenRouter’s current list.')}
+      </span>
+    </label>
+  );
+}
+
 /** Where the models run: local servers (default) or OpenRouter, chosen separately for chat and embeddings. */
 function ProviderSettings({ s, set }: { s: Settings; set: (k: string, v: string | number) => void }) {
   const ov = useOverlay();
@@ -121,7 +159,9 @@ function ProviderSettings({ s, set }: { s: Settings; set: (k: string, v: string 
       <div className="form">
         {row('llm_provider', 'Chat, generation, vision and marking', 'Local uses the language model settings below.')}
         {row('embed_provider', 'Embeddings (search)', 'Files embedded with the other model must be re-ingested before search uses them.')}
-        {online && ONLINE_FIELDS.map((f) => (
+        {online && ONLINE_FIELDS.map((f) => f.key === 'openrouter_model' ? (
+          <OpenRouterModelField key={f.key} value={String(s[f.key] ?? '')} onChange={(v) => set(f.key, v)} />
+        ) : (
           <label key={f.key} className="field">
             <span className="field-label">{f.label}</span>
             <input className="input" type={f.type === 'number' ? 'number' : f.type} value={String(s[f.key] ?? '')}
@@ -180,13 +220,63 @@ function AppearanceSettings() {
           <input type="checkbox" checked={a.cloud} onChange={(e) => set({ cloud: e.target.checked })} />
           <span>Show the 3D knowledge cloud (home page background, and each subject's map)</span>
         </label>
+        <label className="field field-bool">
+          <input type="checkbox" checked={a.cloudDrift} disabled={!a.cloud || a.motion === 'reduced'} onChange={(e) => set({ cloudDrift: e.target.checked })} />
+          <span>Let the cloud drift and twinkle while idle (off: it only redraws while you move it, which saves power)</span>
+        </label>
+        <label className="field">
+          <span className="field-label">Knowledge cloud frame rate</span>
+          <select className="input" value={a.cloudFps} disabled={!a.cloud} onChange={(e) => set({ cloudFps: Number(e.target.value) })}>
+            {CLOUD_FPS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
+          </select>
+          <span className="field-help">Higher is smoother on a fast computer; 30 is easier on a laptop. Applies straight away.</span>
+        </label>
+      </div>
+    </section>
+  );
+}
+
+const SPELL_NAMES: Record<string, string> = { 'en-AU': 'English (Australia)', 'en-GB': 'English (UK)', 'en-US': 'English (US)', 'en-CA': 'English (Canada)' };
+
+/** The spell-check language (notes, the chat box, every text field). Kept on this computer, applied at once. */
+function SpellingSettings() {
+  const spell = window.studyApp?.spell;
+  const [info, setInfo] = useState<{ languages: string[]; available: string[] } | null>(null);
+  useEffect(() => { spell?.info().then(setInfo).catch((e) => logError('spelling', e, 'warning')); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const choose = async (lang: string) => {
+    if (!spell) return;
+    await spell.set(lang ? [lang] : []);
+    setInfo(await spell.info());
+  };
+  const current = info?.languages[0] ?? '';
+  const missing = !!info && !!current && !info.available.includes(current);
+  return (
+    <section className="section">
+      <h2>Spelling</h2>
+      <div className="form">
+        <label className="field">
+          <span className="field-label">Spell-check language</span>
+          <select value={current} disabled={!spell || !info} onChange={(e) => choose(e.target.value)}>
+            {['en-AU', 'en-GB', 'en-US', ...(info?.available ?? []).filter((l) => !['en-AU', 'en-GB', 'en-US'].includes(l))].map((l) => (
+              <option key={l} value={l} disabled={!!info && !info.available.includes(l)}>
+                {SPELL_NAMES[l] ?? l}{info && !info.available.includes(l) ? ' (dictionary not installed)' : ''}
+              </option>
+            ))}
+            <option value="">Off</option>
+          </select>
+          <span className="field-help">
+            {!spell ? 'Spell check works in the desktop app.'
+              : missing ? 'The dictionary for this language isn’t installed, so nothing is checked. Dictionaries are bundled with the app (app/assets/dictionaries) and never downloaded.'
+              : 'Misspelled words are underlined in your notes, the chat box and other text fields. Right-click one for suggestions.'}
+          </span>
+        </label>
       </div>
     </section>
   );
 }
 
 /** The tutor's rules (editable, {scope} = the subject/topic) and personality dials. */
-function TutorSettings({ s, set }: { s: Settings; set: (k: string, v: string | number) => void }) {
+function TutorSettings({ s, set }: { s: Settings; set: (k: string, v: string | number | boolean) => void }) {
   const [def, setDef] = useState('');
   useEffect(() => { api.defaultPrompt().then((r) => setDef(r.prompt)).catch((e) => logError('default prompt', e, 'warning')); }, []);
   const custom = String(s.chat_system_prompt ?? '');
@@ -218,6 +308,10 @@ function TutorSettings({ s, set }: { s: Settings; set: (k: string, v: string | n
             rules for creating content and to-dos are added after it automatically.{' '}
             {custom && <button className="link-btn" onClick={() => set('chat_system_prompt', '')}>Reset to default</button>}
           </span>
+        </label>
+        <label className="field field-bool">
+          <input type="checkbox" checked={s.chat_auto_title !== false} onChange={(e) => set('chat_auto_title', e.target.checked)} />
+          <span>Name new chats automatically after Apollo's first reply (a renamed chat keeps your name)</span>
         </label>
         <label className="field">
           <span className="field-label">Word limit for files sent straight to the chat</span>
@@ -314,12 +408,14 @@ export default function SettingsView({ onSaved, tab: initialTab, subjectId }: { 
             <div key={k} className={`banner ${r.ok ? 'banner-ok' : 'banner-bad'}`}>
               <b>{k === 'llm' ? 'Apollo (language model)' : 'Embeddings'}{r.online ? ' · OpenRouter' : ''}:</b>{' '}
               {r.ok ? (k === 'llm' ? `connected · context ${r.max_model_len?.toLocaleString()} · ${r.ms} ms` : `connected · ${r.dim}-dim vectors · ${r.ms} ms`) : r.error}
+              {r.profile && <div className="small test-profile">Server accepts: {profileText(r.profile)}. Saved, so requests follow it.</div>}
             </div>
           ))}
         </div>
       )}
 
       <AppearanceSettings />
+      <SpellingSettings />
       <ProviderSettings s={s} set={set} />
       <TutorSettings s={s} set={set} />
 

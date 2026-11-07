@@ -25,16 +25,18 @@ KEEPALIVE = 15
 
 _SQL = {
     "jobs": "SELECT COUNT(*), MAX(updated_at), SUM(dismissed) FROM jobs",
-    "documents": "SELECT COUNT(*), MAX(updated_at), SUM(vec_version), MAX(id) FROM documents",
+    "documents": "SELECT COUNT(*), MAX(updated_at), SUM(vec_version), MAX(id), group_concat(COALESCE(position, ''), ',') FROM documents",
     "subjects": "SELECT (SELECT group_concat(id || name || color || COALESCE(icon_text, '') || COALESCE(icon_emoji, '') || "
-                "COALESCE(icon_image, ''), '|') FROM subjects), (SELECT group_concat(id || subject_id || name, '|') FROM topics)",
-    "library": "SELECT COUNT(*), MAX(updated_at), SUM(LENGTH(title)) FROM artifacts",
-    "todos": "SELECT group_concat(id || done || text || note || COALESCE(topic_id, ''), '|') FROM todos",
+                "COALESCE(icon_image, '') || COALESCE(position, ''), '|') FROM subjects), "
+                "(SELECT group_concat(id || subject_id || name || COALESCE(position, ''), '|') FROM topics)",
+    "library": "SELECT COUNT(*), MAX(updated_at), SUM(LENGTH(title)), group_concat(COALESCE(position, ''), ','), "
+               "COUNT(deleted_at), SUM(deleted_at) FROM artifacts",
+    "todos": "SELECT group_concat(id || done || text || note || COALESCE(topic_id, '') || COALESCE(position, ''), '|') FROM todos",
     "flags": "SELECT COUNT(*), SUM(dismissed), MAX(id) FROM vision_flags",
     "pause": "SELECT group_concat(value, '|') FROM settings WHERE key IN ('pause_llm', 'pause_embed')",
-    "notes": "SELECT COUNT(*), MAX(updated_at), SUM(LENGTH(title)) FROM user_notes",
+    "notes": "SELECT COUNT(*), MAX(updated_at), SUM(LENGTH(title)), COUNT(deleted_at), SUM(deleted_at) FROM user_notes",
     "reviews": "SELECT COUNT(*), MAX(updated_at), SUM(dismissed) FROM reviews",
-    "chats": "SELECT COUNT(*), MAX(updated_at), SUM(LENGTH(title)) FROM chats",
+    "chats": "SELECT COUNT(*), MAX(updated_at), SUM(LENGTH(title)), COUNT(deleted_at), SUM(deleted_at) FROM chats",
 }
 
 _cond = threading.Condition()

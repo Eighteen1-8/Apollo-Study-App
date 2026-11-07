@@ -51,9 +51,14 @@ def test_change_stream_names_what_changed():
     sid = _db.ex("INSERT INTO subjects(name, created_at) VALUES ('Events', 0)")
     try:
         _db.ex("INSERT INTO todos(subject_id, text, created_at) VALUES (?, 'revise', 0)", (sid,))
-        msg = next(stream)
-        while msg.startswith(":"):
+        # other tests' background work (a chat being titled) can change things too: look at the next few events
+        seen = set()
+        for _ in range(6):
             msg = next(stream)
-        assert msg.startswith("data: ") and {"subjects", "todos"} & set(__import__("json").loads(msg[6:]))
+            if msg.startswith("data: "):
+                seen |= set(__import__("json").loads(msg[6:]))
+                if {"subjects", "todos"} & seen:
+                    break
+        assert {"subjects", "todos"} & seen
     finally:
         _db.ex("DELETE FROM subjects WHERE id=?", (sid,))

@@ -45,17 +45,40 @@ export function rangeAt(root: Element, start: number, end: number): Range | null
   return null;
 }
 
-/** Every case-insensitive occurrence of `needle` in `root`'s text, as ranges. */
+/** Ranges for many [start, end) spans of `root`'s text, in one walk over its text nodes (spans sorted by start;
+ * a span past the end of the text is left out). */
+export function rangesAt(root: Element, spans: [number, number][]): Range[] {
+  const out: Range[] = [];
+  if (!spans.length) return out;
+  const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node = walk.nextNode() as Text | null, pos = 0;
+  for (const [start, end] of spans) {
+    // move to the node holding `start` (a start exactly at a node's end belongs to that node, as rangeAt does)
+    while (node && start > pos + node.data.length) { pos += node.data.length; node = walk.nextNode() as Text | null; }
+    if (!node) break;
+    const r = document.createRange();
+    r.setStart(node, start - pos);
+    // the end may lie further on; walk a copy forward without losing our place for the next span
+    let n: Text | null = node, p = pos;
+    const saved = walk.currentNode;
+    while (n && end > p + n.data.length) { p += n.data.length; n = walk.nextNode() as Text | null; }
+    if (!n) break;
+    r.setEnd(n, end - p);
+    out.push(r);
+    walk.currentNode = saved;
+  }
+  return out;
+}
+
+/** Every case-insensitive occurrence of `needle` in `root`'s text, as ranges (one walk over the text nodes, however
+ * many matches). */
 export function findAll(root: Element, needle: string, limit = 2000): Range[] {
   if (!needle) return [];
   const text = (root.textContent ?? '').toLowerCase();
   const q = needle.toLowerCase();
-  const out: Range[] = [];
-  for (let i = text.indexOf(q); i >= 0 && out.length < limit; i = text.indexOf(q, i + q.length)) {
-    const r = rangeAt(root, i, i + q.length);
-    if (r) out.push(r);
-  }
-  return out;
+  const spans: [number, number][] = [];
+  for (let i = text.indexOf(q); i >= 0 && spans.length < limit; i = text.indexOf(q, i + q.length)) spans.push([i, i + q.length]);
+  return rangesAt(root, spans);
 }
 
 /** The highlighted text with a sentence or so either side (what Apollo sees when asked about it). */
@@ -67,11 +90,19 @@ export function quoteParts(root: Element, r: Range): { text: string; before: str
 }
 
 /** Paint ranges under a CSS highlight name (`::highlight(name)` in the styles). No-op where unsupported. */
-export function paint(name: string, ranges: Range[]) {
+const painted = new Map<string, Map<string, Range[]>>();
+
+/** Paint `ranges` as the CSS highlight `name`. `owner` keeps several painters apart (two notes pages side by side in
+ * split view each paint their own highlights): the highlight shows every owner's ranges. */
+export function paint(name: string, ranges: Range[], owner = '') {
   const css = (window as unknown as { CSS?: { highlights?: Map<string, unknown> } }).CSS;
   const H = (window as unknown as { Highlight?: new (...r: Range[]) => unknown }).Highlight;
   if (!css?.highlights || !H) return;
-  if (ranges.length) css.highlights.set(name, new H(...ranges));
+  const byOwner = painted.get(name) ?? new Map<string, Range[]>();
+  if (ranges.length) byOwner.set(owner, ranges); else byOwner.delete(owner);
+  painted.set(name, byOwner);
+  const all = [...byOwner.values()].flat();
+  if (all.length) css.highlights.set(name, new H(...all));
   else css.highlights.delete(name);
 }
 

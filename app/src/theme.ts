@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 export type ThemeId = 'midnight' | 'aurora' | 'nebula' | 'graphite' | 'daylight';
 export type Motion = 'full' | 'reduced';
 
-export interface Appearance { theme: ThemeId; accent: string | null; motion: Motion; cloud: boolean }
+export interface Appearance { theme: ThemeId; accent: string | null; motion: Motion; cloud: boolean; cloudDrift: boolean; cloudFps: number }
 
 export const THEMES: { id: ThemeId; name: string; blurb: string; swatch: [string, string, string]; light?: boolean }[] = [
   { id: 'midnight', name: 'Midnight', blurb: 'Deep blue-black with indigo light', swatch: ['#0b0d14', '#161a26', '#8b9bff'] },
@@ -27,7 +27,7 @@ export function topicColor(topics: { id: number }[], id: number) {
 export const REF_COLOR = '#d9c9a3';
 
 const KEY = 'apollo.appearance';
-const DEFAULT: Appearance = { theme: 'midnight', accent: null, motion: 'full', cloud: true };
+const DEFAULT: Appearance = { theme: 'midnight', accent: null, motion: 'full', cloud: true, cloudDrift: true, cloudFps: 60 };
 
 function load(): Appearance {
   try {
@@ -80,3 +80,12 @@ export function useAppearance(): [Appearance, (patch: Partial<Appearance>) => vo
 export function reducedMotion() {
   return current.motion === 'reduced' || window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
+
+/** The knowledge cloud's idle drift and twinkle (while the window is focused). */
+export const cloudDrift = () => current.cloudDrift;
+/** The knowledge cloud's frame rate cap; 0 = as fast as the display refreshes. Read every frame, so a change applies at once. */
+export const cloudFps = () => current.cloudFps;
+export const CLOUD_FPS: { value: number; label: string }[] = [
+  { value: 30, label: '30 fps (laptops, saves battery)' }, { value: 60, label: '60 fps' },
+  { value: 120, label: '120 fps' }, { value: 0, label: 'Match the display (smoothest)' },
+];

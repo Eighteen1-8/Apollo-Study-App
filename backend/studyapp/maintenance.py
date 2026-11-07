@@ -142,8 +142,8 @@ def overview():
         "orphans": {k: {"count": len(v), "bytes": sum(_tree_size(p) for p in v)} for k, v in orphans.items()},
         "stale_rows": sum(len(v) for v in _stale_rows().values()),
         "parser_version": PARSER_VERSION,
-        "subjects": db.q("SELECT id, name, color FROM subjects ORDER BY name COLLATE NOCASE"),
-        "topics": db.q("SELECT id, subject_id, name FROM topics ORDER BY name COLLATE NOCASE"),
+        "subjects": db.q("SELECT id, name, color FROM subjects ORDER BY position IS NULL, position, name COLLATE NOCASE"),
+        "topics": db.q("SELECT id, subject_id, name FROM topics ORDER BY position IS NULL, position, name COLLATE NOCASE"),
         "documents": out,
     }
 

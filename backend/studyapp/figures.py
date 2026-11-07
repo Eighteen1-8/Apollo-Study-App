@@ -153,7 +153,7 @@ def _choose(page, boxes, hint: str):
             {"type": "text", "text": f"The numbered red boxes mark the figures on this page. Which box contains: {hint}?\n"
                                      "Reply with only the box number, or 0 if none of them shows it."},
             llm.image_part(_page_png(page, boxes=boxes))]}], max_tokens=16, reasoning="off", temperature=0)
-        m = re.search(r"\d+", re.sub(r"<think>.*?</think>", "", res["content"], flags=re.S))
+        m = re.search(r"\d+", llm.strip_think(res["content"]))
         if m and 1 <= int(m.group()) <= len(boxes):
             return boxes[int(m.group()) - 1]
     try:

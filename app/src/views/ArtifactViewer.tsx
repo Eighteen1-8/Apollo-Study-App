@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { api, Artifact, Quote, Subject } from '../api';
+import { api, Artifact, Mark, Quote, Subject } from '../api';
 import { usePoll } from '../hooks';
 import { MenuItem, useOverlay } from '../components/overlay';
+import { highlightRow, markHighlight } from '../components/highlights';
+import { undoable } from '../undo';
 import Reviews, { useReviews } from '../components/Reviews';
 import { useAreaShot } from '../components/areaShot';
 import { artifactHtml, exportAs } from '../components/exportDoc';
@@ -53,7 +55,6 @@ export default function ArtifactViewer({ id, subject, onClose }: { id: number; s
   );
 }
 
-const MARK_COLORS = ['yellow', 'green', 'blue', 'pink'] as const;
 
 /** Notes, cheat sheets and mind maps read like a document, so they open in the centre pane (the chat floats beside
  * them). Highlighted text can be asked about, checked or revised by Apollo, or highlighted (saved as text offsets
@@ -93,8 +94,11 @@ export function ArtifactPage({ id, onClose, onCite, onAsk, onAttach }: {
   const secs = a?.content?.sections ?? [];
 
   /** The rendered text of section i (what mark offsets count in). */
+  const [owner] = useState(() => `artifact-${id}-${Math.random().toString(36).slice(2, 8)}`);
   const secRoot = (i: number) => scroll.current?.querySelector<HTMLElement>(`[data-sec="${i}"] .md`) ?? null;
 
+  const paintedMarks = useRef(new Set<string>());
+  useEffect(() => () => { for (const n of paintedMarks.current) paint(n, [], owner); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   // paint the student's highlights; a highlight whose text moved (the section was revised) is found again
   useEffect(() => {
     const list = marks.data ?? [];
@@ -112,9 +116,37 @@ export function ArtifactPage({ id, onClose, onCite, onAsk, onAttach }: {
       }
       if (r) (byColor[m.color] ??= []).push(r);
     }
-    for (const c of MARK_COLORS) paint(`mark-${c}`, byColor[c] ?? []);
-    return () => { for (const c of MARK_COLORS) paint(`mark-${c}`, []); };
+    // every colour in use gets its own CSS highlight (custom colours too); colours no longer used are cleared
+    const names = new Map(Object.entries(byColor).map(([c, rs]) => [markHighlight(c), rs]));
+    for (const n of paintedMarks.current) if (!names.has(n)) paint(n, [], owner);
+    for (const [n, rs] of names) paint(n, rs, owner);
+    paintedMarks.current = new Set(names.keys());
   }, [marks.data, a]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Highlight actions, each undoable (a removed highlight comes back as a new mark: `box` follows it). */
+  const addHighlight = async (section: number, start: number, end: number, text: string, color: string) => {
+    const m = await api.addMark(id, { section, start, end, text, color });
+    window.getSelection()?.removeAllRanges();
+    marks.reload();
+    const box = { id: m.id };
+    undoable({ label: 'highlight', undo: async () => { await api.deleteMark(box.id); marks.reload(); },
+      redo: async () => { box.id = (await api.addMark(id, { section, start, end, text, color })).id; marks.reload(); } });
+  };
+  const recolour = async (m: Mark, color: string) => {
+    if (m.color === color) return;
+    await api.moveMark(m.id, { color });
+    marks.reload();
+    undoable({ label: 'change highlight colour', undo: async () => { await api.moveMark(m.id, { color: m.color }); marks.reload(); },
+      redo: async () => { await api.moveMark(m.id, { color }); marks.reload(); } });
+  };
+  const removeHighlight = async (m: Mark) => {
+    await api.deleteMark(m.id);
+    marks.reload();
+    const box = { id: m.id };
+    undoable({ label: 'remove highlight',
+      undo: async () => { box.id = (await api.addMark(id, { section: m.section, start: m.start, end: m.end, text: m.text, color: m.color })).id; marks.reload(); },
+      redo: async () => { await api.deleteMark(box.id); marks.reload(); } });
+  };
 
   /** Which section a range is in, and its text root. */
   const sectionOf = (r: Range) => {
@@ -160,36 +192,117 @@ export function ArtifactPage({ id, onClose, onCite, onAsk, onAttach }: {
       ]);
       return;
     }
+    const target = e.target as Element;
+    const whole = a.type === 'cheatsheet' ? 'the cheat sheet' : 'these notes';
+    const copy = (text: string) => navigator.clipboard.writeText(text).catch((err) => logError('copy', err, 'warning'));
+    const cite = (sec: number) => `${a.title}${secs[sec]?.title && secs.length > 1 ? ` · ${secs[sec].title}` : ''}`;
+    /** Ask / check / change / highlight / copy actions for one range of text in a section. */
+    const rangeActions = (r: Range, w: { index: number; root: HTMLElement }, what: string): MenuItem[] => {
+      const q = quoteParts(w.root, r);
+      const [start, end] = offsetsOf(w.root, r);
+      const text = r.toString();
+      return [
+        { label: `Ask Apollo about ${what}`, onClick: () => onAsk({ document_id: null, filename: a.title, label: secs[w.index]?.title ?? '', ...q }) },
+        ...(reviewable ? [
+          { label: `Check ${what} with Apollo`, onClick: () => { check(q.text, w.index); } },
+          { label: `Ask Apollo to change ${what}…`, onClick: () => { revise(q.text, w.index); } },
+        ] : []),
+        { ...highlightRow({
+          onPick: (c) => addHighlight(w.index, start, end, text, c),
+          onCustom: async () => {
+            const c = await ov.color({ title: 'Highlight colour' });
+            if (c) addHighlight(w.index, start, end, text, c);
+          },
+        }), separatorBefore: true },
+        { label: 'Copy', hint: 'Ctrl+C', onClick: () => copy(text) },
+        { label: 'Copy with source', onClick: () => copy(`“${text.trim()}” (${cite(w.index)})`) },
+      ];
+    };
+
+    const items: MenuItem[] = [];
     const r = selectionIn(scroll.current);
     const where = r && sectionOf(r);
-    const items: MenuItem[] = [];
     if (r && where) {
-      const q = quoteParts(where.root, r);
-      const [start, end] = offsetsOf(where.root, r);
-      items.push(
-        { label: 'Ask Apollo about this', onClick: () => onAsk({ document_id: null, filename: a.title, label: secs[where.index]?.title ?? '', ...q }) },
-        ...(reviewable ? [
-          { label: 'Check this with Apollo', onClick: () => { check(q.text, where.index); } },
-          { label: 'Ask Apollo to change this…', onClick: () => { revise(q.text, where.index); } },
-        ] : []),
-        ...MARK_COLORS.map((c, i) => ({ label: `Highlight ${c}`, separatorBefore: i === 0, onClick: async () => {
-          await api.addMark(id, { section: where.index, start, end, text: r.toString(), color: c });
-          window.getSelection()?.removeAllRanges();
-          marks.reload();
-        } })),
-        { label: 'Copy', separatorBefore: true, onClick: () => navigator.clipboard.writeText(r.toString()) },
-      );
+      const t = r.toString().trim().replace(/\s+/g, ' ');
+      items.push({ label: `“${t.slice(0, 40)}${t.length > 40 ? '…' : ''}”`, header: true }, ...rangeActions(r, where, 'this'));
     }
+
+    // what was right-clicked: a formula, figure, highlight or block (definition, card, table…)
+    const tex = !r ? target.closest<HTMLElement>('[data-tex]')?.dataset.tex : undefined;
+    const img = !r ? target.closest('figure')?.querySelector('img') : null;
     const hit = !r ? markAt(e.clientX, e.clientY) : undefined;
-    if (hit) items.push({ label: `Remove highlight “${hit.text.slice(0, 24)}${hit.text.length > 24 ? '…' : ''}”`, danger: true,
-      onClick: async () => { await api.deleteMark(hit.id); marks.reload(); } });
-    if (!r && reviewable) {
+    const secEl = target.closest<HTMLElement>('[data-sec]');
+    const secIdx = secEl ? Number(secEl.dataset.sec) : null;
+    const secRootEl = secIdx !== null ? secRoot(secIdx) : null;
+    if (hit) {
       items.push(
-        { label: `Check ${a.type === 'cheatsheet' ? 'the cheat sheet' : 'these notes'} with Apollo`, separatorBefore: !!hit, onClick: () => { check(); } },
-        { label: 'Ask Apollo to change…', onClick: () => { revise(); } },
+        { label: `Highlight “${hit.text.slice(0, 28)}${hit.text.length > 28 ? '…' : ''}”`, header: true, separatorBefore: items.length > 0 },
+        highlightRow({
+          label: 'Colour', current: hit.color,
+          onPick: (c) => recolour(hit, c),
+          onCustom: async () => { const c = await ov.color({ title: 'Highlight colour', initial: hit.color }); if (c) recolour(hit, c); },
+        }),
+        { label: 'Copy', onClick: () => copy(hit.text) },
+        { label: 'Remove highlight', danger: true, onClick: () => removeHighlight(hit) },
       );
     }
-    items.push({ label: 'Tip: right-drag to screenshot an area', disabled: true, separatorBefore: items.length > 0, onClick: () => {} });
+    // (a formula block gets its block actions below; maths inline in text gets its own "ask")
+    const inBlock = !!target.closest('.formula');
+    if (tex) {
+      items.push(
+        { label: 'Formula', header: true, separatorBefore: items.length > 0 },
+        { label: 'Copy as LaTeX', onClick: () => copy(tex) },
+        ...(inBlock ? [] : [{ label: 'Ask Apollo about this formula', onClick: () => onAsk({ document_id: null, filename: a.title, label: secIdx !== null ? secs[secIdx]?.title ?? '' : '', text: `$${tex}$`, before: '', after: '' }) }]),
+      );
+    }
+    if (img) {
+      items.push(
+        { label: 'Figure', header: true, separatorBefore: items.length > 0 },
+        { label: 'Copy image', onClick: async () => {
+          try {
+            const blob = await (await fetch(img.src)).blob();
+            await navigator.clipboard.write([new ClipboardItem({ [blob.type || 'image/png']: blob })]);
+          } catch (err) { logError('copy image', err, 'warning'); }
+        } },
+      );
+    }
+    const BLOCKS: [string, string][] = [['.def', 'this definition'], ['.formula', 'this formula'], ['.callout', 'this callout'],
+      ['details.example', 'this worked example'], ['table', 'this table'], ['.card', 'this card'], ['li', 'this point'], ['p', 'this paragraph']];
+    const block = !r && !hit && secRootEl ? BLOCKS.map(([sel, name]) => [target.closest(sel), name] as const).find(([el]) => el && secRootEl.contains(el)) : undefined;
+    if (block && secIdx !== null && secRootEl) {
+      const range = document.createRange();
+      range.selectNodeContents(block[0]!);
+      const acts = rangeActions(range, { index: secIdx, root: secRootEl }, block[1]);
+      if (!(tex && inBlock)) items.push({ label: block[1].replace(/^this /, ''), header: true, separatorBefore: items.length > 0 });
+      items.push(...acts.slice(0, reviewable ? 3 : 1),
+        { label: 'More', children: acts.slice(reviewable ? 3 : 1).map((x) => ({ ...x, separatorBefore: false })) });
+    }
+
+    // the section and the whole page
+    if (secIdx !== null && secs.length > 1 && secRootEl) {
+      const title = secs[secIdx]?.title ?? `Section ${secIdx + 1}`;
+      items.push({ label: `Section: ${title}`, separatorBefore: items.length > 0, children: [
+        ...(reviewable ? [
+          { label: 'Check this section with Apollo', onClick: () => { check('', secIdx); } },
+          { label: 'Ask Apollo to change this section…', onClick: () => { revise('', secIdx); } },
+        ] : []),
+        { label: 'Copy section text', separatorBefore: reviewable, onClick: () => copy(secRootEl.innerText) },
+      ] });
+    }
+    if (reviewable) {
+      items.push({ label: a.type === 'cheatsheet' ? 'Whole cheat sheet' : 'All notes', separatorBefore: items.length > 0 && !(secIdx !== null && secs.length > 1), children: [
+        { label: `Check ${whole} with Apollo`, onClick: () => { check(); } },
+        { label: `Ask Apollo to change ${whole}…`, onClick: () => { revise(); } },
+        { label: 'Copy all text', separatorBefore: true, onClick: () => copy(scroll.current?.querySelector<HTMLElement>('.notes')?.innerText ?? '') },
+        { label: 'Export to Word…', separatorBefore: true, onClick: () => exportAs('docx', a.title, (word) => artifactHtml(a, word)).catch((err) => logError('export', err)) },
+        { label: 'Export to PDF…', onClick: () => exportAs('pdf', a.title, (word) => artifactHtml(a, word)).catch((err) => logError('export', err)) },
+      ] });
+      items.push({ label: showReviews ? 'Hide comments' : 'Show comments', onClick: () => setShowReviews(!showReviews) });
+    }
+    items.push(
+      { label: 'Find in page', hint: 'Ctrl+F', onClick: () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true })) },
+      { label: 'Screenshot an area', hint: 'right-drag', disabled: true },
+    );
     ov.menu(e, items);
   };
 

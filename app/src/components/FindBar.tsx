@@ -1,12 +1,33 @@
 /* Ctrl+F and Ctrl+A inside the app's renderers (documents, notes, cheat sheets, the chat, exams).
    Each renderer marks its root with data-find="<what it is>". Ctrl+F opens a find bar over the renderer the student
    last clicked or typed in; Ctrl+A outside a text field selects that renderer's content instead of the whole window.
-   Matches are painted with CSS Custom Highlights, so nothing in the rendered content changes. */
+   Matches are painted with CSS Custom Highlights, so nothing in the rendered content changes.
+   A renderer whose text isn't all in the page (a PDF draws its pages lazily) registers a find provider: it searches
+   the whole text itself and brings a match's page in on demand. */
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { findAll, paint } from './textRange';
 
 let lastTarget: Element | null = null;
+/** Where the find bar was dragged to, relative to its usual corner of the content. */
+let lastOffset = { dx: 0, dy: 0 };
+
+/** A match somewhere in a renderer's full text (not necessarily rendered yet). */
+export interface FindHit { page: number; index: number }
+export interface FindProvider {
+  /** Every match of `q` (case-insensitive) in order. `partial` gets the matches found so far while a long search runs
+   * (so the count can grow instead of waiting for the last page). */
+  search: (q: string, partial?: (hits: FindHit[]) => void) => Promise<FindHit[]>;
+  /** The find bar opened: start reading the text now, so the first search is quick. */
+  warm?: () => void;
+  /** Show the hit (render its page) and return its range, or null when it can't be found on the page. */
+  reveal: (hit: FindHit, q: string) => Promise<Range | null>;
+}
+const providers = new WeakMap<Element, FindProvider>();
+export function registerFind(root: Element, p: FindProvider) {
+  providers.set(root, p);
+  return () => { if (providers.get(root) === p) providers.delete(root); };
+}
 
 /** The renderer to act on: a fullscreen viewer first, then where the student last clicked or typed, then the first
  * renderer on screen. */
@@ -23,9 +44,15 @@ function activeScope(): HTMLElement | null {
 
 const editable = (el: Element | null) => !!el?.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]');
 
+let requestFind: ((q: string) => void) | null = null;
+/** Open the find bar on the document viewer with `q` filled in (after a search result opens a file). The viewer may
+ * still be loading, so this waits for it a little. */
+export function openFind(q: string) { requestFind?.(q); }
+
 export default function FindLayer() {
   const [scope, setScope] = useState<HTMLElement | null>(null);
   const [nonce, setNonce] = useState(0);
+  const [initial, setInitial] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     const down = (e: PointerEvent) => { lastTarget = e.target as Element; };
@@ -36,6 +63,7 @@ export default function FindLayer() {
         const s = activeScope();
         if (!s) return;
         e.preventDefault();
+        setInitial(undefined);
         setScope(s);
         setNonce((n) => n + 1);
       } else if (k === 'a' && !editable(document.activeElement)) {
@@ -49,22 +77,80 @@ export default function FindLayer() {
         sel?.addRange(r);
       }
     };
+    let timer = 0;
+    requestFind = (q) => {
+      window.clearInterval(timer);
+      const t0 = Date.now();
+      let seen: Element | null = null;
+      timer = window.setInterval(() => {
+        const s = document.querySelector<HTMLElement>('.doc-pane .source-scroll[data-find]');
+        // wait for the newly opened document (a different element, or its provider/pages ready)
+        if (s && (s !== seen || Date.now() - t0 > 400) && (providers.has(s) || s.querySelector('[data-unit]'))) {
+          window.clearInterval(timer);
+          setInitial(q);
+          setScope(s);
+          setNonce((n) => n + 1);
+        }
+        seen = seen ?? s;
+        if (Date.now() - t0 > 6000) window.clearInterval(timer);
+      }, 150);
+    };
     window.addEventListener('pointerdown', down, true);
     window.addEventListener('keydown', key);
-    return () => { window.removeEventListener('pointerdown', down, true); window.removeEventListener('keydown', key); };
+    return () => { window.removeEventListener('pointerdown', down, true); window.removeEventListener('keydown', key); requestFind = null; window.clearInterval(timer); };
   }, []);
 
-  return scope ? <FindBar key={nonce} scope={scope} onClose={() => setScope(null)} /> : null;
+  return scope ? <FindBar key={nonce} scope={scope} initial={initial} onClose={() => setScope(null)} /> : null;
 }
 
-function FindBar({ scope, onClose }: { scope: HTMLElement; onClose: () => void }) {
-  const [q, setQ] = useState(() => window.getSelection()?.toString().trim().slice(0, 80) ?? '');
+function FindBar({ scope, initial, onClose }: { scope: HTMLElement; initial?: string; onClose: () => void }) {
+  const [q, setQ] = useState(() => initial ?? window.getSelection()?.toString().trim().slice(0, 80) ?? '');
   const [hits, setHits] = useState<Range[]>([]);
   const [cur, setCur] = useState(0);
   const input = useRef<HTMLInputElement>(null);
   const [box, setBox] = useState(() => scope.getBoundingClientRect());
+  const provider = providers.get(scope);
+  // with a provider: every match in the whole text, and the current one's range once its page is shown
+  const [all, setAll] = useState<FindHit[] | null>(null);
+  const [current, setCurrent] = useState<Range | null>(null);
+  // a provider's search is still running (the count shown so far can grow)
+  const [partial, setPartial] = useState(false);
 
-  useEffect(() => { input.current?.focus(); input.current?.select(); }, []);
+  useEffect(() => { input.current?.focus(); input.current?.select(); provider?.warm?.(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Switching file, note, page or subject replaces the content it searches: then it goes. (Content that has been
+  // swapped out gets no more changes, so this is checked on a timer rather than by watching it.)
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      if (!scope.isConnected || !scope.getClientRects().length) onClose();
+      else setBox((b) => { const n = scope.getBoundingClientRect(); return n.top === b.top && n.right === b.right ? b : n; });
+    }, 250);
+    return () => window.clearInterval(t);
+  }, [scope]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // dragged by its grip; the offset is kept for the next time it opens (until the app restarts)
+  const [offset, setOffset] = useState(lastOffset);
+  const startDrag = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const x0 = e.clientX - offset.dx, y0 = e.clientY - offset.dy;
+    const bar = (e.currentTarget as HTMLElement).parentElement!;
+    const start = bar.getBoundingClientRect();
+    const o0 = offset;
+    const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
+    const move = (ev: PointerEvent) => {
+      // moved by (n - o0) from where it started; kept 8 px inside the window
+      const next = {
+        dx: clamp(ev.clientX - x0, o0.dx + 8 - start.left, o0.dx + window.innerWidth - 8 - start.right),
+        dy: clamp(ev.clientY - y0, o0.dy + 8 - start.top, o0.dy + window.innerHeight - 8 - start.bottom),
+      };
+      lastOffset = next;
+      setOffset(next);
+    };
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); input.current?.focus(); };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
 
   // find again when the text changes underneath (a reply streaming in, a page of a PDF rendering)
   useEffect(() => {
@@ -74,16 +160,45 @@ function FindBar({ scope, onClose }: { scope: HTMLElement; onClose: () => void }
       setHits(findAll(scope, q.trim()));
     };
     run();
-    const mo = new MutationObserver(() => run());
+    // changes come in bursts (a page's text layer, a streamed reply): search once they pause, at most every 150 ms
+    let timer = 0;
+    const mo = new MutationObserver(() => { if (!timer) timer = window.setTimeout(() => { timer = 0; run(); }, 150); });
     mo.observe(scope, { childList: true, subtree: true, characterData: true });
-    return () => mo.disconnect();
+    return () => { mo.disconnect(); clearTimeout(timer); };
   }, [q, scope]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    if (!provider) return;
+    setAll(null);
+    if (!q.trim()) { setAll([]); return; }
+    let alive = true;
+    setPartial(true);
+    const t = setTimeout(() => provider.search(q.trim(), (h) => { if (alive) setAll(h); })
+      .then((h) => { if (alive) { setAll(h); setPartial(false); } })
+      .catch(() => { if (alive) { setAll([]); setPartial(false); } }), 120);
+    return () => { alive = false; clearTimeout(t); };
+  }, [q, provider]);
+
   useEffect(() => { setCur(0); }, [q]);
-  const at = hits.length ? Math.min(cur, hits.length - 1) : -1;
+  const count = provider ? all?.length ?? 0 : hits.length;
+  const at = count ? Math.min(cur, count - 1) : -1;
+
+  // with a provider, bring the current match's page in and find it there
+  useEffect(() => {
+    if (!provider || !all || at < 0) { setCurrent(null); return; }
+    let alive = true;
+    provider.reveal(all[at], q.trim()).then((r) => {
+      if (!alive) return;
+      setCurrent(r);
+      r?.startContainer.parentElement?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }).catch(() => alive && setCurrent(null));
+    return () => { alive = false; };
+  }, [provider, all, at]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const scrolledTo = useRef('');
   useEffect(() => {
     paint('find-hit', hits);
+    if (provider) { paint('find-current', current ? [current] : []); return; }
     paint('find-current', at >= 0 ? [hits[at]] : []);
     // scroll when the student moves to another match, not every time the content re-renders
     const key = `${q}|${at}`;
@@ -91,23 +206,28 @@ function FindBar({ scope, onClose }: { scope: HTMLElement; onClose: () => void }
       scrolledTo.current = key;
       hits[at].startContainer.parentElement?.scrollIntoView({ block: 'center', behavior: 'smooth' });
     }
-  }, [hits, at]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [hits, at, current]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => { paint('find-hit', []); paint('find-current', []); }, []);
 
-  const step = (d: number) => hits.length && setCur((c) => (Math.min(c, hits.length - 1) + d + hits.length) % hits.length);
+  const step = (d: number) => count && setCur((c) => (Math.min(c, count - 1) + d + count) % count);
   const what = scope.dataset.find || 'this page';
+  const searching = provider && q.trim() && all === null;
+  const more = provider && partial ? '+' : '';
 
   return createPortal(
-    <div className="find-bar" role="search" style={{ top: Math.max(box.top + 8, 44), right: Math.max(window.innerWidth - box.right + 12, 12) }}>
+    <div className="find-bar" role="search" style={{ top: Math.max(box.top + 8, 44) + offset.dy, right: Math.max(window.innerWidth - box.right + 12, 12) - offset.dx }}>
+      <span className="find-grip" title="Drag to move (double-click to put it back)" onPointerDown={startDrag}
+        onDoubleClick={() => { lastOffset = { dx: 0, dy: 0 }; setOffset(lastOffset); }} aria-hidden>⋮⋮</span>
       <input ref={input} className="find-input" value={q} placeholder={`Find in ${what}`} spellCheck={false}
         onChange={(e) => setQ(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter') { e.preventDefault(); step(e.shiftKey ? -1 : 1); }
           else if (e.key === 'Escape') { e.preventDefault(); onClose(); }
         }} />
-      <span className="find-count">{q.trim() ? (hits.length ? `${at + 1}/${hits.length}` : 'No matches') : ''}</span>
-      <button className="icon-btn" title="Previous (Shift+Enter)" disabled={!hits.length} onClick={() => step(-1)}>↑</button>
-      <button className="icon-btn" title="Next (Enter)" disabled={!hits.length} onClick={() => step(1)}>↓</button>
+      <span className="find-count" title={more ? 'Still searching the rest of the file' : undefined}>
+        {q.trim() ? (searching ? '…' : count ? `${at + 1}/${count}${more}` : more ? '…' : 'No matches') : ''}</span>
+      <button className="icon-btn" title="Previous (Shift+Enter)" disabled={!count} onClick={() => step(-1)}>↑</button>
+      <button className="icon-btn" title="Next (Enter)" disabled={!count} onClick={() => step(1)}>↓</button>
       <button className="icon-btn" title="Close (Esc)" onClick={onClose}>×</button>
     </div>,
     document.body,

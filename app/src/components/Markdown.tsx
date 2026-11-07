@@ -87,7 +87,8 @@ export function renderMarkdown(src: string, opts: { citations?: boolean; figures
   // mathText (Word export): Word can't take KaTeX's HTML, so the LaTeX stays as text
   const math = (tex: string, display: boolean) => hold(opts.mathText
     ? `<span class="tex">${esc(display ? `$$${tex}$$` : `$${tex}$`)}</span>`
-    : katex.renderToString(tex, { throwOnError: false, displayMode: display, output: 'html' }));
+    // data-tex keeps the source so the notes' menu can copy it as LaTeX
+    : katex.renderToString(tex, { throwOnError: false, displayMode: display, output: 'html' }).replace(/^<span /, `<span data-tex="${esc(tex)}" `));
   let text = src;
   text = text.replace(opts.html ? PLOT_HTML : PLOT_MD, (_, json: string) => hold(plotHtml(unesc(json.trim()))));
   text = text.replace(FIGURE, (tag: string, file: string, label: string, hint: string) => {
@@ -125,5 +126,59 @@ export default function Markdown({ text, className, onCite, figures, html }: {
         const a = (e.target as HTMLElement).closest('a.cite') as HTMLElement | null;
         if (a) { e.preventDefault(); onCite(a.dataset.file!, a.dataset.label!); }
       } : undefined} />
+  );
+}
+
+/** Where a streaming reply can be cut into blocks that parse the same on their own: blank lines outside code fences
+ * and $$ maths, not inside a table or list that continues after the blank line. Returns the cut offsets. */
+export function blockCuts(text: string): number[] {
+  const cuts: number[] = [];
+  let fence = false, dollars = 0, pos = 0;
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\s*(```|~~~)/.test(line)) fence = !fence;
+    else if (!fence) dollars += (line.match(/\$\$/g) ?? []).length;
+    pos += line.length + 1;
+    const next = lines[i + 1];
+    if (!fence && dollars % 2 === 0 && line.trim() === '' && i > 0 && lines[i - 1].trim() !== ''
+        && next !== undefined && next.trim() !== '' && !/^\s*([-*+]|\d+[.)]|\|)\s/.test(next) && !/^\s{2,}/.test(next)) {
+      cuts.push(pos);
+    }
+  }
+  return cuts;
+}
+
+const blockCache = new Map<string, string>();
+const cachedBlock = (src: string, citations: boolean) => {
+  const key = (citations ? '1' : '0') + src;
+  let html = blockCache.get(key);
+  if (html === undefined) {
+    html = renderMarkdown(src, { citations });
+    if (blockCache.size > 400) blockCache.delete(blockCache.keys().next().value!);
+    blockCache.set(key, html);
+  }
+  return html;
+};
+
+/** A reply still being written. Finished blocks are parsed once and never touched again; only the last, growing
+ * block is re-parsed as text arrives (a full re-parse per token is quadratic in the reply's length). Once the reply
+ * is saved it's shown with `Markdown`, which parses it as a whole. */
+export function StreamingMarkdown({ text, onCite }: { text: string; onCite?: (file: string, label: string) => void }) {
+  const cuts = blockCuts(text);
+  const blocks: string[] = [];
+  let from = 0;
+  for (const c of cuts) { blocks.push(text.slice(from, c)); from = c; }
+  blocks.push(text.slice(from));
+  const last = blocks.length - 1;
+  return (
+    <div className="md md-stream" onClick={onCite ? (e) => {
+      const a = (e.target as HTMLElement).closest('a.cite') as HTMLElement | null;
+      if (a) { e.preventDefault(); onCite(a.dataset.file!, a.dataset.label!); }
+    } : undefined}>
+      {blocks.map((b, i) => (
+        <div key={i} className="md-block" dangerouslySetInnerHTML={{ __html: i < last ? cachedBlock(b, !!onCite) : renderMarkdown(b, { citations: !!onCite }) }} />
+      ))}
+    </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, hasToken, ToolName } from './api';
 import { usePoll } from './hooks';
 import { OverlayProvider } from './components/overlay';
@@ -10,13 +10,18 @@ import Home from './views/Home';
 import SubjectView from './views/SubjectView';
 import SettingsView from './views/SettingsView';
 import { logError } from './log';
+import { ToastLayer } from './components/toast';
+import CommandPalette from './components/CommandPalette';
+import { installUndoKeys, isApplying, undoable } from './undo';
+import { currentView, OpenRequest, registerRouter, ViewSnap } from './viewHistory';
 
 /** `launch` opens a create-content form in the chat (from a topic's Create menu). */
 export type Launch = { tool: ToolName; topicId: number | null; nonce: number };
 
 export type Route =
   | { name: 'home' }
-  | { name: 'subject'; id: number; launch?: Launch }
+  /** `view`: what to show on arrival (undo going back to a subject); `open`: something to open there (Ctrl+K). */
+  | { name: 'subject'; id: number; launch?: Launch; view?: ViewSnap; open?: OpenRequest }
   | { name: 'settings'; tab?: SettingsTab; subjectId?: number };
 export type SettingsTab = 'general' | 'maintenance' | 'share';
 
@@ -43,7 +48,30 @@ export default function App() {
   useEffect(() => { if (backendUp) { subjects.reload(); loadProvider(); } }, [backendUp]); // eslint-disable-line react-hooks/exhaustive-deps
 
 
-  const go = (r: Route) => setRoute(r);
+  // Every change of page is one undo step: going back restores the subject with what it was showing.
+  const routeRef = useRef(route);
+  routeRef.current = route;
+  const go = useCallback((r: Route) => {
+    const prev = routeRef.current;
+    const same = prev.name === r.name && (prev.name !== 'subject' || (r.name === 'subject' && prev.id === r.id))
+      && (prev.name !== 'settings' || (r.name === 'settings' && prev.tab === r.tab));
+    if (same && r.name === 'subject' && (r.open || r.launch)) { setRoute(r); return; }
+    if (same) return;
+    const back: Route = prev.name === 'subject' ? { name: 'subject', id: prev.id, view: currentView.get(prev.id) } : prev;
+    setRoute(r);
+    if (isApplying()) return;
+    const where = (x: Route) => (x.name === 'home' ? 'all subjects' : x.name === 'settings' ? 'settings'
+      : subjectsRef.current.find((s) => s.id === x.id)?.name ?? 'a subject');
+    const forward: Route = r.name === 'subject' ? { name: 'subject', id: r.id } : r;
+    undoable({ kind: 'nav', label: `go to ${where(r)}`, undo: () => setRoute(back),
+      redo: () => setRoute(forward.name === 'subject' ? { ...forward, view: currentView.get(forward.id) } : forward) });
+  }, []);
+  const subjectsRef = useRef<{ id: number; name: string }[]>([]);
+  subjectsRef.current = subjects.data ?? [];
+  useEffect(() => {
+    registerRouter((id, view) => setRoute({ name: 'subject', id, view }));
+    return installUndoKeys();
+  }, []);
   const refresh = () => { subjects.reload(); loadProvider(); };
   const list = subjects.data ?? [];
 
@@ -53,7 +81,7 @@ export default function App() {
       view = <Home key="home" subjects={list} go={go} onChange={refresh} online={online} />;
       break;
     case 'subject':
-      view = <SubjectView key={route.id} route={route} subjects={list} go={go} onChange={refresh} />;
+      view = <SubjectView key={`${route.id}-${route.view ? 'v' : ''}`} route={route} subjects={list} go={go} onChange={refresh} />;
       break;
     case 'settings':
       view = <SettingsView key={`settings-${route.tab ?? ''}-${route.subjectId ?? ''}`} tab={route.tab} subjectId={route.subjectId}
@@ -79,6 +107,8 @@ export default function App() {
         </main>
         <TooltipLayer />
         <FindLayer />
+        <ToastLayer />
+        <CommandPalette go={go} route={route} />
       </div>
     </OverlayProvider>
   );

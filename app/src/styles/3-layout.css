@@ -102,6 +102,19 @@
 /* ---------------------------------------------------------------- centre: chat + document */
 .center { position: relative; min-width: 0; min-height: 0; }
 .doc-pane { position: absolute; inset: 0; overflow-y: auto; }
+/* the centre's panes: one, or two side by side (split view) with a draggable divider */
+.center-panes { position: absolute; inset: 0; display: flex; min-width: 0; }
+.pane-slot { position: relative; flex: 1 1 0; min-width: 0; }
+.center-panes.is-split > .pane-slot:first-child { flex: 0 0 auto; }
+.pane-divider { position: relative; flex: 0 0 9px; margin: 0 -2px; cursor: col-resize; z-index: 4; display: flex; align-items: center;
+  justify-content: center; touch-action: none; }
+.pane-divider::before { content: ''; position: absolute; top: 0; bottom: 0; left: 4px; width: 1px; background: var(--border); transition: background 0.15s, width 0.15s; }
+.pane-divider:hover::before, .center-panes.splitting .pane-divider::before { background: var(--accent); width: 2px; left: 3.5px; }
+.pane-swap { position: relative; width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--border-strong); background: var(--bg-elev);
+  color: var(--text-dim); font-size: 12px; line-height: 1; cursor: pointer; padding: 0; opacity: 0; transition: opacity 0.15s; }
+.pane-divider:hover .pane-swap, .pane-swap:focus-visible { opacity: 1; }
+.pane-swap:hover { color: var(--accent-strong); border-color: var(--accent); }
+.center-panes.splitting .doc-pane { pointer-events: none; user-select: none; }
 .doc-pane .page { padding-top: 22px; padding-bottom: 120px; }
 .close-x { width: 32px; height: 32px; border-radius: 9px; border: 1px solid var(--border-strong); color: var(--text-dim); font-size: 20px; line-height: 1; cursor: pointer; display: grid; place-items: center; }
 .close-x:hover { color: var(--text); background: var(--bg-hover); }
@@ -205,10 +218,15 @@ button.attach-chip:hover { border-color: var(--accent); }
 .src-paper .md { color: inherit; }
 
 /* pdf.js text layer (from pdfjs-dist/web/pdf_viewer.css): transparent text positioned over the canvas */
-.textLayer { position: absolute; text-align: initial; inset: 0; overflow: clip; opacity: 1; line-height: 1; text-size-adjust: none; forced-color-adjust: none; transform-origin: 0 0; caret-color: CanvasText; z-index: 0; }
-.textLayer :is(span, br) { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
-.textLayer > :not(.markedContent), .textLayer .markedContent span:not(.markedContent) { z-index: 1; }
-.textLayer span.markedContent { top: 0; height: 0; }
+/* pdf.js 6's text layer (from pdfjs-dist/web/pdf_viewer.css): spans are sized from --total-scale-factor (set on the
+   page) and each span's --font-height / --scale-x / --rotate, which pdf.js sets. */
+.textLayer { position: absolute; text-align: initial; inset: 0; overflow: clip; opacity: 1; line-height: 1; letter-spacing: normal; word-spacing: normal; text-size-adjust: none; forced-color-adjust: none; transform-origin: 0 0; caret-color: CanvasText; z-index: 0;
+  --min-font-size: 1; --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size)); --min-font-size-inv: calc(1 / var(--min-font-size)); }
+.textLayer :is(span, br) { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; user-select: text; }
+.textLayer > :not(.markedContent), .textLayer .markedContent span:not(.markedContent) { z-index: 1; --font-height: 0; font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1; --rotate: 0deg; transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv)); }
+.textLayer .markedContent { display: contents; }
+.textLayer span[role="img"] { user-select: none; cursor: default; }
 .textLayer br::selection { background: transparent; }
 .textLayer .endOfContent { display: block; position: absolute; inset: 100% 0 0; z-index: 0; cursor: default; user-select: none; }
 .textLayer.selecting .endOfContent { top: 0; }

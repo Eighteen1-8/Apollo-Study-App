@@ -9,6 +9,8 @@ import re
 
 from lxml import etree, html as lxml_html
 
+from . import llm
+
 log = logging.getLogger(__name__)
 
 DESIGN = """FORMAT: reply with ONE HTML fragment only. No <html>, <head>, <body>, <style> or <script>; no CSS; no Markdown
@@ -71,9 +73,30 @@ def scrub(s: str) -> str:
     return _JS_URL.sub(r"\1=\2#blocked:", s)
 
 
+def _plain(s: str) -> str:
+    return " ".join(re.sub(r"<[^>]+>|\[\[[^\]]*\]\]", " ", s).replace("&amp;", "&").split())
+
+
+def outline(content: str) -> list[str]:
+    """What a written page covers, for telling the model about earlier pages: its headings (with the terms they
+    define) as short lines. Works on HTML and on the Markdown fallback."""
+    lines: list[str] = []
+    for m in re.finditer(r"<h([2-4])[^>]*>([\s\S]*?)</h\1>|<span class=\"term\">([\s\S]*?)</span>|^#{1,4}\s*(.+)$",
+                         content, re.I | re.M):
+        if m.group(3):
+            term = _plain(m.group(3))
+            if term and lines:
+                lines[-1] += ("; defines " if " defines " not in lines[-1] else ", ") + term
+            continue
+        text = _plain(m.group(2) or m.group(4) or "")
+        if text:
+            lines.append(("  " if (m.group(1) or "2") != "2" else "") + text)
+    return lines
+
+
 def clean(raw: str) -> tuple[str, bool]:
     """(content, is_html). Falls back to Markdown when the reply has no HTML structure at all."""
-    s = re.sub(r"<think>.*?</think>", "", raw, flags=re.S).strip()
+    s = llm.strip_think(raw)
     m = re.search(r"```(?:html)?\s*([\s\S]*?)```", s)
     if m and "<" in m.group(1):
         s = m.group(1).strip()

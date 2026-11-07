@@ -53,3 +53,7 @@ desktop.ini
 app/release/
 backend/dist/
 backend/build/
+
+# --- Test output ---
+app/test-results/
+app/playwright-report/

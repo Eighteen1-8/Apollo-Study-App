@@ -132,6 +132,15 @@ def test_settings():
     return llm.test_connections()
 
 
+@app.get("/settings/openrouter-models")
+def openrouter_models():
+    """OpenRouter's current chat models (free ones first), so a retired model can be replaced from a list."""
+    try:
+        return llm.openrouter_models()
+    except Exception as e:
+        raise HTTPException(502, f"Couldn't list OpenRouter's models: {e}") from e
+
+
 # ---------------------------------------------------------------- subjects & topics
 
 class NameBody(BaseModel):
@@ -142,12 +151,12 @@ class NameBody(BaseModel):
 
 @app.get("/subjects")
 def list_subjects():
-    subjects = db.q("SELECT * FROM subjects ORDER BY name COLLATE NOCASE")
+    subjects = db.q("SELECT * FROM subjects ORDER BY position IS NULL, position, name COLLATE NOCASE")
     model = llm.embed_model()
     # stale: embedded with a different model than the current one, so search can't use them until re-ingested
     topics = db.q("""SELECT t.*, (SELECT COUNT(*) FROM documents d WHERE d.topic_id=t.id) AS doc_count,
                      (SELECT COUNT(*) FROM documents d WHERE d.topic_id=t.id AND d.embed_model IS NOT NULL AND d.embed_model<>?) AS stale_docs
-                     FROM topics t ORDER BY t.name COLLATE NOCASE""", (model,))
+                     FROM topics t ORDER BY t.position IS NULL, t.position, t.name COLLATE NOCASE""", (model,))
     refs = {r["subject_id"]: r["n"] for r in db.q("SELECT subject_id, COUNT(*) n FROM documents WHERE kind='reference' GROUP BY subject_id")}
     stale = {r["subject_id"]: r["n"] for r in db.q(
         "SELECT subject_id, COUNT(*) n FROM documents WHERE embed_model IS NOT NULL AND embed_model<>? GROUP BY subject_id", (model,))}
@@ -211,6 +220,27 @@ def delete_subject(sid: int):
     for d in db.q("SELECT id FROM documents WHERE subject_id=?", (sid,)):
         _delete_document(d["id"], relink=False)  # everything goes: nothing left to relink
     db.ex("DELETE FROM subjects WHERE id=?", (sid,))
+    return {"ok": True}
+
+
+class OrderBody(BaseModel):
+    ids: list[int]
+
+
+@app.put("/subjects/order")
+def order_subjects(body: OrderBody):
+    """The order the student dragged the subjects into (ids not listed keep theirs)."""
+    with db.tx() as c:
+        for i, sid in enumerate(body.ids):
+            c.execute("UPDATE subjects SET position=? WHERE id=?", (i, sid))
+    return {"ok": True}
+
+
+@app.put("/subjects/{sid}/topics/order")
+def order_topics(sid: int, body: OrderBody):
+    with db.tx() as c:
+        for i, tid in enumerate(body.ids):
+            c.execute("UPDATE topics SET position=? WHERE id=? AND subject_id=?", (i, tid, sid))
     return {"ok": True}
 
 
@@ -309,12 +339,21 @@ def upload_documents(body: UploadBody):
 
 @app.get("/topics/{tid}/documents")
 def topic_documents(tid: int):
-    return db.q("SELECT * FROM documents WHERE topic_id=? ORDER BY created_at", (tid,))
+    return db.q("SELECT * FROM documents WHERE topic_id=? ORDER BY position IS NULL, position, created_at", (tid,))
 
 
 @app.get("/subjects/{sid}/documents")
 def reference_documents(sid: int):
-    return db.q("SELECT * FROM documents WHERE subject_id=? AND kind='reference' ORDER BY created_at", (sid,))
+    return db.q("SELECT * FROM documents WHERE subject_id=? AND kind='reference' ORDER BY position IS NULL, position, created_at", (sid,))
+
+
+@app.put("/subjects/{sid}/documents/order")
+def order_documents(sid: int, body: OrderBody):
+    """The order the student dragged files into (within one topic, folder or the textbooks)."""
+    with db.tx() as c:
+        for i, did in enumerate(body.ids):
+            c.execute("UPDATE documents SET position=? WHERE id=? AND subject_id=?", (i, did, sid))
+    return {"ok": True}
 
 
 @app.get("/documents/{did}")

@@ -8,7 +8,7 @@ Everything stays on this computer. There are three places, and only the first is
 
 | Path | What it is | Safe to delete? |
 |---|---|---|
-| `study.db` (+ `-wal`, `-shm`) | The database: subjects, topics, each file's parsed text, vision notes and embeddings, chats, generated content, attempts, ratings, to-dos, annotations, settings | **No.** This is the library. Close the app before copying it. |
+| `study.db` (+ `-wal`, `-shm`) | The database: subjects, topics, folders, each file's parsed text, vision notes and embeddings, chats, generated content, your notes, attempts, ratings, to-dos, annotations, the knowledge cloud's layout, settings | **No.** This is the library. Close the app before copying it. |
 | `files\` | The original files you added, stored once by content (`<sha256>.<ext>`) | No (Maintenance → Clean up removes ones no file uses) |
 | `renders\` | Exact PDF copies of PowerPoint and Word files, for the viewer and vision | Yes: made again when needed (needs Office or LibreOffice) |
 | `assets\<n>\` | Images taken from file *n* and the page images vision saw | Mostly: vision previews and figures need them |
@@ -29,21 +29,31 @@ the database opened by another Windows account or on another PC shows them as no
 |---|---|
 | `window-state.json` | Window size, position and whether it was maximised |
 | `window-chrome.json` | The title bar colours of the last theme, so the next start doesn't flash white |
+| `spelling.json` | The spell-check language (Settings) |
+| `Dictionaries\` | The spell-check dictionaries, copied from the app at each start (nothing is downloaded) |
 
-Both are rewritten automatically and can be deleted.
+All are rewritten automatically and can be deleted.
 
 ## 3. Per-machine preferences (in the app's browser storage)
 
 These live in the app's own browser profile, not in the database, so they don't follow a backup, a study pack or a new PC.
 `app/src/prefs.ts` lists them:
 
-- **Appearance:** theme, accent colour, reduced motion, knowledge cloud on or off (`apollo.appearance`)
-- **Workspace:** sidebar widths and folded sidebars (`sides`), the floating chat's corner and size (`chatSide`, `chatSize`)
-- **Chat:** reasoning level (`chatReasoning`)
+- **Appearance:** theme, accent colour, reduced motion, knowledge cloud on or off, its idle drift and frame rate (`apollo.appearance`)
+- **Workspace:** sidebar widths and folded sidebars (`sides`), the split view's divider (`splitFrac`), heights of the chat list and My notes (`split:chats`, `split:notes`), folded sidebar sections (`chatsFolded`, `notesFolded`, `todosFolded`)
+- **Chat:** the floating chat's corner and size (`chatSide`, `chatSize`), side by side and its width (`chatSplit`, `chatSplitFrac`), docked over the Comments panel (`chatOverReviews`), reasoning level (`chatReasoning`), unread dots (`chatUnread`)
+- **Notes:** the toolbar's last text and highlight colours (`noteTextColor`, `noteHighlight`)
 - **Generated list:** folded topic groups per subject (`libCollapsed:<subject id>`)
 - **Document viewer:** minimap and annotations rail shown or hidden (`minimap`, `annoRail`)
 
-Folders inside topics are *not* in this list: they're in the database (`ui_state`), so they do move with it.
+The order you dragged things into and the folders inside topics are *not* in this list: they're in the database, so
+they move with it.
+
+## Deleted things
+
+Deleted chats, generated content and notes stay in the database for a week (Undo, or Ctrl+Z, brings them back) and are
+removed for good at the first start after that. Deleted files, topics and subjects are removed at once (the app asks
+first); a backup is the only way back.
 
 ## Moving to a new PC
 

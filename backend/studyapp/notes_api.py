@@ -22,7 +22,7 @@ REVIEWABLE_TYPES = ("notes", "cheatsheet")
 
 
 def _note(nid):
-    n = db.q1("SELECT * FROM user_notes WHERE id=?", (nid,))
+    n = db.q1("SELECT * FROM user_notes WHERE id=? AND deleted_at IS NULL", (nid,))
     if n is None:
         raise HTTPException(404, "Note not found")
     return n
@@ -47,7 +47,7 @@ class NotePatch(BaseModel):
 def list_notes(sid: int):
     return db.q("""SELECT n.id, n.subject_id, n.topic_id, n.title, n.created_at, n.updated_at, t.name AS topic_name,
                           LENGTH(n.html) AS size FROM user_notes n LEFT JOIN topics t ON t.id=n.topic_id
-                   WHERE n.subject_id=? ORDER BY n.updated_at DESC""", (sid,))
+                   WHERE n.subject_id=? AND n.deleted_at IS NULL ORDER BY n.updated_at DESC""", (sid,))
 
 
 @router.post("/subjects/{sid}/notes")
@@ -83,8 +83,15 @@ def patch_note(nid: int, body: NotePatch):
 
 @router.delete("/notes/{nid}")
 def delete_note(nid: int):
-    db.ex("DELETE FROM reviews WHERE target='note' AND target_id=?", (nid,))
-    db.ex("DELETE FROM user_notes WHERE id=?", (nid,))
+    """Soft delete (undoable with POST /notes/{id}/restore); purged after a week with its reviews
+    (study_api.purge_deleted)."""
+    db.ex("UPDATE user_notes SET deleted_at=? WHERE id=? AND deleted_at IS NULL", (time.time(), nid))
+    return {"ok": True}
+
+
+@router.post("/notes/{nid}/restore")
+def restore_note(nid: int):
+    db.ex("UPDATE user_notes SET deleted_at=NULL WHERE id=?", (nid,))
     return {"ok": True}
 
 
@@ -92,9 +99,10 @@ def delete_note(nid: int):
 
 def list_content(subject_id: int) -> list[dict]:
     """The student's notes and the generated notes / cheat sheets of a subject: what chat can read or revise."""
-    notes = db.q("SELECT id, title, updated_at FROM user_notes WHERE subject_id=? ORDER BY updated_at DESC", (subject_id,))
+    notes = db.q("SELECT id, title, updated_at FROM user_notes WHERE subject_id=? AND deleted_at IS NULL "
+                 "ORDER BY updated_at DESC", (subject_id,))
     arts = db.q("""SELECT id, title, type, updated_at FROM artifacts WHERE subject_id=? AND status='ready'
-                   AND type IN ('notes','cheatsheet') ORDER BY id DESC""", (subject_id,))
+                   AND deleted_at IS NULL AND type IN ('notes','cheatsheet') ORDER BY id DESC""", (subject_id,))
     return ([{"target": "note", "id": n["id"], "title": n["title"], "kind": "the student's own note"} for n in notes]
             + [{"target": "artifact", "id": a["id"], "title": a["title"],
                 "kind": "generated notes" if a["type"] == "notes" else "generated cheat sheet"} for a in arts])

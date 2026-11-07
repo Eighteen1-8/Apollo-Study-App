@@ -193,6 +193,52 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             color TEXT NOT NULL DEFAULT 'yellow', created_at REAL NOT NULL
          )""",
          "ALTER TABLE jobs ADD COLUMN label TEXT"]),
+    # The order the student dragged subjects (mini sidebar) and topics (right sidebar) into. NULL = not placed yet:
+    # those follow the placed ones, by name.
+    (5, ["ALTER TABLE subjects ADD COLUMN position INTEGER",
+         "ALTER TABLE topics ADD COLUMN position INTEGER"]),
+    # chats.deleted_at: soft delete (the sidebar's delete can be undone); purged a week later on start-up.
+    # position: the order the student dragged to-dos, files and generated content into (NULL = not placed yet).
+    (6, ["ALTER TABLE chats ADD COLUMN deleted_at REAL",
+         "ALTER TABLE todos ADD COLUMN position INTEGER",
+         "ALTER TABLE documents ADD COLUMN position INTEGER",
+         "ALTER TABLE artifacts ADD COLUMN position INTEGER"]),
+    # The knowledge cloud's stored projection (projection.py): fitted axes per scope ('all' or 'subject:N') and
+    # each sampled chunk's position on them, so the cloud keeps its layout and a restart reads no vectors.
+    (7, ["CREATE TABLE IF NOT EXISTS cloud_axes (scope TEXT PRIMARY KEY, model TEXT NOT NULL, n_fit INTEGER NOT NULL, "
+         "mean BLOB NOT NULL, axes BLOB NOT NULL, std BLOB NOT NULL, radius REAL NOT NULL, fitted_at REAL)",
+         "CREATE TABLE IF NOT EXISTS cloud_points (scope TEXT NOT NULL, chunk_id INTEGER NOT NULL, x REAL, y REAL, "
+         "z REAL, PRIMARY KEY (scope, chunk_id)) WITHOUT ROWID"]),
+    # Folders inside topics become rows (they were one JSON blob per subject in ui_state, rewritten on every change).
+    # The blobs are converted here: folder order is kept only where the student had dragged it (`ordered`).
+    (8, ["CREATE TABLE IF NOT EXISTS folders (id INTEGER PRIMARY KEY, "
+         "subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE, "
+         "topic_id INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE, name TEXT NOT NULL, position INTEGER, "
+         "legacy_id TEXT, created_at REAL)",
+         "CREATE INDEX IF NOT EXISTS folders_topic ON folders(topic_id)",
+         "ALTER TABLE documents ADD COLUMN folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL",
+         "INSERT INTO folders(subject_id, topic_id, name, position, legacy_id, created_at) "
+         "SELECT CAST(substr(u.key, 9) AS INTEGER), CAST(t.key AS INTEGER), json_extract(f.value, '$.name'), "
+         "CASE WHEN json_extract(t.value, '$.ordered') THEN f.key END, json_extract(f.value, '$.id'), "
+         "CAST(strftime('%s', 'now') AS REAL) "
+         "FROM ui_state u, json_each(CASE WHEN json_valid(u.value) THEN u.value ELSE '{}' END) t, json_each(t.value, '$.folders') f "
+         "WHERE u.key LIKE 'folders:%' AND json_type(t.value) = 'object' AND json_extract(f.value, '$.name') IS NOT NULL "
+         "AND EXISTS (SELECT 1 FROM topics tp WHERE tp.id = CAST(t.key AS INTEGER) "
+         "AND tp.subject_id = CAST(substr(u.key, 9) AS INTEGER))",
+         "UPDATE documents SET folder_id = (SELECT fo.id FROM ui_state u, json_each(CASE WHEN json_valid(u.value) THEN u.value ELSE '{}' END) t, "
+         "json_each(t.value, '$.files') x, folders fo "
+         "WHERE u.key = 'folders:' || documents.subject_id AND json_type(t.value) = 'object' "
+         "AND CAST(t.key AS INTEGER) = documents.topic_id AND x.key = CAST(documents.id AS TEXT) "
+         "AND fo.legacy_id = x.value AND fo.topic_id = documents.topic_id LIMIT 1) "
+         "WHERE kind = 'topic' AND topic_id IS NOT NULL",
+         "DELETE FROM ui_state WHERE key LIKE 'folders:%'",
+         # a file that leaves its topic (or becomes a textbook) leaves its folder
+         "CREATE TRIGGER IF NOT EXISTS documents_leave_folder AFTER UPDATE OF topic_id, kind ON documents "
+         "WHEN NEW.folder_id IS NOT NULL AND (NEW.topic_id IS NOT OLD.topic_id OR NEW.kind != 'topic') "
+         "BEGIN UPDATE documents SET folder_id = NULL WHERE id = NEW.id; END"]),
+    # Generated content and the student's notes are deleted softly (undoable), like chats; purged after a week.
+    (9, ["ALTER TABLE artifacts ADD COLUMN deleted_at REAL",
+         "ALTER TABLE user_notes ADD COLUMN deleted_at REAL"]),
 ]
 # Rows in `jobs` that only show interactive model work in the jobs list (jobs.track); no worker runs them.
 INTERACTIVE_JOBS = ("chat", "define", "quiz_review")

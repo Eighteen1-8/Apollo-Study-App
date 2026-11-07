@@ -19,6 +19,19 @@ declare global {
       capture?: (rect: { x: number; y: number; width: number; height: number }) => Promise<string>;
       /** Put a PNG (base64) on the clipboard. */
       copyImage?: (png: string) => Promise<void>;
+      /** Spell check (bundled dictionaries; electron main.cjs setupSpelling). */
+      spell?: {
+        /** Call from a contextmenu handler that does NOT cancel the event: Chromium's spelling result for the word under
+         * the pointer (null when it doesn't come). */
+        menuParams: () => Promise<{ misspelledWord: string; suggestions: string[] } | null>;
+        /** Replace the misspelled word just right-clicked. */
+        replace: (word: string) => Promise<void>;
+        add: (word: string) => Promise<void>;
+        /** The chosen languages, and those with a dictionary. */
+        info: () => Promise<{ languages: string[]; available: string[] }>;
+        /** Returns the languages now in use ([] = off). */
+        set: (languages: string[]) => Promise<string[]>;
+      };
     };
   }
 }
@@ -143,8 +156,16 @@ export interface SearchResult {
   vision_notes: { label: string; vision_notes: string }[];
 }
 /** Chunk embeddings projected to 3D for the home page cloud. Points: [chunk id, document id, x, y, z, label]. */
-/** Display-only folders inside topics, keyed by topic id: the folders and which folder each file (doc id) sits in. */
-export type FolderMap = Record<string, { folders: { id: string; name: string }[]; files: Record<string, string> }>;
+/** Folders inside topics (sidebar grouping only), keyed by topic id: the folders and which folder each file (doc id)
+ * sits in. Each change is its own request (`createFolder`, `placeFiles`, …). */
+/** `ordered`: the student dragged the folders into the order of `folders` (otherwise they show by name). */
+/** What the local model server accepts (llm.DEFAULT_PROFILE, probed by Test connections). */
+export interface ServerProfile {
+  thinking_switch: 'template' | 'none'; reasoning_param: string; reasoning_levels: string[];
+  json_schema: boolean; stream_usage: boolean; tools: boolean;
+}
+export interface OpenRouterModel { id: string; name: string; context: number | null; free: boolean; vision: boolean }
+export type FolderMap = Record<string, { folders: { id: string; name: string }[]; files: Record<string, string>; ordered?: boolean }>;
 
 export interface EmbeddingMap {
   model: string; total: number;
@@ -243,14 +264,29 @@ export const api = {
   setPause: (p: { llm?: boolean; embed?: boolean }) => req<PauseState>('POST', '/jobs/pause', p),
   search: (query: string, topic_id: number, include_reference: boolean) =>
     req<{ results: SearchResult[]; warning: string | null }>('POST', '/search', { query, topic_id, include_reference }),
+  /** Passages anywhere in a subject (its topics and textbooks): the sidebar's file search. */
+  searchSubject: (query: string, subject_id: number, k = 15) =>
+    req<{ results: SearchResult[]; warning: string | null }>('POST', '/search', { query, subject_id, include_reference: true, k }),
   settings: () => req<Settings>('GET', '/settings'),
   saveSettings: (s: Settings) => req<Settings>('PUT', '/settings', s),
-  testSettings: () => req<Record<string, { ok: boolean; online?: boolean; model?: string; error?: string; dim?: number; ms?: number; max_model_len?: number; models?: string[] }>>('POST', '/settings/test'),
+  testSettings: () => req<Record<string, { ok: boolean; online?: boolean; model?: string; error?: string; dim?: number; ms?: number; max_model_len?: number; models?: string[]; profile?: ServerProfile }>>('POST', '/settings/test'),
+  openrouterModels: () => req<OpenRouterModel[]>('GET', '/settings/openrouter-models'),
   previewUrl: (docId: number, idx: number) => authUrl(`${BASE}/documents/${docId}/units/${idx}/preview`),
   assetUrl: (rel: string) => authUrl(`${BASE}/assets/${rel}`),
   embeddingMap: (subjectId?: number) => req<EmbeddingMap>('GET', `/embeddings/map${subjectId != null ? `?subject_id=${subjectId}` : ''}`),
+  /** Forget the cloud's stored layout for a scope; the next map request fits new axes. */
+  refitCloud: (subjectId?: number) => req<{ ok: boolean }>('POST', `/embeddings/map/refit${subjectId != null ? `?subject_id=${subjectId}` : ''}`),
+  orderSubjects: (ids: number[]) => req('PUT', '/subjects/order', { ids }),
+  orderTopics: (subjectId: number, ids: number[]) => req('PUT', `/subjects/${subjectId}/topics/order`, { ids }),
   folders: (subjectId: number) => req<FolderMap>('GET', `/subjects/${subjectId}/folders`),
-  saveFolders: (subjectId: number, f: FolderMap) => req<FolderMap>('PUT', `/subjects/${subjectId}/folders`, f),
+  createFolder: (subjectId: number, topicId: number, name: string, docIds: number[] = []) =>
+    req<{ id: string }>('POST', `/subjects/${subjectId}/folders`, { topic_id: topicId, name, doc_ids: docIds }),
+  renameFolder: (id: string, name: string) => req<{ ok: boolean }>('PATCH', `/folders/${id}`, { name }),
+  deleteFolder: (id: string) => req<{ ok: boolean }>('DELETE', `/folders/${id}`),
+  /** Put files in a folder (null: in no folder). Files of another topic are left where they are. */
+  placeFiles: (docIds: number[], folderId: string | null) =>
+    req<{ ok: boolean }>('PUT', '/folders/place', { doc_ids: docIds, folder_id: folderId === null ? null : Number(folderId) }),
+  orderFolders: (topicId: number, ids: string[]) => req<{ ok: boolean }>('PUT', `/topics/${topicId}/folders/order`, { ids: ids.map(Number) }),
 
   notes: (subjectId: number) => req<NoteSummary[]>('GET', `/subjects/${subjectId}/notes`),
   createNote: (subjectId: number, body: { title?: string; topic_id?: number | null; html?: string } = {}) =>
@@ -259,6 +295,7 @@ export const api = {
   saveNote: (id: number, body: { title?: string; html?: string; topic_id?: number | null; set_topic?: boolean }) =>
     req<Note>('PATCH', `/notes/${id}`, body),
   deleteNote: (id: number) => req('DELETE', `/notes/${id}`),
+  restoreNote: (id: number) => req('POST', `/notes/${id}/restore`),
   /** Apollo checks a note / generated notes (or a highlighted passage of one) against the material, or revises it. */
   startReview: (body: { target: ReviewTarget; target_id: number; mode: 'check' | 'revise'; quote?: string; section?: number | null; instruction?: string }) =>
     req<Review>('POST', '/reviews', body),
@@ -287,7 +324,19 @@ export const api = {
   chat: (id: number) => req<Chat & { messages: Message[] }>('GET', `/chats/${id}`),
   setChatTopic: (id: number, topic_id: number | null) => req<Chat>('PATCH', `/chats/${id}`, { topic_id, set_topic: true }),
   renameChat: (id: number, title: string) => req<Chat>('PATCH', `/chats/${id}`, { title }),
+  autoTitleChat: (id: number) => req<Chat>('POST', `/chats/${id}/auto-title`),
   deleteChat: (id: number) => req('DELETE', `/chats/${id}`),
+  /** Soft delete: restoreChats brings them back (purged a week later). */
+  deleteChats: (ids: number[]) => req('POST', '/chats/delete', { ids }),
+  restoreChats: (ids: number[]) => req('POST', '/chats/restore', { ids }),
+  /** Stop the reply being written in this chat; what was written so far is kept. */
+  stopChat: (id: number) => req('POST', `/chats/${id}/stop`),
+  chatStats: (id: number, scope: 'chat' | 'subject' | 'all' = 'chat') => req<ChatStats>('GET', `/chats/${id}/stats?scope=${scope}`),
+  chatContext: (id: number) => req<ChatContext>('GET', `/chats/${id}/context`),
+  orderTodos: (subjectId: number, ids: number[]) => req('PUT', `/subjects/${subjectId}/todos/order`, { ids }),
+  orderArtifacts: (subjectId: number, ids: number[]) => req('PUT', `/subjects/${subjectId}/artifacts/order`, { ids }),
+  orderDocuments: (subjectId: number, ids: number[]) => req('PUT', `/subjects/${subjectId}/documents/order`, { ids }),
+  palette: () => req<PaletteData>('GET', '/palette'),
   openTool: (chatId: number, tool: ToolName, args: Record<string, unknown> = {}) => req<Message>('POST', `/chats/${chatId}/tool`, { tool, args }),
   submitTool: (messageId: number, args: Record<string, unknown>, topic_id: number | null) =>
     req<Message>('POST', `/messages/${messageId}/submit`, { args, topic_id }),
@@ -304,6 +353,7 @@ export const api = {
   library: (subjectId: number) => req<LibraryItem[]>('GET', `/subjects/${subjectId}/library`),
   renameArtifact: (id: number, title: string) => req('PATCH', `/artifacts/${id}`, { title }),
   deleteArtifact: (id: number) => req('DELETE', `/artifacts/${id}`),
+  restoreArtifact: (id: number) => req('POST', `/artifacts/${id}/restore`),
   deleteCards: (artifactId: number, indices: number[]) => req<{ ok: boolean; count: number }>('POST', `/artifacts/${artifactId}/cards/delete`, { indices }),
   rateCard: (artifactId: number, index: number, rating: 'confident' | 'struggling' | 'none') =>
     req('PUT', `/artifacts/${artifactId}/cards/${index}/rating`, { rating }),
@@ -332,7 +382,7 @@ export const api = {
     req<{ queued: number }>('POST', `/subjects/${subjectId}/reingest-stale`, body),
 };
 
-/** Server-sent chat events: user | status | reasoning | delta | assistant | tool | error | end. */
+/** Server-sent chat events: user | status | reasoning | delta | assistant | tool | error | stopped | end. */
 async function streamChat(path: string, body: unknown, onEvent: (e: ChatEvent) => void) {
   const res = await fetch(BASE + path, {
     method: 'POST', headers: { ...AUTH, ...grantHeader(body), 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -393,13 +443,34 @@ export interface Message {
     searched_other_topics?: string[]; figures?: Record<string, FigureRef>;
     /** review_content (Apollo checking or revising a note, asked in chat) */
     review_id?: number; mode?: 'check' | 'revise'; title?: string; target?: ReviewTarget; target_id?: number; instruction?: string; error?: string;
+    /** The student stopped the reply: content is what had been written. */
+    stopped?: boolean;
+    usage?: { prompt?: number; completion?: number; reasoning?: number; cost?: number; seconds?: number; model?: string; provider?: string;
+      last_prompt?: number; last_completion?: number };
   };
   artifact?: ArtifactSummary | null;
 }
 export type ChatEvent =
   | { type: 'user' | 'assistant' | 'tool'; message: Message }
   | { type: 'status' | 'reasoning' | 'delta' | 'error'; text: string }
-  | { type: 'end' };
+  | { type: 'end' | 'stopped' };
+export interface ChatStats {
+  scope: 'chat' | 'subject' | 'all'; chats: number; questions: number; replies: number; uncounted: number; stopped: number;
+  prompt: number; completion: number; reasoning: number; seconds: number; reasoning_seconds: number; cost: number;
+  local_replies: number; online_replies: number; models: string[];
+}
+/** Context window use for a chat's next question (tokens). `exact`: the last reply's real numbers; the breakdown is estimated. */
+export interface ChatContext {
+  limit: number; system: number; material: number; history: number; total: number; estimate: number; exact: boolean; full_context: boolean;
+}
+export interface PaletteData {
+  subjects: { id: number; name: string }[];
+  topics: { id: number; subject_id: number; name: string }[];
+  documents: { id: number; subject_id: number; topic_id: number | null; kind: 'topic' | 'reference'; filename: string }[];
+  artifacts: { id: number; subject_id: number; topic_id: number | null; type: ArtifactType; title: string }[];
+  notes: { id: number; subject_id: number; topic_id: number | null; title: string }[];
+  chats: { id: number; subject_id: number; topic_id: number | null; title: string; updated_at: number }[];
+}
 
 export interface RubricPoint { point: string; marks: number }
 export interface ExamQuestion {
