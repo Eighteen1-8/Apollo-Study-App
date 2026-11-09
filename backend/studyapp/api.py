@@ -14,12 +14,14 @@ import time
 
 import pymupdf
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from PIL import Image
 from pydantic import BaseModel
 
-from . import config, db, grants, jobs, llm, pipeline, render, search, viewer
+from . import config, db, errors, grants, jobs, llm, pipeline, render, search, viewer
 from .annotations import router as annotations_router
 from .chat_api import router as chat_router
 from .maintenance import router as maintenance_router
@@ -43,7 +45,7 @@ app.include_router(events_router)
 app.include_router(notes_router)
 
 
-OPEN_PATHS = ("/health",)
+OPEN_PATHS = ("/health", "/errors")
 
 
 @app.middleware("http")
@@ -54,7 +56,8 @@ async def require_token(request: Request, call_next):
     if token and request.method != "OPTIONS" and request.url.path not in OPEN_PATHS:
         given = request.headers.get("x-apollo-token") or (request.query_params.get("token") if request.method == "GET" else None)
         if not given or not hmac.compare_digest(given.encode(), token.encode()):
-            return JSONResponse({"detail": "Missing or wrong backend token"}, status_code=401)
+            return JSONResponse({"detail": errors.CATALOGUE["APO-APP-002"].plain, "code": "APO-APP-002",
+                                 "technical": "Missing or wrong backend token"}, status_code=401)
     ctx = grants.load_header(request.headers.get("x-apollo-grants"))  # the files the student picked (grants.py)
     try:
         return await call_next(request)
@@ -80,12 +83,61 @@ def _404(row, what="Not found"):
 
 # ---------------------------------------------------------------- health & settings
 
+def _error_body(err: errors.AppError) -> dict:
+    """Every error the API returns: the plain message, its code (docs/ERRORS.md) and a short technical line."""
+    return {"detail": err.plain, "code": err.code, "technical": (err.technical or "")[:300]}
+
+
+@app.exception_handler(errors.AppError)
+async def app_error(request: Request, exc: errors.AppError):
+    log.warning("%s %s %s: %s", exc.code, request.method, request.url.path, exc.technical or exc.plain)
+    return JSONResponse(_error_body(exc), status_code=exc.status)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_error(request: Request, exc: StarletteHTTPException):
+    """Errors raised on purpose: their detail is already plain words; they get the code for their kind."""
+    detail = exc.detail if isinstance(exc.detail, str) else json.dumps(exc.detail)
+    code = errors.coded(detail) or errors.STATUS_CODES.get(exc.status_code, "APO-APP-900")
+    detail = errors.CODE_RE.sub("", detail).strip()
+    if exc.status_code >= 500:
+        log.error("%s %s %s: %s", code, request.method, request.url.path, detail)
+    elif exc.status_code != 404:
+        log.info("%s %s %s: %s", code, request.method, request.url.path, detail)
+    return JSONResponse({"detail": detail, "code": code, "technical": f"HTTP {exc.status_code}"}, status_code=exc.status_code,
+                        headers=getattr(exc, "headers", None))
+
+
+@app.exception_handler(RequestValidationError)
+async def bad_request(request: Request, exc: RequestValidationError):
+    first = exc.errors()[0] if exc.errors() else {}
+    where = ".".join(str(x) for x in first.get("loc", []) if x != "body")
+    log.info("APO-APP-400 %s %s: %s", request.method, request.url.path, exc.errors()[:3])
+    what = f" ({where}: {first.get('msg', '')})" if where else ""
+    return JSONResponse({"detail": f"Apollo couldn't use what was sent{what}.", "code": "APO-APP-400",
+                         "technical": str(exc.errors()[:3])[:300]}, status_code=422)
+
+
 @app.exception_handler(Exception)
 async def unhandled(request: Request, exc: Exception):
-    """Anything an endpoint didn't expect: logged with its traceback, and a short message for the UI."""
-    log.error("%s %s failed", request.method, request.url.path, exc_info=exc)
-    return JSONResponse({"detail": f"Something went wrong ({type(exc).__name__}: {str(exc)[:200]}). Details are in the log."},
-                        status_code=500)
+    """Anything an endpoint didn't expect: classified (a model or file error gets its own code), logged with its
+    traceback under that code, and a plain message for the UI."""
+    err = errors.classify(exc)
+    log.error("%s %s %s failed: %s", err.code, request.method, request.url.path, err.technical, exc_info=exc)
+    return JSONResponse(_error_body(err), status_code=err.status)
+
+
+@app.post("/examples/physics")
+def make_example():
+    """The example subject (examples.py): made once, then the same one is returned."""
+    from . import examples
+    return examples.create()
+
+
+@app.get("/errors")
+def error_codes():
+    """The error reference the app shows when a code is clicked (the same text as docs/ERRORS.md)."""
+    return errors.catalogue_json()
 
 
 class ClientLog(BaseModel):
@@ -125,6 +177,12 @@ def put_settings(values: dict):
     values = {k: v for k, v in values.items() if not (k in SECRET_KEYS and v == "••••••••") and k not in PAUSE_KEYS}
     db.put_settings(values)
     return get_settings()
+
+
+@app.get("/status/models")
+def model_status():
+    """Whether the language and embedding servers answer (the side bar's status light)."""
+    return llm.model_status()
 
 
 @app.post("/settings/test")
@@ -167,6 +225,7 @@ def list_subjects():
         s["reference_count"] = refs.get(s["id"], 0)
         s["stale_docs"] = stale.get(s["id"], 0)
         s["stale_reference_docs"] = stale_refs.get(s["id"], 0)
+        s["questions"] = json.loads(s["questions"]) if s.get("questions") else []  # questions.py
     return subjects
 
 
@@ -205,14 +264,20 @@ def create_subject(body: NameBody):
     if not body.name.strip():
         raise HTTPException(400, "Name required")
     sid = db.ex("INSERT INTO subjects(name, color, created_at) VALUES (?,?,?)", (body.name.strip(), body.color or "#7c8cff", time.time()))
-    return db.q1("SELECT * FROM subjects WHERE id=?", (sid,))
+    return _subject_row(sid)
 
 
 @app.patch("/subjects/{sid}")
 def update_subject(sid: int, body: NameBody):
     _404(db.q1("SELECT id FROM subjects WHERE id=?", (sid,)))
     db.ex("UPDATE subjects SET name=?, color=COALESCE(?, color) WHERE id=?", (body.name.strip(), body.color, sid))
-    return db.q1("SELECT * FROM subjects WHERE id=?", (sid,))
+    return _subject_row(sid)
+
+
+def _subject_row(sid: int) -> dict:
+    s = db.q1("SELECT * FROM subjects WHERE id=?", (sid,))
+    s["questions"] = json.loads(s["questions"]) if s.get("questions") else []
+    return s
 
 
 @app.delete("/subjects/{sid}")
@@ -275,7 +340,7 @@ def update_topic(tid: int, body: NameBody):
 def delete_topic(tid: int):
     # newest first, so files that duplicated an older one in the topic are gone before it is (nothing to relink)
     for d in db.q("SELECT id FROM documents WHERE topic_id=? ORDER BY id DESC", (tid,)):
-        delete_document(d["id"])
+        _delete_document(d["id"])  # a deleted topic takes its files for good (it asks first)
     db.ex("DELETE FROM topics WHERE id=?", (tid,))
     return {"ok": True}
 
@@ -380,7 +445,64 @@ def get_document(did: int):
 
 @app.delete("/documents/{did}")
 def delete_document(did: int):
-    return _delete_document(did)
+    """Move a file to the trash for a week (POST /documents/{did}/restore brings it back; purge_trash deletes it for
+    good). It leaves every scope at once (kind='trash'): files that duplicated its pages get their own copies back
+    (pipeline.relink, as for a move), and its own units, chunks and vectors are kept, so a restore reads nothing again."""
+    d = db.q1("SELECT * FROM documents WHERE id=?", (did,))
+    if d is None or d["kind"] == "trash":
+        return {"ok": True}
+    jobs.cancel_for_document(did)
+    dependents = [r["document_id"] for r in db.q(
+        """SELECT DISTINCT u.document_id FROM units u JOIN units o ON o.id=u.duplicate_of
+           WHERE o.document_id=? AND u.document_id<>?""", (did, did))]
+    now = time.time()
+    where = json.dumps({"kind": d["kind"], "topic_id": d["topic_id"], "folder_id": d["folder_id"]})
+    db.ex("UPDATE documents SET trash_from=?, kind='trash', topic_id=NULL, deleted_at=?, updated_at=? WHERE id=?",
+          (where, now, now, did))
+    for doc_id in pipeline.relink(dependents):
+        jobs.enqueue("embed", doc_id)
+    return {"ok": True}
+
+
+@app.post("/documents/{did}/restore")
+def restore_document(did: int):
+    """Undo a delete: the file goes back where it was (its folder too, if that still exists). A topic deleted since
+    sends it to the subject's textbooks instead; `note` says so."""
+    d = _404(db.q1("SELECT * FROM documents WHERE id=?", (did,)), "File not found")
+    if d["kind"] != "trash":
+        return {**d, "note": None}
+    src = json.loads(d["trash_from"] or "{}")
+    kind, topic_id, note = src.get("kind", "reference"), src.get("topic_id"), None
+    if kind == "topic" and not db.q1("SELECT id FROM topics WHERE id=?", (topic_id,)):
+        kind, topic_id, note = "reference", None, "Its topic was deleted, so it's back in the textbooks."
+    scope_sql, scope_arg = ("topic_id=? AND kind='topic'", topic_id) if kind == "topic" else ("subject_id=? AND kind='reference'", d["subject_id"])
+    dup = db.q1(f"SELECT filename FROM documents WHERE {scope_sql} AND sha256=? AND id<>?", (scope_arg, d["sha256"], did))
+    if dup:
+        raise HTTPException(409, f"An identical file is already there ({dup['filename']}), so this one can't come back.")
+    folder = src.get("folder_id") if kind == "topic" and db.q1("SELECT id FROM folders WHERE id=? AND topic_id=?",
+                                                               (src.get("folder_id"), topic_id)) else None
+    db.ex("UPDATE documents SET kind=?, topic_id=?, folder_id=?, deleted_at=NULL, trash_from=NULL, updated_at=? WHERE id=?",
+          (kind, topic_id, folder, time.time(), did))
+    # later files in that scope with the same pages become duplicates of this (earlier) one again
+    later = [r["document_id"] for r in db.q(
+        f"""SELECT DISTINCT document_id FROM units WHERE document_id IN (SELECT id FROM documents WHERE {scope_sql} AND id>?)
+            AND content_hash IN (SELECT content_hash FROM units WHERE document_id=?)""", (scope_arg, did, did))]
+    if d["status"] not in ("ready", "failed", "cancelled"):  # deleted while being read: read it again
+        db.ex("UPDATE documents SET status='queued', updated_at=? WHERE id=?", (time.time(), did))
+        jobs.enqueue("ingest", did, ref_id=pipeline.KEEP_VISION)
+        affected = later
+    else:
+        affected = [did, *later]
+    for doc_id in pipeline.relink(affected):
+        jobs.enqueue("embed", doc_id)
+    return {**db.q1("SELECT * FROM documents WHERE id=?", (did,)), "note": note}
+
+
+def purge_trash(days: float = 7):
+    """Files deleted more than `days` ago go for good (at start-up)."""
+    cutoff = time.time() - days * 86400
+    for d in db.q("SELECT id FROM documents WHERE kind='trash' AND deleted_at < ? ORDER BY id DESC", (cutoff,)):
+        _delete_document(d["id"])
 
 
 def _delete_document(did: int, relink=True):

@@ -15,6 +15,7 @@ import { Flashcards } from './artifacts/Flashcards';
 import { Quiz } from './artifacts/Quiz';
 import { Exam } from './artifacts/Exam';
 import { Sections } from './artifacts/Sections';
+import Icon from '../components/Icon';
 
 /** Fullscreen viewer for generated content, closed with the × at the top right (or Escape). */
 export default function ArtifactViewer({ id, subject, onClose }: { id: number; subject: Subject; onClose: () => void }) {
@@ -39,9 +40,9 @@ export default function ArtifactViewer({ id, subject, onClose }: { id: number; s
               exportAs(f, answers ? `${a.title} (with answers)` : a.title, (word) => artifactHtml(a, word, answers))
                 .catch((err) => ov.confirm({ title: 'Export failed', body: String(err).replace(/^Error: /, ''), confirmText: 'OK' }));
             },
-          }))), { anchor: e.currentTarget, place: 'below' })}>Export ▾</button>
+          }))), { anchor: e.currentTarget, place: 'below' })}>Export <Icon name="chevronDown" size={14} /></button>
         )}
-        <button className="close-x close-x-lg" title="Close (Esc)" onClick={onClose}>×</button>
+        <button className="close-x close-x-lg" title="Close (Esc)" onClick={onClose}><Icon name="close" size={20} /></button>
       </div>
       <div className="fs-body" data-find={a?.title ?? 'this page'}>
         {a?.content && (
@@ -332,10 +333,10 @@ export function ArtifactPage({ id, onClose, onCite, onAsk, onAttach }: {
           <>
             <button className="btn btn-sm" data-tip="Have Apollo check this against your material" onClick={() => { check(); }}>Check with Apollo</button>
             <button className={`btn btn-sm${showReviews ? ' on' : ''}`} onClick={() => setShowReviews(!showReviews)}>Comments{active ? ` (${active})` : ''}</button>
-            <button className="btn btn-sm" onClick={exportMenu}>Export ▾</button>
+            <button className="btn btn-sm" onClick={exportMenu}>Export <Icon name="chevronDown" size={14} /></button>
           </>
         )}
-        <button className="close-x" title="Close" onClick={onClose}>×</button>
+        <button className="close-x" title="Close" onClick={onClose}><Icon name="close" size={18} /></button>
       </header>
       <div className="ne-body">
         <div ref={scroll} className={`artifact-scroll${isMap ? ' is-map' : ''}`} data-find={isMap ? undefined : (a?.title ?? 'these notes')}

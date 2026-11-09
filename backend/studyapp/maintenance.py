@@ -100,7 +100,7 @@ def _stale_rows() -> dict:
 def overview():
     model = llm.embed_model()
     docs = db.q("""SELECT d.id, d.subject_id, d.topic_id, d.kind, d.filename, d.ext, d.sha256, d.size, d.status, d.error,
-                          d.unit_count, d.vision_total, d.vision_done, d.embed_model, d.parser_version, d.updated_at FROM documents d ORDER BY d.filename COLLATE NOCASE""")
+                          d.unit_count, d.vision_total, d.vision_done, d.embed_model, d.parser_version, d.updated_at FROM documents d WHERE d.kind<>'trash' ORDER BY d.filename COLLATE NOCASE""")
     per = lambda sql: {r["document_id"]: r for r in db.q(sql, (model,) if "?" in sql else ())}
     chunks = per("""SELECT document_id, SUM(source='text') text_chunks, SUM(source='vision') vision_chunks,
                     SUM(embedding IS NULL OR embed_model IS NOT ?) unembedded,

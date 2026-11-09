@@ -24,7 +24,9 @@ test('subject, chat, delete + undo, to-do reorder + undo, palette', async ({ pag
   await box.press('Enter');
   await expect(page.locator('.msg-assistant').last()).toContainText('Hello from the fake model', { timeout: 20_000 });
   await expect(page.locator('.stop-btn')).toHaveCount(0, { timeout: 20_000 });
-  await expect.poll(async () => (await get(request, `/subjects/${subject.id}/chats`))[0]?.title).toBe('Fake title');
+  // the memory ring shows in standard mode too, explained in plain words
+  await expect(page.locator('.composer .ctx-meter.lvl-ok .ctx-ring')).toBeVisible();
+  await expect(page.locator('.composer .ctx-meter')).toHaveAttribute('data-tip', /Apollo's memory for this chat: \d+% used/);  await expect.poll(async () => (await get(request, `/subjects/${subject.id}/chats`))[0]?.title).toBe('Fake title');
   const chats = await get(request, `/subjects/${subject.id}/chats`);
   expect(chats.length).toBe(1);
 
@@ -37,11 +39,11 @@ test('subject, chat, delete + undo, to-do reorder + undo, palette', async ({ pag
   await box.press('Enter');
   await expect(page.locator('.cmd-card-title').last()).toHaveText('Commands');
 
-  // delete from the sidebar (asks first), then Ctrl+Z brings it back
+  // delete from the sidebar (at once, with Undo in a toast), then Ctrl+Z brings it back
   const item = page.locator('.ch-item').first();
   await item.hover();
   await item.locator('.ch-del').click();
-  await page.getByRole('button', { name: 'Delete', exact: true }).click();
+  await expect(page.locator('.toast', { hasText: 'Chat deleted' })).toBeVisible();
   const title = chats[0].title as string;
   await expect(page.locator('.ch-item', { hasText: title })).toHaveCount(0);
   await page.locator('body').click({ position: { x: 5, y: 450 } }); // out of any text field

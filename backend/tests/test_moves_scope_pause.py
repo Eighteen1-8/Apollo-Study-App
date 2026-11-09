@@ -277,3 +277,60 @@ def test_run_next_and_long_jobs_yield(subject, monkeypatch):
     assert not running.should_yield()  # nothing waiting: keep going
     assert client.post(f"/jobs/{a}/prioritize").status_code == 400  # running, not waiting
     db.ex("DELETE FROM jobs")
+
+
+def test_content_from_one_file_and_extra_instructions(subject, embeds):
+    """Make content: a file scope narrows the material to that file; extra material and instructions go in the task."""
+    from studyapp import generate
+    sid = subject["sid"]
+    one = _doc(sid, subject["a"], "lecture1.pdf", [("Lecture one: forces.", "h-l1")])
+    _doc(sid, subject["a"], "lecture2.pdf", [("Lecture two: energy.", "h-l2")])
+    assert [d["filename"] for d in context.topic_documents(sid, None, [one])] == ["lecture1.pdf"]
+    assert "forces" in context.material_groups(sid, None, 10000, [one])[0]["text"]
+    assert "energy" not in context.material_groups(sid, None, 10000, [one])[0]["text"]
+    r = client.post(f"/subjects/{sid}/artifacts", json={"type": "flashcards", "document_ids": [one], "args": {"count": 5},
+                                                         "instructions": "Only the definitions"})
+    assert r.status_code == 200, r.text
+    art = db.q1("SELECT * FROM artifacts WHERE id=?", (r.json()["id"],))
+    assert art["title"] == "Flashcards: lecture1" and art["chat_id"] is None and art["status"] == "queued"
+    params = __import__("json").loads(art["params"])
+    assert params["document_ids"] == [one] and params["instructions"] == "Only the definitions"
+    text = generate._focus_text({**params, "extra": [{"name": "past exam.pdf", "text": "Q1. Define a force."}]})
+    assert "past exam.pdf" in text and "Only the definitions" in text
+    assert client.post(f"/subjects/{sid}/artifacts", json={"type": "nope"}).status_code == 400
+    assert client.post(f"/subjects/{sid}/artifacts", json={"type": "quiz", "document_ids": [999999]}).status_code == 404
+    db.ex("DELETE FROM artifacts WHERE subject_id=?", (sid,))
+
+
+def test_deleted_files_wait_in_the_trash_and_come_back_unchanged(subject, embeds):
+    """A delete goes to the trash: out of every scope (duplicates get their pages back), restorable with its units and
+    vectors intact, and purged for good after a week."""
+    from studyapp import api, context
+    shared = ("Ohm's law: V = IR.", "h-ohm-trash")
+    d1 = _doc(subject["sid"], subject["a"], "owner.pdf", [shared, ("Power is P = VI.", "h-power")])
+    d2 = _doc(subject["sid"], subject["a"], "copy.pdf", [shared])
+    vectors = _vectors(d1)
+    assert client.delete(f"/documents/{d1}").json()["ok"]
+    doc = db.q1("SELECT kind, topic_id, deleted_at FROM documents WHERE id=?", (d1,))
+    assert doc["kind"] == "trash" and doc["topic_id"] is None and doc["deleted_at"]
+    assert [d["id"] for d in context.topic_documents(subject["sid"], subject["a"])] == [d2]
+    assert db.q1("SELECT duplicate_of FROM units WHERE document_id=? AND idx=0", (d2,))["duplicate_of"] is None
+    assert d1 not in [d["id"] for d in client.get(f"/topics/{subject['a']}/documents").json()]
+
+    r = client.post(f"/documents/{d1}/restore").json()
+    assert r["kind"] == "topic" and r["topic_id"] == subject["a"] and r["note"] is None
+    assert _vectors(d1) == vectors  # nothing read or embedded again
+    assert db.q1("SELECT duplicate_of FROM units WHERE document_id=? AND idx=0", (d2,))["duplicate_of"] is not None
+
+    client.delete(f"/documents/{d1}")
+    db.ex("UPDATE documents SET deleted_at=? WHERE id=?", (time.time() - 8 * 86400, d1))
+    api.purge_trash()
+    assert db.q1("SELECT id FROM documents WHERE id=?", (d1,)) is None
+
+
+def test_a_restored_file_whose_topic_is_gone_goes_to_the_textbooks(subject, embeds):
+    d = _doc(subject["sid"], subject["b"], "lonely.pdf", [("Only page.", "h-lonely")])
+    client.delete(f"/documents/{d}")
+    db.ex("DELETE FROM topics WHERE id=?", (subject["b"],))
+    r = client.post(f"/documents/{d}/restore").json()
+    assert r["kind"] == "reference" and r["topic_id"] is None and "textbooks" in r["note"]

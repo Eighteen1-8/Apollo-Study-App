@@ -239,6 +239,14 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     # Generated content and the student's notes are deleted softly (undoable), like chats; purged after a week.
     (9, ["ALTER TABLE artifacts ADD COLUMN deleted_at REAL",
          "ALTER TABLE user_notes ADD COLUMN deleted_at REAL"]),
+    # deleted files wait a week in the trash (kind='trash', out of every scope) so Undo can bring them back without
+    # reading them again; trash_from remembers where they were (kind, topic, folder)
+    (10, ["ALTER TABLE documents ADD COLUMN deleted_at REAL",
+          "ALTER TABLE documents ADD COLUMN trash_from TEXT"]),
+    # three example questions Apollo wrote for the subject once it had material (questions.py; JSON list, made once)
+    (11, ["ALTER TABLE subjects ADD COLUMN questions TEXT"]),
+    # a Lucide icon chosen for the subject (SubjectIcon.tsx SUBJECT_ICONS), in place of the old emoji option
+    (12, ["ALTER TABLE subjects ADD COLUMN icon_name TEXT"]),
 ]
 # Rows in `jobs` that only show interactive model work in the jobs list (jobs.track); no worker runs them.
 INTERACTIVE_JOBS = ("chat", "define", "quiz_review")
@@ -266,6 +274,8 @@ def init():
     _conn.execute("PRAGMA journal_mode=WAL")
     _migrate(fresh)
     with tx() as c:
+        if not fresh:  # data from before the setup steps existed: already set up
+            c.execute("INSERT OR IGNORE INTO settings(key, value) VALUES ('setup_done', 'true')")
         for k, v in config.DEFAULT_SETTINGS.items():
             v = secret_store.protect(v) if k in config.SECRET_KEYS else v
             c.execute("INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)", (k, json.dumps(v)))

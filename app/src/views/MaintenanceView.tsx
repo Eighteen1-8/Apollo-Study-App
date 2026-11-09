@@ -4,6 +4,7 @@ import { fmtBytes, usePoll } from '../hooks';
 import { MenuItem, useOverlay } from '../components/overlay';
 import { Button, Empty, Pill } from '../components/ui';
 import { logError } from '../log';
+import Icon from '../components/Icon';
 
 const KIND: Record<FlagKind, string> = {
   malformed: 'Malformed output', incomplete: 'Incomplete', misleading: 'False or misleading', failed: 'Vision failed',
@@ -69,7 +70,7 @@ export default function MaintenanceView({ subjectId }: { subjectId?: number }) {
       { label: 'Re-ingest', onClick: async () => { await api.reingest(d.id); reload(); } },
       { label: 'Delete file', danger: true, separatorBefore: true, onClick: async () => {
         if (await ov.confirm({ title: `Delete ${d.filename}?`, danger: true, confirmText: 'Delete',
-          body: 'The file, its extracted text, vision notes and embeddings are removed from the app.' })) { await api.deleteDocument(d.id); reload(); }
+          body: 'It goes to the trash for a week (Undo brings it back), then it and everything read from it are removed.' })) { await api.deleteDocument(d.id); reload(); }
       } },
     ];
   };
@@ -112,13 +113,13 @@ export default function MaintenanceView({ subjectId }: { subjectId?: number }) {
               <div key={s.id} className={`maint-subject${isOpen ? ' open' : ''}`} style={{ '--tint': s.color } as React.CSSProperties}>
                 <div className="maint-row maint-subject-row" onClick={() => setOpen((p) => { const n = new Set(p); n.has(s.id) ? n.delete(s.id) : n.add(s.id); return n; })}
                   onContextMenu={(e) => ov.menu(e, scopeMenu(sc, docs))}>
-                  <span className={`topic-caret${isOpen ? ' open' : ''}`}>▸</span>
+                  <span className={`topic-caret${isOpen ? ' open' : ''}`}><Icon name="chevronRight" size={13} /></span>
                   <span className="maint-dot" />
                   <span className="maint-name">{s.name}</span>
                   <Stats docs={docs} onFlags={() => showIssues(sc)} />
                   <span className="maint-actions" onClick={(e) => e.stopPropagation()}>
                     <Button small onClick={() => check(sc)}>Check vision</Button>
-                    <button className="icon-btn" title="More" onClick={(e) => ov.menu(e, scopeMenu(sc, docs))}>⋯</button>
+                    <button className="icon-btn" title="More" onClick={(e) => ov.menu(e, scopeMenu(sc, docs))}><Icon name="more" /></button>
                   </span>
                 </div>
                 {isOpen && groups.map((g) => (
@@ -127,7 +128,7 @@ export default function MaintenanceView({ subjectId }: { subjectId?: number }) {
                       <span className="maint-name">{g.name}</span>
                       <Stats docs={g.docs} onFlags={() => showIssues(g.scope ?? sc)} />
                       <span className="maint-actions">
-                        {g.scope && <button className="icon-btn" title="More" onClick={(e) => ov.menu(e, scopeMenu(g.scope!, g.docs))}>⋯</button>}
+                        {g.scope && <button className="icon-btn" title="More" onClick={(e) => ov.menu(e, scopeMenu(g.scope!, g.docs))}><Icon name="more" /></button>}
                       </span>
                     </div>
                     {!g.docs.length && <div className="maint-empty muted">No files</div>}
@@ -237,7 +238,7 @@ function Backups() {
               <span className="maint-size">{fmtBytes(x.size)}</span>
               <span className="maint-actions">
                 <Button small disabled={x.name === b.pending_restore} onClick={() => restore(x.name, x.created_at)}>Restore…</Button>
-                <button className="x-btn" title="Delete this backup" onClick={() => remove(x.name)}>×</button>
+                <button className="x-btn" title="Delete this backup" onClick={() => remove(x.name)}><Icon name="close" size={14} /></button>
               </span>
             </div>
           ))}
@@ -302,7 +303,7 @@ function DocRow({ d, onFlags, onMenu }: { d: MaintDoc; onFlags: () => void; onMe
         {d.flags > 0 && <button className="maint-flags" onClick={onFlags} title="Show vision issues">⚑ {d.flags}</button>}
         <span className="maint-size" title={`File ${fmtBytes(s.file)} · viewer copy ${fmtBytes(s.render)} · images ${fmtBytes(s.assets)} · index ${fmtBytes(s.index)}`}>{fmtBytes(s.total)}</span>
       </span>
-      <button className="icon-btn" title="File options" onClick={onMenu}>⋯</button>
+      <button className="icon-btn" title="File options" onClick={onMenu}><Icon name="more" /></button>
     </div>
   );
 }

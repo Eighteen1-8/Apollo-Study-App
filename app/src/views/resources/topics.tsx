@@ -7,8 +7,11 @@ import { MenuItem, useOverlay } from '../../components/overlay';
 import StaleBadge from '../../components/StaleBadge';
 import { useReorder } from '../../components/reorder';
 import { CREATE_ITEMS } from '../SubjectView';
+import { useAdvanced } from '../../theme';
+import { term } from '../../terms';
 
 import type { Selection } from '../ResourcePanel';
+import Icon from '../../components/Icon';
 
 export type TopicFolders = FolderMap[string];
 
@@ -32,9 +35,10 @@ export function TopicRow({ topic, reorder, color, open, focused, onToggle, onFoc
   onUpload: (paths?: string[]) => void; onCreate: (tool: ToolName) => void;
   onOpenDoc: (d: Doc) => void; onDetails: (d: Doc) => void; onDrop: (e: React.DragEvent) => void;
   onMoveHere: (ds: DraggedDoc[]) => Promise<number[]>; folders: TopicFolders; ops: FolderOps;
-  files: FileProps; sel: Selection; onRename: () => void; onDelete: () => void; onChange: () => void; onCheckVision: () => void;
+  files: FileProps; sel: Selection; onRename: () => void; onDelete: () => void; onChange: () => void; onCheckVision?: () => void;
 }) {
   const ov = useOverlay();
+  const advanced = useAdvanced();
   const [drag, setDrag] = useState(false);
   const newFolder = async () => {
     const name = (await ov.prompt({ title: `New folder in ${topic.name}`, placeholder: 'e.g. Week 1 lectures', confirmText: 'Create folder' }))?.trim();
@@ -48,7 +52,7 @@ export function TopicRow({ topic, reorder, color, open, focused, onToggle, onFoc
     { label: 'Upload files…', onClick: () => onUpload() },
     { label: 'New folder…', onClick: newFolder },
     ...createMenu.map((m, i) => ({ ...m, label: `Create ${m.label.toLowerCase()}`, separatorBefore: i === 0 })),
-    { label: 'Check vision notes', onClick: onCheckVision, separatorBefore: true },
+    ...(onCheckVision ? [{ label: term('checkVision'), onClick: onCheckVision, separatorBefore: true }] : []),
     { label: 'Rename…', onClick: onRename, separatorBefore: true },
     { label: 'Delete topic', onClick: onDelete, danger: true },
   ];
@@ -71,17 +75,27 @@ export function TopicRow({ topic, reorder, color, open, focused, onToggle, onFoc
         if (rest.length) onMoveHere(rest);
       }}>
       <div className="topic-row" data-focus draggable onDragStart={reorder.onDragStart} onDragEnd={reorder.onDragEnd} onClick={() => { onToggle(); onFocus(); }} onContextMenu={(e) => ov.menu(e, fullMenu)}>
-        <span className={`topic-caret${open ? ' open' : ''}`}>▸</span>
-        <span className="topic-dot" aria-hidden />
+        <span className="topic-badge" aria-hidden><Icon name="topic" size={14} /></span>
         <span className="topic-name" data-tip={topic.name}>{topic.name}</span>
         <StaleBadge count={topic.stale_docs} where={topic.name}
           onReingest={async () => { await api.reingestStale(topic.subject_id, { topic_id: topic.id }); onChange(); }} />
         <span className="topic-count" data-tip={`${topic.doc_count ?? 0} file${topic.doc_count === 1 ? '' : 's'}`}>{topic.doc_count ?? 0}</span>
         <span className="topic-actions" onClick={(e) => e.stopPropagation()}>
-          <button className="icon-btn" data-tip="New folder" onClick={newFolder}><FolderIcon /></button>
-          <button className="icon-btn" data-tip="Upload files" onClick={() => onUpload()}>⇪</button>
-          <button className="icon-btn icon-accent" data-tip="Create…" onClick={(e) => ov.menu(e, createMenu)}>✦</button>
+          {advanced ? (
+            <>
+              <button className="icon-btn" data-tip="New folder" onClick={newFolder}><FolderIcon /></button>
+              <button className="icon-btn" data-tip="Upload files" onClick={() => onUpload()}><Icon name="upload" size={14} /></button>
+              <button className="icon-btn icon-accent" data-tip="Create…" onClick={(e) => ov.menu(e, createMenu)}><Icon name="create" size={14} /></button>
+            </>
+          ) : (
+            <>
+              <button className="icon-btn topic-label-btn" data-tip="Add files to this topic" onClick={() => onUpload()}><Icon name="upload" size={14} /> Add</button>
+              <button className="icon-btn icon-accent topic-label-btn" data-tip="Make flashcards, a quiz, notes… from this topic" onClick={(e) => ov.menu(e, createMenu)}><Icon name="create" size={14} /> Create</button>
+            </>
+          )}
+          <button className="icon-btn" data-tip="More options" aria-label={`More options for ${topic.name}`} onClick={(e) => ov.menu(e, fullMenu)}><Icon name="more" size={15} /></button>
         </span>
+        <span className={`topic-caret${open ? ' open' : ''}`}><Icon name="chevronRight" size={14} /></span>
       </div>
       {open && <TopicFiles topicId={topic.id} onOpen={onOpenDoc} onDetails={onDetails} onChange={onChange}
         folders={folders} ops={ops} onMoveHere={onMoveHere} files={files} sel={sel} />}
@@ -169,7 +183,7 @@ function TopicFiles({ topicId, onOpen, onDetails, onChange, folders, ops, onMove
                 { label: 'Rename…', onClick: () => rename(f), separatorBefore: true },
                 { label: 'Delete folder', onClick: () => remove(f), danger: true },
               ]); }}>
-              <span className={`topic-caret${isOpen ? ' open' : ''}`}>▸</span>
+              <span className={`topic-caret${isOpen ? ' open' : ''}`}><Icon name="chevronRight" size={13} /></span>
               <span className="folder-icon"><FolderIcon /></span>
               <span className="folder-name" data-tip={f.name}>{f.name}</span>
               <span className="topic-count" data-tip={`${inside.length} file${inside.length === 1 ? '' : 's'}`}>{inside.length}</span>

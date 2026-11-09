@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
-import { api, AreaSource, DocRef, Quote, Subject, ToolName } from '../api';
+import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
+import { api, AreaSource, ArtifactType, DocRef, Quote, Subject, ToolName } from '../api';
 import type { Route } from '../App';
 import { usePoll } from '../hooks';
 import EmbeddingCloud, { CloudFocus } from '../components/EmbeddingCloud';
@@ -16,12 +16,19 @@ import SourceView from './SourceView';
 import ArtifactViewer, { ArtifactPage } from './ArtifactViewer';
 import NoteEditor from './NoteEditor';
 import ErrorBoundary from '../components/ErrorBoundary';
-import { useAppearance } from '../theme';
+import { motionMs, useAppearance } from '../theme';
 import { getPref, setPref } from '../prefs';
 import { isApplying, undoable } from '../undo';
 import { currentView, registerWorkspace, showView, ViewSnap } from '../viewHistory';
 import { SplitPane, snapOf, View, viewKey, viewReducer } from './subject/viewState';
 import { useChatDock } from './subject/useChatDock';
+import GettingStarted from './subject/GettingStarted';
+import AddFilesDialog from '../components/AddFiles';
+import { useLibraryActions } from '../components/actions';
+import { useTerms } from '../terms';
+import Icon from '../components/Icon';
+import StudyPanel from './subject/StudyPanel';
+import MakeContent, { MakeStart } from './subject/MakeContent';
 
 type RouteSubject = Extract<Route, { name: 'subject' }>;
 type Upload = { title: string; target: { topic_id?: number; subject_id?: number }; mode: 'auto' | 'all'; paths: string[] };
@@ -53,12 +60,25 @@ const DEFAULT_SIDES: Sides = { left: { width: LEFT.def, open: true }, right: { w
  * how it moves is subject/useChatDock.ts. Files dragged in from Explorer get a drop overlay: reference library,
  * topic, or this chat.
  */
+/** What shows in the middle of the screen after Start studying, one at random. */
+const STUDY_INTROS = [
+  'Let’s get started.', 'Let’s dive in.', 'Ready when you are.', 'Time to learn something new.', 'Let’s make it stick.',
+  'One step at a time.', 'Let’s do this.', 'Focus mode: on.', 'Let’s get to work.', 'Here we go.',
+  'Small steps, big progress.', 'Let’s sharpen up.', 'Your brain, warmed up.', 'Let’s build some knowledge.', 'Curiosity first.',
+  'Let’s learn it properly.', 'Good to see you.', 'Let’s pick up the pace.', 'Fresh start, clear mind.', 'Let’s make today count.',
+];
+
 export default function SubjectView({ route, subjects, go, onChange }: {
   route: RouteSubject; subjects: Subject[]; go: (r: Route) => void; onChange: () => void;
 }) {
   const ov = useOverlay();
   const subject = subjects.find((s) => s.id === route.id);
   const [look] = useAppearance();
+  const tr = useTerms();
+  const act = useLibraryActions(subjects, go, onChange);
+  const [adding, setAdding] = useState(false);
+  /** No files anywhere in the subject yet: outside advanced mode the centre shows the getting-started steps. */
+  const empty = !!subject && subject.reference_count === 0 && subject.topics.every((t) => !t.doc_count);
   // what the centre shows (document / page / second pane / chat full screen): one value, see subject/viewState.ts
   const [view, dispatch] = useReducer(viewReducer, route, (r): View => ({
     doc: r.view?.doc ? { ...r.view.doc, nonce: Date.now(), details: false } : null,
@@ -86,16 +106,86 @@ export default function SubjectView({ route, subjects, go, onChange }: {
   const shell = useRef<HTMLDivElement>(null);
   const docs = usePoll(() => api.allDocuments(route.id), 2000, [route.id], ['documents']);
 
-  const showCloud = look.cloud && !doc && page === null;
-  const floating = !!doc || page !== null || showCloud;
+  const showStart = !look.advanced && empty && !doc && page === null;
+  const showCloud = look.cloud && !doc && page === null && !showStart;
+  // "Start studying" slides the study panel up over the map; Make content slides up over whatever is open
+  const [studying, setStudying] = useState(false);
+  const [making, setMaking] = useState<MakeStart | null>(null);
+  const [makeShown, setMakeShown] = useState<MakeStart | null>(null); // kept while the sheet slides away
+  const [draft, setDraft] = useState<{ text: string; send: boolean; nonce: number } | null>(null);
+  const sheetOpen = (studying && showCloud) || !!making;
+  // Start studying: the cloud dims, a line ("Let's get started.") shows in the middle, then the panel fades in
+  const [intro, setIntro] = useState<string | null>(null);
+  const introTimers = useRef<number[]>([]);
+  // the map sits darkened and still behind Start studying until "Explore the map" unlocks it (the button fades away);
+  // "Back to studying" locks it again
+  const [explore, setExplore] = useState(false);
+  // the chat was opened from the study panel: it fills the centre, only closes (back to the panel), and the first
+  // time it grows out of the panel's chat box (expandFrom: that box's rect)
+  const [fromSheet, setFromSheet] = useState(false);
+  const [expandFrom, setExpandFrom] = useState<DOMRect | null>(null);
+  const beginStudying = useCallback(() => {
+    introTimers.current.forEach(clearTimeout);
+    const step = motionMs(1);
+    if (!step) { setStudying(true); return; }
+    setIntro(STUDY_INTROS[Math.floor(Math.random() * STUDY_INTROS.length)]);
+    introTimers.current = [
+      window.setTimeout(() => setStudying(true), motionMs(1500)),
+      window.setTimeout(() => setIntro(null), motionMs(1900)),
+    ];
+  }, []);
+  useEffect(() => () => introTimers.current.forEach(clearTimeout), []);
+  useEffect(() => {
+    setStudying(false); setMaking(null); setIntro(null); setExplore(false); setFromSheet(false);
+    introTimers.current.forEach(clearTimeout);
+  }, [route.id]);
+  useEffect(() => {
+    if (making) { setMakeShown(making); return; }
+    const t = setTimeout(() => setMakeShown(null), 450);
+    return () => clearTimeout(t);
+  }, [making]);
+  const floating = !!doc || page !== null || showCloud || showStart;
   const setChatFull = useCallback((on: boolean) => dispatch({ type: 'chatFull', on }), []);
   // the cloud is what a subject opens to, so the chat starts as a pill unless a create form is waiting in it
   const dock = useChatDock({ center, shell, ready: !!subject, floating, chatFull: view.chatFull, setChatFull,
-    startCollapsed: () => look.cloud && !route.launch && !route.open });
+    // the subject opens to its map (and Start studying); the chat waits as a pill unless something was sent to it
+    startCollapsed: () => !route.launch && !route.open });
   const { chatCollapsed, setChatCollapsed, collapsed, full, halves, mode, geo, side, inner, box, drag, resizing, chatSizing,
     overReviews, dragOverReviews, startDrag, startResize, setMode, startChatSplitDrag } = dock;
 
   useEffect(() => { if (route.launch) setLaunch(route.launch); }, [route.launch]);
+
+  const closeSheet = useCallback(() => { if (making) setMaking(null); else setStudying(false); }, [making]);
+  useEffect(() => {
+    if (!sheetOpen) return;
+    const k = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || document.querySelector('.modal-backdrop, .menu') || (e.target as Element).closest?.('.chat-shell')) return;
+      closeSheet();
+    };
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  }, [sheetOpen, closeSheet]);
+  /** The study panel's chat bar (Enter) or a suggestion: the chat grows out of the box to fill the centre and sends it. */
+  const askFromSheet = useCallback((text: string, send: boolean, from?: DOMRect) => {
+    if (text) setDraft({ text, send, nonce: Date.now() });
+    setFromSheet(true);
+    setExpandFrom(from ?? null);
+    setChatFull(true);
+    setChatCollapsed(false);
+  }, [setChatFull]); // eslint-disable-line react-hooks/exhaustive-deps
+  // the growing: the shell jumps to its full size at once and is revealed from the box's outline outwards
+  useLayoutEffect(() => {
+    const el = shell.current;
+    if (!expandFrom || !el || !full || collapsed) return;
+    const f = expandFrom;
+    setExpandFrom(null);
+    const r = el.getBoundingClientRect();
+    const ms = motionMs(560);
+    if (!ms || !r.width) return;
+    const inset = `inset(${Math.max(0, f.top - r.top)}px ${Math.max(0, r.right - f.right)}px ${Math.max(0, r.bottom - f.bottom)}px ${Math.max(0, f.left - r.left)}px round 18px)`;
+    el.animate([{ clipPath: inset, opacity: 0.7 }, { clipPath: 'inset(0px 0px 0px 0px round 0px)', opacity: 1 }],
+      { duration: ms, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' });
+  }, [expandFrom, full, collapsed]);
 
   // ---- what's showing, for undo/redo: every change of document / page / split pane is one step back
   const restoreView = useCallback((snap: ViewSnap) => dispatch({ type: 'restore', snap }), []);
@@ -185,10 +275,12 @@ export default function SubjectView({ route, subjects, go, onChange }: {
 
   if (!subject) return <div className="page"><Empty title="Subject not found" /></div>;
 
-  const create = (tool: ToolName, topicId: number | null) => {
-    setLaunch({ tool, topicId, nonce: Date.now() });
-    setChatCollapsed(false);
-  };
+  /** A Create menu or button: the Make content steps, with that type (and topic) already picked. */
+  const create = (tool: ToolName, topicId: number | null) =>
+    setMaking({ type: tool.replace('create_', '') as ArtifactType, topicId, nonce: Date.now() });
+  const makeFromDoc = (id: number) =>
+    setMaking({ doc: { id, name: docs.data?.find((d) => d.id === id)?.filename ?? 'This file' }, nonce: Date.now() });
+  const shownMake = making ?? makeShown;
 
   const dropToTopic = async (paths: string[]) => {
     if (!paths.length) return;
@@ -260,13 +352,17 @@ export default function SubjectView({ route, subjects, go, onChange }: {
     <div ref={workspace} className={`workspace${sizing ? ' sizing' : ''}${sides.left.open ? '' : ' left-folded'}${sides.right.open ? '' : ' right-folded'}`}
       style={{ '--left-w': `${sides.left.open ? sides.left.width : 0}px`, '--right-w': `${sides.right.open ? sides.right.width : 0}px` } as React.CSSProperties}>
       <ErrorBoundary name="Generated content" compact><LibraryPanel subject={subject} onOpen={openArtifact}
-        onOpenSplit={(id) => openSplit('artifact', id)}
+        onOpenSplit={(id) => openSplit('artifact', id)} onCreate={(tool, topicId) => create(tool, topicId)}
         chats={{ activeId: activeChat, onOpen: openChat, onNew: () => openChat(null) }} /></ErrorBoundary>
       <SideResizer {...sideProps('left')} />
       <SideResizer {...sideProps('right')} />
 
       <section ref={center} style={halves ? { '--chat-w': `${geo.width}px` } as React.CSSProperties : undefined}
-        className={`center${floating ? ' has-doc' : ''}${halves ? ` chat-halves chat-halves-${side}` : ''}${chatSizing ? ' chat-sizing' : ''}${dragOverReviews ? ' chat-drop-reviews' : ''}`}>
+        className={`center${floating ? ' has-doc' : ''}${showCloud && (sheetOpen || intro) ? ' cloud-dim' : ''}${showCloud && !explore && !sheetOpen && !intro ? ' cloud-locked' : ''}${showCloud && explore ? ' cloud-explore' : ''}${halves ? ` chat-halves chat-halves-${side}` : ''}${chatSizing ? ' chat-sizing' : ''}${dragOverReviews ? ' chat-drop-reviews' : ''}`}>
+        {showStart && (
+          <GettingStarted subject={subject} onNewTopic={() => act.newTopic(subject)} onAddFiles={() => setAdding(true)}
+            onOpenChat={() => setChatCollapsed(false)} />
+        )}
         {showCloud && (
           <EmbeddingCloud className="cloud-pane" subjectId={subject.id} topics={subject.topics} title={`${subject.name} · knowledge map`}
             focus={focus} onFocus={setFocus} onOpenDoc={(id, label) => openDoc(id, label)} />
@@ -292,7 +388,7 @@ export default function SubjectView({ route, subjects, go, onChange }: {
                     <SourceView key={doc.nonce} id={doc.id} focus={doc.focus} onClose={closeDoc}
                       pulse={doc.pulse ? { unit: doc.pulse.unit, rect: doc.pulse.rect } : undefined}
                       onDetails={() => dispatch({ type: 'details', on: true })} onAsk={askAbout}
-                      onAttach={attach} />
+                      onAttach={attach} onMake={() => makeFromDoc(doc.id)} />
                   )}
                 </ErrorBoundary></div>
               )}
@@ -303,7 +399,7 @@ export default function SubjectView({ route, subjects, go, onChange }: {
                   onPointerDown={startSplitDrag}
                   onDoubleClick={() => { setSplitFrac(0.5); setPref('splitFrac', '0.5'); }}
                   data-tip="Drag to resize · double-click for half and half">
-                  <button className="pane-swap" data-tip="Swap sides" onClick={swapPanes}>⇄</button>
+                  <button className="pane-swap" data-tip="Swap sides" onClick={swapPanes}><Icon name="swap" size={13} /></button>
                 </div>
                 <div className="pane-slot pane-second">
                   <div className="doc-pane">
@@ -321,13 +417,43 @@ export default function SubjectView({ route, subjects, go, onChange }: {
             )}
           </div>
         )}
+        {showCloud && (
+          <>
+            <div className={`start-studying${sheetOpen || intro || explore ? ' away' : ''}`} aria-hidden={explore || sheetOpen}>
+              <button className="start-btn" onClick={beginStudying} tabIndex={explore || sheetOpen ? -1 : undefined}>
+                <span className="start-btn-glow" aria-hidden />
+                <Icon name="study" size={20} /> Start studying
+              </button>
+            </div>
+            {!sheetOpen && !intro && (explore
+              ? <button className="map-toggle map-relock" onClick={() => setExplore(false)}><Icon name="back" size={14} /> Back to studying</button>
+              : <button className="map-toggle map-unlock" onClick={() => setExplore(true)}><Icon name="map" size={14} /> Press to explore the map</button>)}
+          </>
+        )}
+        {showCloud && <div className={`study-intro${intro ? ' on' : ''}`} aria-live="polite">{intro && <span key={intro}>{intro}</span>}</div>}
+        <div className={`study-sheet${sheetOpen ? ' open' : ''}`} aria-hidden={!sheetOpen}>
+          <button className="sheet-handle" onClick={closeSheet} title={making && studying && showCloud ? 'Back to studying' : 'Back to the map (Esc)'}
+            aria-label="Hide this panel"><Icon name="chevronDown" size={20} /></button>
+          <div className="sheet-scroll">
+            {shownMake ? (
+              <ErrorBoundary name="Make content" resetKey={shownMake.nonce} onClose={() => setMaking(null)}>
+                <MakeContent key={shownMake.nonce} subject={subject} start={shownMake} onClose={() => setMaking(null)} />
+              </ErrorBoundary>
+            ) : showCloud && (
+              <ErrorBoundary name="The study panel" compact>
+                <StudyPanel subject={subject} open={sheetOpen} onAsk={askFromSheet} onOpenChat={(id) => { openChat(id); setFromSheet(true); setChatFull(true); }} onOpenArtifact={openArtifact}
+                  onMake={(type) => setMaking({ type, topicId: null, nonce: Date.now() })} />
+              </ErrorBoundary>
+            )}
+          </div>
+        </div>
         {halves && (
           <div className="chat-split-divider" role="separator" aria-orientation="vertical" aria-label="Resize the chat"
             style={{ left: side === 'right' ? geo.left - 5 : geo.width - 5 }} onPointerDown={startChatSplitDrag}
             onDoubleClick={dock.halfAndHalf} data-tip="Drag to resize · double-click for half and half" />
         )}
         <div ref={shell} onPointerDown={startDrag}
-          className={`chat-shell dock-${side}${floating ? ' floating' : ''}${halves ? ' halves' : ''}${collapsed ? ' collapsed' : ''}${full ? ' full' : ''}${drag ? ' dragging' : ''}${resizing || chatSizing ? ' resizing' : ''}${overReviews ? ' over-reviews' : ''}`}
+          className={`chat-shell dock-${side}${fromSheet && full ? ' over-study' : ''}${floating ? ' floating' : ''}${halves ? ' halves' : ''}${collapsed ? ' collapsed' : ''}${full ? ' full' : ''}${drag ? ' dragging' : ''}${resizing || chatSizing ? ' resizing' : ''}${overReviews ? ' over-reviews' : ''}${collapsed && (sheetOpen || (showCloud && !look.advanced)) ? ' tucked' : ''}`}
           style={{ ...geo, transform: drag ? `translate(${drag.dx}px, ${drag.dy}px)` : undefined, visibility: box.w ? undefined : 'hidden' }}>
           {floating && !collapsed && !full && !halves && (
             <>
@@ -337,16 +463,21 @@ export default function SubjectView({ route, subjects, go, onChange }: {
             </>
           )}
           <ErrorBoundary name="The chat" compact><ChatView subject={subject} launch={launch} floating={floating} collapsed={collapsed} mode={mode} onMode={setMode} sideBySide={dock.chatSplit}
-            onToggleCollapse={() => setChatCollapsed(!chatCollapsed)}
+            closeOnly={fromSheet && full && sheetOpen && !collapsed}
+            onToggleCollapse={() => {
+              // opened from the study panel: closing it goes back to the panel, and next time it opens normally
+              if (!chatCollapsed && fromSheet) { setFromSheet(false); setChatFull(false); }
+              setChatCollapsed(!chatCollapsed);
+            }} draft={draft}
             onCite={openCitation} onOpenArtifact={openArtifact} onOpenDoc={(id) => openDoc(id)} onShowArea={showArea} onOpenNote={openNote}
             quote={quote} onClearQuote={() => setQuote(null)} incoming={incoming} openRequest={chatReq} onActiveChat={setActiveChat} /></ErrorBoundary>
         </div>
       </section>
 
       <ErrorBoundary name="Resources" compact><ResourcePanel subject={subject} go={go} onChange={onChange} onOpenDoc={openDoc} onCreate={create}
-        onDocsChanged={docs.reload} sel={{ focus, onFocus: setFocus, cloudVisible: showCloud, openId: doc?.id ?? null }}
+        onDocsChanged={docs.reload} onAddFiles={() => setAdding(true)} sel={{ focus, onFocus: setFocus, cloudVisible: showCloud, openId: doc?.id ?? null }}
         notes={{ openId: page?.kind === 'note' && !doc ? page.id : null, onOpen: openNote }}
-        onOpenSplit={openSplit} /></ErrorBoundary>
+        onOpenSplit={openSplit} showTodos={!look.cloud || showStart} /></ErrorBoundary>
 
       {viewing !== null && (
         <ErrorBoundary name="This study set" resetKey={viewing} onClose={() => setViewing(null)}><ArtifactViewer id={viewing} subject={subject} onClose={() => setViewing(null)} /></ErrorBoundary>
@@ -357,6 +488,24 @@ export default function SubjectView({ route, subjects, go, onChange }: {
           onReference={(paths) => paths.length && setUpload({ title: `Add to the ${subject.name} reference library`, target: { subject_id: subject.id }, mode: 'all', paths })}
           onTopic={dropToTopic}
           onChat={(paths) => { if (paths.length) { setIncoming({ paths, nonce: Date.now() }); setChatCollapsed(false); } }} />
+      )}
+      {adding && (
+        <AddFilesDialog subject={subject} onClose={() => setAdding(false)}
+          onTopic={(t) => { setAdding(false); setUpload({ title: `Add files to ${t.name}`, target: { topic_id: t.id }, mode: 'auto', paths: [] }); }}
+          onNewTopic={async () => {
+            setAdding(false);
+            const name = (await ov.prompt({ title: 'New topic', label: 'What part of the subject are these files about?', placeholder: 'e.g. Electric circuits', confirmText: 'Create topic' }))?.trim();
+            if (!name) return;
+            const t = await api.createTopic(subject.id, name);
+            onChange();
+            setUpload({ title: `Add files to ${t.name}`, target: { topic_id: t.id }, mode: 'auto', paths: [] });
+          }}
+          onReference={() => { setAdding(false); setUpload({ title: `Add to ${subject.name}: ${tr('references').toLowerCase()}`, target: { subject_id: subject.id }, mode: 'all', paths: [] }); }}
+          onChat={async () => {
+            setAdding(false);
+            const p = await window.studyApp?.openFiles({ multi: true });
+            if (p?.length) attach(p);
+          }} />
       )}
       {upload && (
         <UploadDialog title={upload.title} target={upload.target} defaultMode={upload.mode} initialPaths={upload.paths}

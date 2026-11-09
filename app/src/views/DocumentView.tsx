@@ -3,13 +3,17 @@ import { api, Unit, VisionMode } from '../api';
 import { fmtTokens, usePoll } from '../hooks';
 import Markdown from '../components/Markdown';
 import { Button, Empty, MathText, Pill, Progress } from '../components/ui';
+import Icon from '../components/Icon';
 
 type Filter = 'all' | 'vision' | 'duplicates' | 'text';
 
 /** Which unit a citation label points at: "Slide 32", "Page 20" by number, otherwise by section heading text. */
+/** The unit a citation's label names: "Slide 4", "Page 20", "Section 14 · Answer: D" (Word sections are numbered
+ * because headings repeat), a range ("Page 11 – Page 12": the first) or an old "… (part 3)" chunk name. Same rules as
+ * backend citations.find_unit. */
 export function matchUnit(units: Unit[], label: string): Unit | undefined {
-  const l = label.toLowerCase().trim();
-  const num = l.match(/^(slide|page|part)\s+(\d+)/);
+  const l = label.toLowerCase().trim().replace(/\s*\(part \d+\)$/, '');
+  const num = l.match(/^(slide|page|part|section)s?\s+(\d+)/);
   if (num) return units.find((u) => u.idx === Number(num[2]));
   return units.find((u) => u.label.toLowerCase() === l)
     ?? units.find((u) => u.label.toLowerCase().startsWith(l) || l.startsWith(u.label.toLowerCase()))
@@ -53,7 +57,7 @@ export default function DocumentView({ id, focus, onClose, onBack }: { id: numbe
         <div className="head-actions">
           <Button small onClick={onBack}>← Back to document</Button>
           <Pill status={d.status}>{d.status === 'vision' ? `Vision ${d.vision_done}/${d.vision_total}` : d.status}</Pill>
-          <button className="close-x" title="Close document" onClick={onClose}>×</button>
+          <button className="close-x" title="Close document" onClick={onClose}><Icon name="close" size={18} /></button>
         </div>
       </header>
 

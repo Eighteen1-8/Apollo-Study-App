@@ -1,8 +1,9 @@
 /* Quizzes: answer one question at a time, then results with Apollo's review of what to revise. */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api, Artifact, QuizReview, Subject } from '../../api';
 import Markdown from '../../components/Markdown';
 import { Source } from './Sections';
+import Icon from '../../components/Icon';
 
 /** Some quizzes repeat the A-D options at the end of the question text; they're already shown as buttons. Cut that
  * tail only when it really starts with the first option. */
@@ -24,30 +25,57 @@ export function Quiz({ artifact, subject }: { artifact: Artifact; subject: Subje
   const [picked, setPicked] = useState<Record<number, number>>({});
   const [checked, setChecked] = useState<Record<number, boolean>>({});
   const [done, setDone] = useState(false);
-  const q = qs[i];
-  const score = qs.filter((qq, k) => checked[k] && picked[k] === qq.answer_index).length;
+  // "Retry the ones you missed": only those questions, in order
+  const [subset, setSubset] = useState<number[] | null>(null);
+  const items = subset ?? qs.map((_, k) => k);
+  const qi = items[i];
+  const q = qs[qi];
+  const score = items.filter((k) => checked[k] && picked[k] === qs[k].answer_index).length;
 
-  const restart = () => { setI(0); setPicked({}); setChecked({}); setDone(false); };
+  const restart = () => { setI(0); setPicked({}); setChecked({}); setDone(false); setSubset(null); };
+  const retryMissed = () => {
+    const missed = qs.map((_, k) => k).filter((k) => picked[k] !== qs[k].answer_index);
+    const clear = <T,>(m: Record<number, T>) => Object.fromEntries(Object.entries(m).filter(([k]) => !missed.includes(Number(k)))) as Record<number, T>;
+    setPicked(clear(picked)); setChecked(clear(checked)); setSubset(missed); setI(0); setDone(false);
+  };
+  const isChecked = !!checked[qi];
+  const right = q ? picked[qi] === q.answer_index : false;
+  const next = () => {
+    if (picked[qi] === undefined) return;
+    if (!isChecked) setChecked({ ...checked, [qi]: true });
+    else if (i < items.length - 1) setI(i + 1);
+    else setDone(true);
+  };
+  // keys: A–D (or 1–4) pick an answer, Enter checks it and then moves on
+  useEffect(() => {
+    if (done || !q) return;
+    const k = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.ctrlKey || e.metaKey || e.altKey) return;
+      const key = e.key.toLowerCase();
+      const n = /^[1-9]$/.test(key) ? Number(key) - 1 : /^[a-i]$/.test(key) ? key.charCodeAt(0) - 97 : -1;
+      if (n >= 0 && n < q.options.length && !isChecked) setPicked({ ...picked, [qi]: n });
+      else if (e.key === 'Enter') { e.preventDefault(); next(); }
+    };
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  });
   if (!qs.length) return <div className="muted">No questions were generated.</div>;
-  if (done) return <QuizResults artifact={artifact} subject={subject} picked={picked} onRestart={restart} />;
-
-  const isChecked = !!checked[i];
-  const right = picked[i] === q.answer_index;
+  if (done) return <QuizResults artifact={artifact} subject={subject} picked={picked} onRestart={restart} onRetryMissed={retryMissed} />;
   return (
     <div className="quiz-page">
       <div className="quiz-steps">
-        {qs.map((qq, k) => (
-          <span key={k} className={`step${k === i ? ' current' : ''}${checked[k] ? (picked[k] === qq.answer_index ? ' right' : ' wrong') : ''}`} />
+        {items.map((k, n) => (
+          <span key={k} className={`step${n === i ? ' current' : ''}${checked[k] ? (picked[k] === qs[k].answer_index ? ' right' : ' wrong') : ''}`} />
         ))}
       </div>
       <div className="quiz-card" key={i}>
-        <div className="quiz-num">Question {i + 1} of {qs.length}</div>
+        <div className="quiz-num">{subset ? 'Retrying: ' : ''}Question {i + 1} of {items.length}</div>
         <Markdown text={questionText(q)} className="quiz-prompt" />
         <div className="options">
           {q.options.map((o, k) => (
             <button key={k} disabled={isChecked}
-              className={`option${picked[i] === k ? ' selected' : ''}${isChecked && k === q.answer_index ? ' correct' : ''}${isChecked && k === picked[i] && !right ? ' wrong' : ''}`}
-              onClick={() => setPicked({ ...picked, [i]: k })}>
+              className={`option${picked[qi] === k ? ' selected' : ''}${isChecked && k === q.answer_index ? ' correct' : ''}${isChecked && k === picked[qi] && !right ? ' wrong' : ''}`}
+              onClick={() => setPicked({ ...picked, [qi]: k })}>
               <span className="option-letter">{String.fromCharCode(65 + k)}</span><Markdown text={o} />
             </button>
           ))}
@@ -60,14 +88,14 @@ export function Quiz({ artifact, subject }: { artifact: Artifact; subject: Subje
           </div>
         )}
         <div className="quiz-actions">
-          <span className="muted small">{score} correct so far</span>
+          <span className="muted small">{score} correct so far · <span className="quiz-keys">pick with <kbd>A</kbd>–<kbd>{String.fromCharCode(64 + q.options.length)}</kbd>, then <kbd>Enter</kbd></span></span>
           <span className="spacer" />
           {!isChecked ? (
-            <button className="btn btn-primary" disabled={picked[i] === undefined} onClick={() => setChecked({ ...checked, [i]: true })}>Check answer</button>
-          ) : i < qs.length - 1 ? (
-            <button className="btn btn-primary" onClick={() => setI(i + 1)}>Next question →</button>
+            <button className="btn btn-primary" disabled={picked[qi] === undefined} onClick={next}>Check answer</button>
+          ) : i < items.length - 1 ? (
+            <button className="btn btn-primary" onClick={next}>Next question <Icon name="next" size={15} /></button>
           ) : (
-            <button className="btn btn-primary" onClick={() => setDone(true)}>See results</button>
+            <button className="btn btn-primary" onClick={next}>See results</button>
           )}
         </div>
       </div>
@@ -75,8 +103,8 @@ export function Quiz({ artifact, subject }: { artifact: Artifact; subject: Subje
   );
 }
 
-export function QuizResults({ artifact, subject, picked, onRestart }: {
-  artifact: Artifact; subject: Subject; picked: Record<number, number>; onRestart: () => void;
+export function QuizResults({ artifact, subject, picked, onRestart, onRetryMissed }: {
+  artifact: Artifact; subject: Subject; picked: Record<number, number>; onRestart: () => void; onRetryMissed?: () => void;
 }) {
   const qs = artifact.content!.questions ?? [];
   const score = qs.filter((q, k) => picked[k] === q.answer_index).length;
@@ -111,6 +139,7 @@ export function QuizResults({ artifact, subject, picked, onRestart }: {
           <div className="muted">{pct}% correct</div>
         </div>
         <span className="spacer" />
+        {onRetryMissed && score < qs.length && <button className="btn btn-primary" onClick={onRetryMissed}>Retry the {qs.length - score} you missed</button>}
         <button className="btn" onClick={onRestart}>Retake quiz</button>
       </div>
 

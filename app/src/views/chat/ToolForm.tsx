@@ -1,5 +1,6 @@
 /* Forms the model (or a quick action) opens in the chat to create content, and the progress cards they turn into. */
 import { useEffect, useState } from 'react';
+import ErrorText from '../../components/ErrorText';
 import { api, ArtifactSummary, inElectron, Message, Subject } from '../../api';
 import { Progress } from '../../components/ui';
 import { TYPE_ICON } from '../LibraryPanel';
@@ -90,7 +91,7 @@ export function ToolForm({ m, subject, chatTopic, onReplace }: { m: Message; sub
           </>
         )}
       </div>
-      {err && <div className="small bad">{err}</div>}
+      {err && <div className="small bad"><ErrorText text={err} /></div>}
       <div className="tool-actions">
         <button className="btn btn-sm" onClick={async () => onReplace(await api.dismissTool(m.id))}>Cancel</button>
         <button className="btn btn-sm btn-primary" disabled={!ready || busy} onClick={submit}>{busy ? 'Starting…' : 'Generate'}</button>
@@ -121,7 +122,7 @@ export function ArtifactCard({ id, initial, onOpen }: { id: number; initial: Art
   if (!a) return <div className="msg msg-note muted small">This content was deleted.</div>;
   return (
     <div className={`msg artifact-card status-${a.status}`}>
-      <div className={`artifact-icon t-${a.type}`}>{TYPE_ICON[a.type]}</div>
+      <div className={`artifact-icon t-${a.type}`}>{TYPE_ICON(a.type, 19)}</div>
       <div className="artifact-main">
         <div className="artifact-title">{a.title}</div>
         {a.status === 'ready' && <div className="muted small">Ready · saved to the library</div>}
@@ -131,7 +132,7 @@ export function ArtifactCard({ id, initial, onOpen }: { id: number; initial: Art
             <Progress value={a.progress} />
           </>
         )}
-        {a.status === 'failed' && <div className="small bad">{a.error}</div>}
+        {a.status === 'failed' && <div className="small bad"><ErrorText text={a.error} /></div>}
         {a.status === 'cancelled' && <div className="muted small">Cancelled</div>}
       </div>
       <div className="artifact-actions">

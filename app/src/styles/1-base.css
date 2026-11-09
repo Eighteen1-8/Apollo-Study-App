@@ -10,7 +10,7 @@
   --border-strong: #343a49;
   --text: #e7e9ee;
   --text-dim: #9aa1b2;
-  --text-faint: #6b7285;
+  --text-faint: #848b9e;
   --accent: #7c8cff;
   --accent-strong: #95a2ff;
   --accent-soft: rgba(124, 140, 255, 0.14);
@@ -36,7 +36,7 @@ h1 { margin: 2px 0 4px; }
 h2 { margin: 0 0 6px; }
 p { margin: 0; }
 .muted { color: var(--text-dim); }
-.small { font-size: 12.5px; }
+.small { font-size: 13px; }
 .ok { color: var(--ok); }
 .warn { color: var(--warn); }
 .bad { color: var(--bad); }
@@ -65,7 +65,7 @@ p { margin: 0; }
 .jobs-popover-head { font-weight: 600; margin-bottom: 8px; }
 .job-row { padding: 8px 0; border-top: 1px solid var(--border); }
 .job-row-top { display: flex; align-items: center; gap: 8px; }
-.job-type { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); width: 44px; }
+.job-type { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); width: 44px; }
 .job-file { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .job-row-bottom { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
 .job-row-bottom .progress { flex: 1; }
@@ -85,12 +85,12 @@ p { margin: 0; }
 .select-label { display: inline-flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: 13px; }
 .check { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: 13px; white-space: nowrap; }
 
-.pill { display: inline-block; font-size: 12px; padding: 2px 9px; border-radius: 20px; white-space: nowrap; text-transform: capitalize; }
+.pill { display: inline-block; font-size: 13px; padding: 2px 9px; border-radius: 20px; white-space: nowrap; text-transform: capitalize; }
 .pill-ok { background: var(--ok-soft); color: var(--ok); }
 .pill-busy { background: var(--busy-soft); color: var(--busy); }
 .pill-bad { background: var(--bad-soft); color: var(--bad); }
 .pill-muted { background: var(--bg-elev-2); color: var(--text-dim); }
-.tag { font-size: 11.5px; padding: 1px 7px; border-radius: 5px; background: var(--bg-elev-2); color: var(--text-dim); border: 1px solid var(--border); white-space: nowrap; }
+.tag { font-size: 12.5px; padding: 1px 7px; border-radius: 5px; background: var(--bg-elev-2); color: var(--text-dim); border: 1px solid var(--border); white-space: nowrap; }
 .tag-dup { color: var(--text-faint); }
 
 .progress { height: 5px; background: var(--bg-elev-2); border-radius: 5px; overflow: hidden; margin-top: 6px; }
@@ -107,7 +107,7 @@ p { margin: 0; }
 
 /* cards */
 .card { position: relative; background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; overflow: hidden; }
-.soon { margin-top: 10px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); }
+.soon { margin-top: 10px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); }
 
 /* stats & tabs */
 .stat { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
@@ -141,7 +141,7 @@ p { margin: 0; }
 .unit-body { display: grid; grid-template-columns: 1fr; gap: 14px; margin-top: 10px; }
 .unit-body:has(.unit-vision) { grid-template-columns: 1fr 1fr; }
 .unit-col { min-width: 0; }
-.col-label { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); margin-bottom: 6px; }
+.col-label { font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); margin-bottom: 6px; }
 .col-label .muted { text-transform: none; letter-spacing: 0; }
 .unit-vision { border-left: 2px solid var(--accent-soft); padding-left: 14px; }
 .math-text { white-space: pre-wrap; word-break: break-word; font-size: 13.5px; }
@@ -157,5 +157,5 @@ p { margin: 0; }
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field-bool { flex-direction: row; align-items: center; gap: 10px; grid-column: 1 / -1; }
 .field-label { font-size: 13px; color: var(--text-dim); }
-.field-help { font-size: 12px; color: var(--text-faint); }
+.field-help { font-size: 13px; color: var(--text-faint); }
 .test-results { margin-bottom: 8px; }

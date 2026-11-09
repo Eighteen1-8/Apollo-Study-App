@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import Icon from './Icon';
 
 export interface SidePanel { width: number; open: boolean }
 export interface SideLimits { def: number; min: number; max: number }
@@ -61,7 +62,7 @@ export default function SideResizer({ side, panel, limits, room, onChange, onCom
       data-tip={panel.open ? `Drag to resize ${name} · double-click to reset` : `Show ${name}`} data-tip-side={side === 'left' ? 'right' : 'left'}
       onPointerDown={down} onKeyDown={key}>
       <span className="side-grip" aria-hidden />
-      {!panel.open && <span className="side-unfold" aria-hidden>{side === 'left' ? '›' : '‹'}</span>}
+      {!panel.open && <span className="side-unfold" aria-hidden><Icon name={side === 'left' ? 'chevronRight' : 'chevronLeft'} size={14} /></span>}
     </div>
   );
 }

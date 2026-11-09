@@ -3,6 +3,7 @@ import { Annotation, AnnotationData, AnnotationKind, Stroke, TextAnchor } from '
 import { useOverlay } from '../components/overlay';
 import { MathText } from '../components/ui';
 import { Px, anchorPx, nearStroke, NOTE_W } from './annotate-geometry';
+import Icon from '../components/Icon';
 
 /**
  * The student's annotations on the original document. Every unit (page / slide / section) renders a <UnitOverlay>
@@ -348,7 +349,7 @@ function NoteBox({ a, size, onMenu }: { a: Annotation; size: { w: number; h: num
         <button className={`note-btn${drawing ? ' on' : ''}`} title={drawing ? 'Stop drawing' : 'Draw in this note'}
           onPointerDown={(e) => e.stopPropagation()} onClick={() => setDrawing(!drawing)}>✎</button>
         <button className="note-btn" title="Hide note" onPointerDown={(e) => e.stopPropagation()}
-          onClick={() => ctx.update(a.id, { data: { hidden: true } })}>×</button>
+          onClick={() => ctx.update(a.id, { data: { hidden: true } })}><Icon name="close" size={14} /></button>
       </div>
       {pending ? <div className="note-pending">Defining<span className="dots" /></div>
         : editingText ? (

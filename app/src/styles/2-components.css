@@ -19,10 +19,10 @@
 [data-drop="after"]::after { bottom: -2px; }
 .ctx-item { display: flex; align-items: center; gap: 8px; }
 .ctx-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 300px; }
-.ctx-hint { color: var(--text-faint); font-size: 11.5px; margin-left: 14px; }
+.ctx-hint { color: var(--text-faint); font-size: 12.5px; margin-left: 14px; }
 .ctx-arrow { color: var(--text-faint); font-size: 15px; line-height: 1; }
 .ctx-item.sub-open { background: var(--accent-soft); color: var(--accent-strong); }
-.ctx-header { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); padding: 6px 11px 3px;
+.ctx-header { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); padding: 6px 11px 3px;
   max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ctx-menu.ctx-sub { position: absolute; }
 .ctx-swatch { width: 11px; height: 11px; border-radius: 50%; flex: none; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15); }
@@ -55,9 +55,9 @@
 .files { display: flex; flex-direction: column; gap: 2px; }
 .file { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto auto auto 24px; align-items: center; gap: 12px; padding: 6px 8px; border-radius: 8px; cursor: pointer; }
 .file:hover { background: var(--bg-hover); }
-.file-icon { width: 34px; height: 26px; border-radius: 6px; display: grid; place-items: center; font-size: 10px; font-weight: 700; background: var(--bg-elev-2); color: var(--text-dim); }
+.file-icon { width: 34px; height: 26px; border-radius: 6px; display: grid; place-items: center; font-size: 11px; font-weight: 700; background: var(--bg-elev-2); color: var(--text-dim); }
 .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-meta { font-size: 12px; color: var(--text-faint); white-space: nowrap; }
+.file-meta { font-size: 13px; color: var(--text-faint); white-space: nowrap; }
 .file-progress { width: 90px; }
 .file-progress .progress { margin: 0; }
 .file-x { opacity: 0; transition: opacity 0.1s; }
@@ -69,9 +69,9 @@
 .topic.drag { border-color: var(--accent); background: var(--accent-soft); }
 .topic-row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; cursor: pointer; border-radius: 10px; min-height: 46px; }
 .topic-row:hover { background: var(--bg-hover); }
-.topic-caret { color: var(--text-faint); width: 12px; font-size: 11px; }
+.topic-caret { color: var(--text-faint); width: 12px; font-size: 12px; }
 .topic-name { font-weight: 600; }
-.topic-count { color: var(--text-faint); font-size: 12.5px; flex: 1; }
+.topic-count { color: var(--text-faint); font-size: 13px; flex: 1; }
 .topic-actions { display: flex; gap: 6px; align-items: center; opacity: 0; transform: translateX(4px); transition: opacity 0.12s, transform 0.12s; }
 .topic-row:hover .topic-actions, .topic.open .topic-actions { opacity: 1; transform: none; }
 .topic-files { padding: 2px 10px 10px 30px; }
@@ -87,7 +87,7 @@
 .msg-user { align-self: flex-end; display: flex; justify-content: flex-end; }
 .msg-user .bubble { color: var(--text); padding: 9px 14px; max-width: 78%; white-space: pre-wrap; }
 .msg-assistant, .msg-note { align-self: flex-start; }
-.reasoning { margin-bottom: 6px; font-size: 12.5px; color: var(--text-faint); }
+.reasoning { margin-bottom: 6px; font-size: 13px; color: var(--text-faint); }
 .reasoning summary { cursor: pointer; }
 .reasoning-body { white-space: pre-wrap; max-height: 220px; overflow-y: auto; border-left: 2px solid var(--border-strong); padding: 4px 10px; margin-top: 4px; }
 .typing { color: var(--text-dim); font-size: 13.5px; }
@@ -95,7 +95,7 @@
 @keyframes blink { 50% { opacity: 0.2; } }
 .composer { border-top: 1px solid var(--border); padding: 10px 14px 12px; background: var(--bg-elev); }
 .composer-bar { display: flex; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
-.chip { background: var(--bg); border: 1px solid var(--border); color: var(--text-dim); border-radius: 20px; padding: 4px 11px; font: inherit; font-size: 12.5px; cursor: pointer; transition: all 0.12s; }
+.chip { background: var(--bg); border: 1px solid var(--border); color: var(--text-dim); border-radius: 20px; padding: 4px 11px; font: inherit; font-size: 13px; cursor: pointer; transition: all 0.12s; }
 .chip:hover { border-color: var(--accent); color: var(--accent-strong); }
 .composer-input { display: flex; gap: 10px; align-items: flex-end; }
 .composer-input textarea { flex: 1; resize: none; font: inherit; color: var(--text); border: 1px solid var(--border-strong); padding: 10px 12px; outline: none; max-height: 200px; }
@@ -126,7 +126,7 @@
 .md h4 { font-size: 14px; }
 .md ul, .md ol { margin: 0 0 0.6em; padding-left: 1.4em; }
 .md li { margin: 0.15em 0; }
-.md code { font-family: var(--mono); font-size: 12.5px; background: var(--bg-elev-2); padding: 1px 5px; border-radius: 4px; }
+.md code { font-family: var(--mono); font-size: 13px; background: var(--bg-elev-2); padding: 1px 5px; border-radius: 4px; }
 .md pre { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
 .md pre code { background: none; padding: 0; }
 .md table { border-collapse: collapse; margin: 0.5em 0 0.8em; font-size: 13px; }
@@ -138,7 +138,7 @@
 /* ---------------------------------------------------------------- viewers */
 .viewer-nav { display: flex; align-items: center; gap: 14px; margin-top: 18px; }
 .viewer-nav .progress { flex: 1; margin: 0; }
-.src-note { font-size: 11.5px; color: var(--text-faint); margin-top: 10px; }
+.src-note { font-size: 12.5px; color: var(--text-faint); margin-top: 10px; }
 
 .flashcard { perspective: 1400px; height: 360px; cursor: pointer; margin-top: 6px; }
 .flashcard-inner { position: relative; width: 100%; height: 100%; transform-style: preserve-3d; }
@@ -146,12 +146,12 @@
 .flashcard-face { position: absolute; inset: 0; backface-visibility: hidden; border-radius: 16px; border: 1px solid var(--border-strong); padding: 32px 40px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; overflow-y: auto; }
 .flashcard-face.front { background: linear-gradient(160deg, var(--bg-elev-2), var(--bg)); }
 .flashcard-face.back { transform: rotateY(180deg); }
-.flip-hint { position: absolute; bottom: 14px; font-size: 11.5px; color: var(--text-faint); }
+.flip-hint { position: absolute; bottom: 14px; font-size: 12.5px; color: var(--text-faint); }
 .card-list { display: flex; flex-direction: column; gap: 8px; }
 .card-list-item { display: grid; grid-template-columns: 1fr 1.4fr; gap: 16px; padding: 12px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; }
 .card-list-item .src-note { grid-column: 1 / -1; margin-top: 0; }
 .card-list-front { font-weight: 600; }
-.quiz-num { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); margin-bottom: 4px; }
+.quiz-num { font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); margin-bottom: 4px; }
 .quiz-prompt { font-size: 15px; margin-bottom: 10px; }
 .options { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
 .option { display: flex; gap: 10px; align-items: flex-start; text-align: left; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 9px; padding: 9px 12px; color: var(--text); font: inherit; cursor: pointer; }
@@ -166,9 +166,9 @@
 .explain-bad { background: var(--bad-soft); }
 
 .notes-toc { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
-.notes-toc a { font-size: 12.5px; color: var(--accent); background: var(--accent-soft); border-radius: 14px; padding: 3px 10px; text-decoration: none; }
+.notes-toc a { font-size: 13px; color: var(--accent); background: var(--accent-soft); border-radius: 14px; padding: 3px 10px; text-decoration: none; }
 .notes-section { padding: 6px 0 22px; border-bottom: 1px solid var(--border); margin-bottom: 18px; }
-.notes-src { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); margin-bottom: 8px; }
+.notes-src { font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); margin-bottom: 8px; }
 
 .exam-meta { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; font-size: 13px; color: var(--text-dim); padding-bottom: 12px; border-bottom: 1px solid var(--border); }
 .exam-instructions { font-size: 13px; color: var(--text-dim); padding: 10px 0; }

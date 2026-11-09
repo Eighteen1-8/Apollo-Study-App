@@ -7,6 +7,7 @@ import { api, Review, ReviewIssue, ReviewTarget } from '../api';
 import { usePoll } from '../hooks';
 import Markdown from './Markdown';
 import { Progress } from './ui';
+import Icon from './Icon';
 
 const VERDICT: Record<string, { label: string; cls: string }> = {
   correct: { label: 'Looks correct', cls: 'ok' },
@@ -32,7 +33,7 @@ export default function Reviews({ target, id, list, onApplied, onFix, onClose }:
     <aside className="reviews" aria-label="Apollo's comments">
       <div className="reviews-head">
         <span>Apollo's comments</span>
-        <button className="icon-btn" title="Hide" onClick={onClose}>×</button>
+        <button className="icon-btn" title="Hide" onClick={onClose}><Icon name="close" size={15} /></button>
       </div>
       <div className="reviews-scroll">
         {list.length === 0 && (
@@ -76,7 +77,7 @@ function ReviewCard({ r, target, id, onApplied, onFix }: {
         {v && <span className={`review-verdict ${v.cls}`}>{v.label}</span>}
         {r.applied ? <span className="review-verdict ok">Applied</span> : null}
         <span className="spacer" />
-        <button className="x-btn" title={busy(r) ? 'Cancel' : 'Dismiss'} onClick={() => run(() => api.dismissReview(r.id))}>×</button>
+        <button className="x-btn" title={busy(r) ? 'Cancel' : 'Dismiss'} onClick={() => run(() => api.dismissReview(r.id))}><Icon name="close" size={14} /></button>
       </div>
       {r.quote && <div className="review-quote">“{r.quote.length > 220 ? `${r.quote.slice(0, 220)}…` : r.quote}”</div>}
       {r.instruction && r.mode === 'revise' && <div className="review-instr">{r.instruction}</div>}

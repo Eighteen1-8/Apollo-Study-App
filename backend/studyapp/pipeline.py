@@ -8,7 +8,7 @@ import time
 
 import numpy as np
 
-from . import config, db, dedupe, llm, render, vision_audit
+from . import config, db, dedupe, errors, llm, render, vision_audit
 from .chunker import _split_long, chunk_units
 from .parsers import PARSER_VERSION, approx_tokens, parse, render_for_vision, render_pdf_page
 
@@ -120,7 +120,14 @@ def ingest(doc_id, job, keep_vision=False):
     clear_document(doc_id)
     _set_doc(doc_id, status="parsing", error=None, render_map=None)
     job.update(0.02, "Parsing")
-    units, meta = parse(doc_path(doc), config.assets_dir() / str(doc_id), s)
+    path = doc_path(doc)
+    if not path.exists():
+        raise errors.AppError("APO-FILE-301", f"stored copy missing: {path}")
+    try:
+        units, meta = parse(path, config.assets_dir() / str(doc_id), s)
+    except Exception as e:  # the parser's own error, coded: a locked file is told apart from a damaged one
+        locked = "password" in str(e).lower() or "encrypt" in str(e).lower()
+        raise errors.AppError("APO-FILE-305" if locked else "APO-FILE-304", f"{doc['filename']}: {type(e).__name__}: {e}") from e
     job.check()
     positions = None
     if doc["ext"] in render.OFFICE_EXTS:

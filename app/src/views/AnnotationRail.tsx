@@ -1,6 +1,7 @@
 /* The annotations rail beside the viewer: every highlight, note, drawing and text box, filtered by kind, with jump-to and export. */
 import { useState } from 'react';
 import { Annotation, AnnotationKind } from '../api';
+import Icon from '../components/Icon';
 
 export const KIND_ICON: Record<AnnotationKind, string> = { highlight: '▮', note: '🗒', ink: '✎', textbox: 'T', region: '▣' };
 
@@ -27,7 +28,7 @@ export function AnnotationRail({ items, unitLabel, onGo, onDelete, needsReingest
     <aside className="anno-rail">
       <div className="rail-head">
         <span>Annotations <span className="count-badge">{items.length}</span></span>
-        <button className="icon-btn" title="Hide annotations" onClick={onClose}>›</button>
+        <button className="icon-btn" title="Hide annotations" onClick={onClose}><Icon name="chevronRight" /></button>
       </div>
       {(needsReingest || busy) && (
         <div className={`rail-card${busy ? '' : ' warn'}`}>
@@ -63,7 +64,7 @@ export function AnnotationRail({ items, unitLabel, onGo, onDelete, needsReingest
                     background: a.kind === 'highlight' ? a.data.color : undefined }}>{KIND_ICON[a.kind]}</span>
                 <span className="rail-text">{snippet(a)}</span>
                 {a.kind === 'note' && a.data.hidden && <span className="rail-hidden" title="Hidden note">hidden</span>}
-                <button className="x-btn rail-x" title="Delete" onClick={(e) => { e.stopPropagation(); onDelete(a); }}>×</button>
+                <button className="x-btn rail-x" title="Delete" onClick={(e) => { e.stopPropagation(); onDelete(a); }}><Icon name="close" size={14} /></button>
               </div>
             ))}
           </div>

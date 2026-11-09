@@ -3,6 +3,7 @@
 Material is split into "groups" that each fit the context budget. A group's text is always rendered the same
 way (same order, same formatting), so repeated calls on it hit ninfer's prefix cache."""
 from . import db, search
+from .citations import cite_label
 from .parsers import approx_tokens
 
 
@@ -19,7 +20,7 @@ def scope_label(subject_id: int, topic_id: int | None) -> str:
 
 
 def _unit_block(u: dict) -> str:
-    parts = [f"[{u['label']}]"]
+    parts = [f"[{cite_label(u)}]"]  # unique within the file, so a citation names exactly one unit (citations.py)
     if u["text"].strip():
         parts.append(u["text"].strip())
     if u["vision_status"] == "done" and u["vision_relevant"] and u["vision_notes"]:
@@ -30,9 +31,17 @@ def _unit_block(u: dict) -> str:
 REFERENCE_LABEL = "Reference library"
 
 
-def topic_documents(subject_id: int, topic_id: int | None) -> list[dict]:
+def topic_documents(subject_id: int, topic_id: int | None, doc_ids: list[int] | None = None) -> list[dict]:
     """The scope's study material. A whole-subject scope whose topics hold no material (no topics yet, or only
-    textbooks uploaded) falls back to the reference library, so a subject can be studied from its textbooks alone."""
+    textbooks uploaded) falls back to the reference library, so a subject can be studied from its textbooks alone.
+    `doc_ids` narrows the scope to those files of the subject (topic files or textbooks), e.g. "make content from
+    this file"."""
+    if doc_ids:
+        marks = ",".join("?" * len(doc_ids))
+        return db.q(f"""SELECT d.*, COALESCE(t.name, '{REFERENCE_LABEL}') AS topic_name FROM documents d
+                        LEFT JOIN topics t ON t.id=d.topic_id
+                        WHERE d.subject_id=? AND d.id IN ({marks}) AND d.unit_count > 0 ORDER BY d.id""",
+                    (subject_id, *doc_ids))
     ids = [t["id"] for t in topics_in_scope(subject_id, topic_id)]
     docs = []
     if ids:
@@ -52,10 +61,13 @@ def uses_reference_material(subject_id: int, topic_id: int | None) -> bool:
     return bool(docs) and docs[0]["kind"] == "reference"
 
 
-def material_problem(subject_id: int, topic_id: int | None) -> str | None:
+def material_problem(subject_id: int, topic_id: int | None, doc_ids: list[int] | None = None) -> str | None:
     """Why a scope has nothing to generate from, in words the student can act on; None when it has material."""
-    if any(d["token_count"] or d["vision_done"] for d in topic_documents(subject_id, topic_id)):
+    if any(d["token_count"] or d["vision_done"] for d in topic_documents(subject_id, topic_id, doc_ids)):
         return None
+    if doc_ids:
+        return ("That file has no readable material yet. Wait until it has finished being read (see background jobs), "
+                "or run vision on it if its pages are pictures, then try again.")
     topic = db.q1("SELECT name FROM topics WHERE id=?", (topic_id,)) if topic_id else None
     where, args = ("topic_id=? AND kind='topic'", (topic_id,)) if topic_id else ("subject_id=?", (subject_id,))
     docs = db.q(f"SELECT status, unit_count, token_count FROM documents WHERE {where}", args)
@@ -100,10 +112,10 @@ def document_sections(doc: dict, budget: int) -> list[dict]:
     return out
 
 
-def material_groups(subject_id: int, topic_id: int | None, budget: int) -> list[dict]:
+def material_groups(subject_id: int, topic_id: int | None, budget: int, doc_ids: list[int] | None = None) -> list[dict]:
     """Pack all document sections in scope into groups of <= budget tokens. Each group: {sections, text, tokens}."""
     groups, cur = [], []
-    for doc in topic_documents(subject_id, topic_id):
+    for doc in topic_documents(subject_id, topic_id, doc_ids):
         for sec in document_sections(doc, budget):
             if cur and sum(s["tokens"] for s in cur) + sec["tokens"] > budget:
                 groups.append(cur)
@@ -128,10 +140,21 @@ def textbook_passages(subject_id: int, query: str, k: int = 5) -> str:
 
 
 def _format_hits(hits: list[dict]) -> str:
+    """Excerpts headed by their file only: a chunk's own label ("Slide 5 – Slide 6", "Outcome 2 (part 3)") names no
+    single unit, and the model copied it into citations (38% of citations in real chats, 2026-11). The unit names inside
+    each excerpt are the ones to cite, and Word sections get their number so repeated headings stay distinct."""
     out = []
     for h in hits:
-        block = f"[{h['filename']} · {h['label']}]" + (f"\n{h['text']}" if h["text"].strip() else "")
+        units = db.q("SELECT idx, kind, label FROM units WHERE document_id=? AND idx BETWEEN ? AND ? ORDER BY idx",
+                     (h["document_id"], h["unit_start"], h["unit_end"]))
+        text = h["text"]
+        for u in units:
+            if (name := cite_label(u)) != u["label"]:
+                text = text.replace(f"[{u['label']}]", f"[{name}]", 1)
+        if units and text.strip() and not text.lstrip().startswith("["):  # a vision hit's unit text carries no name
+            text = f"[{cite_label(units[0])}]\n{text}"
+        block = f"[From {h['filename']}]" + (f"\n{text}" if text.strip() else "")
         for n in h["vision_notes"]:
-            block += f"\n[Visual content on {n['label']}]\n{n['vision_notes']}"
+            block += f"\n[Visual content on {cite_label(n) if 'idx' in n else n['label']}]\n{n['vision_notes']}"
         out.append(block)
     return "\n\n".join(out)

@@ -8,20 +8,26 @@ import { onChange } from '../events';
 import { getPref, setPref } from '../prefs';
 import { clearError, isLive, onReplyFinished, setViewing, startReply, useChatStreams } from '../chatStreams';
 import { confirmDeleteChats, renameChatUndoable } from './chatActions';
-import { LEVEL_LABEL, ChatMode } from './chat/types';
+import { levelLabel, ChatMode } from './chat/types';
+import { levelHint } from '../terms';
+import { isAdvanced } from '../theme';
 import { LiveBubble, MessageView } from './chat/messages';
 import { runCommand as runSlashCommand } from './chat/commands';
 import { Composer } from './chat/Composer';
+import Icon from '../components/Icon';
+import ErrorText from '../components/ErrorText';
 
-export { LEVEL_LABEL } from './chat/types';
+export { levelLabel } from './chat/types';
 export type { ChatMode } from './chat/types';
 type Card = { id: number; chatId: number | null; node: React.ReactNode };
 
 export default function ChatView({ subject, launch, floating, collapsed, mode, onMode, sideBySide, onToggleCollapse, onCite, onOpenArtifact,
-  onOpenDoc, onOpenNote, quote, onClearQuote, incoming, onShowArea, openRequest, onActiveChat }: {
+  onOpenDoc, onOpenNote, quote, onClearQuote, incoming, onShowArea, openRequest, onActiveChat, draft, closeOnly }: {
   subject: Subject; launch?: Launch; floating: boolean; collapsed: boolean; mode: ChatMode; onMode: (m: ChatMode) => void;
   /** Side by side is the chosen layout (also while full screen, so leaving full screen goes back to it). */
   sideBySide: boolean;
+  /** Opened over the study panel: the header only offers Close (back to the panel), not minimise, split or full screen. */
+  closeOnly?: boolean;
   onToggleCollapse: () => void; onCite: (file: string, label: string) => void; onOpenArtifact: (id: number) => void;
   onOpenDoc: (id: number) => void; quote: (Quote & { nonce: number }) | null; onClearQuote: () => void;
   /** Jump to where a screenshot came from. */
@@ -33,6 +39,8 @@ export default function ChatView({ subject, launch, floating, collapsed, mode, o
   openRequest: { id: number | null; nonce: number } | null;
   /** The chat now showing, for the sidebar's history. */
   onActiveChat: (id: number | null) => void;
+  /** Text from the study panel's chat bar: a new chat with it in the composer, or sent straight away (`send`). */
+  draft?: { text: string; send: boolean; nonce: number } | null;
 }) {
   const ov = useOverlay();
   const streams = useChatStreams();
@@ -177,17 +185,41 @@ export default function ChatView({ subject, launch, floating, collapsed, mode, o
   }, [openRequest?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const ensureChat = async () => chat ?? (await newChat(null));
+
+  // Typed in (or picked from) the study panel: always a fresh chat, so it never lands in an old conversation.
+  const handledDraft = useRef<number | null>(null);
+  const lastDraft = useRef(0);
+  const draftText = useRef('');
+  useEffect(() => {
+    if (!draft || handledDraft.current === draft.nonce) return;
+    handledDraft.current = draft.nonce; // claimed before any await (StrictMode runs effects twice)
+    // more keystrokes of the same question (typed before the focus moved here): just the text
+    const typing = !draft.send && draft.nonce - lastDraft.current < 3000;
+    lastDraft.current = draft.nonce;
+    draftText.current = draft.text;
+    if (typing) { setInput(draft.text); return; }
+    (async () => {
+      const c = await newChat(null);
+      if (draft.send) { await sendText(draft.text, c); return; }
+      setInput(draftText.current); // the latest text: more may have been typed while the chat opened
+      setTimeout(() => {
+        const t = textarea.current;
+        if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
+      }, 60);
+    })().catch((e) => logError('chat', e, 'warning'));
+  }, [draft?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
   const card = (node: React.ReactNode) => setCards((cs) => [...cs, { id: Date.now() + Math.random(), chatId: chatRef.current?.id ?? null, node }]);
 
-  const send = async () => {
-    const text = input.trim();
+  const send = () => sendText(input);
+  const sendText = async (raw: string, into?: Chat) => {
+    const text = raw.trim();
     if (!text) return;
     if (text.startsWith('/')) {
       setInput('');
       await runCommand(text).catch((e) => card(<div className="banner banner-bad">{String(e).replace(/^Error: /, '')}</div>));
       return;
     }
-    const c = await ensureChat();
+    const c = into ?? await ensureChat();
     if (isLive(c.id)) return;
     const extra = { attachments: attached.map((d) => d.id), files: tempFiles.map((f) => f.path), quote: quote ? stripNonce(quote) : null };
     const before = { attached, tempFiles };
@@ -246,7 +278,7 @@ export default function ChatView({ subject, launch, floating, collapsed, mode, o
   const pickLevel = (l: string) => { setReasoning(l as Reasoning); setPref('chatReasoning', l); };
 
   const pickReasoning = (e: React.MouseEvent) => ov.menu(e, ['off', ...levels].map((l) => ({
-    label: `${l === reasoning ? '✓ ' : '   '}${LEVEL_LABEL[l] ?? l}${l === 'off' ? ' (fastest)' : l === levels[levels.length - 1] ? ' (most thorough)' : ''}`,
+    label: `${l === reasoning ? '✓ ' : '   '}${levelLabel(l)}${isAdvanced() ? (l === 'off' ? ' (fastest)' : l === levels[levels.length - 1] ? ' (most thorough)' : '') : levelHint(l) ? ` · ${levelHint(l)}` : ''}`,
     onClick: () => pickLevel(l),
   })), { anchor: e.currentTarget, place: 'above' });
 
@@ -322,23 +354,24 @@ export default function ChatView({ subject, launch, floating, collapsed, mode, o
             <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </button>
-        <button className="icon-btn" data-tip="New chat" onClick={() => newChat(chat?.topic_id ?? null)}>＋</button>
+        <button className="icon-btn" data-tip="New chat" onClick={() => newChat(chat?.topic_id ?? null)}><Icon name="add" /></button>
         <span className="spacer" />
         {collapsed && streams.anyLive() && <span className="chat-busy">Apollo is replying…</span>}
-        {floating && !collapsed && mode !== 'full' && (
+        {floating && !collapsed && mode !== 'full' && !closeOnly && (
           <button className={`icon-btn head-tool${mode === 'split' ? ' on' : ''}`} aria-pressed={mode === 'split'}
             data-tip={mode === 'split' ? 'Back to a floating chat' : 'Side by side with what’s open (half and half)'} onClick={toggleSplit}>
             <SplitIcon />
           </button>
         )}
-        {floating && !collapsed && (
+        {floating && !collapsed && !closeOnly && (
           <button className={`icon-btn head-tool${mode === 'full' ? ' on' : ''}`} aria-pressed={mode === 'full'}
             data-tip={mode === 'full' ? 'Exit full screen' : 'Full screen'} onClick={toggleFull}>
             {mode === 'full' ? <ShrinkIcon /> : <ExpandIcon />}
           </button>
         )}
-        {floating && (
-          <button className="icon-btn" data-tip={collapsed ? 'Open chat' : 'Minimise chat'} onClick={onToggleCollapse}>{collapsed ? '▴' : '–'}</button>
+        {floating && (closeOnly
+          ? <button className="icon-btn" data-tip="Close the chat" aria-label="Close the chat" onClick={onToggleCollapse}><Icon name="close" /></button>
+          : <button className="icon-btn" data-tip={collapsed ? 'Open chat' : 'Minimise chat'} onClick={onToggleCollapse}><Icon name={collapsed ? 'chevronUp' : 'minus'} /></button>
         )}
       </div>
 
@@ -347,7 +380,16 @@ export default function ChatView({ subject, launch, floating, collapsed, mode, o
             {messages.length === 0 && !live && !myCards.length && (
               <div className="chat-empty">
                 <div className="chat-empty-title">Ask anything about {subject.name}</div>
-                <div className="muted">Pick a topic below, then ask a question, or ask Apollo to make flashcards, a quiz, an exam, notes, a cheat sheet or a mind map. Type <b>/</b> for commands.</div>
+                {isAdvanced() ? (
+                  <div className="muted">Pick a topic below, then ask a question, or ask Apollo to make flashcards, a quiz, an exam, notes, a cheat sheet or a mind map. Type <b>/</b> for commands.</div>
+                ) : subject.reference_count === 0 && subject.topics.every((t) => !t.doc_count) ? (
+                  <div className="muted">Apollo answers from your own material, and there's none in {subject.name} yet. Add your slides, notes or
+                    textbooks with <b>+ Add files</b> on the right (or drag them into the window), then come back here. You can still ask general questions.</div>
+                ) : (
+                  <div className="muted">Ask a question about your material, e.g. <i>“Explain the main idea of the first lecture”</i>, or press
+                    <b> Create</b> below to make flashcards, a quiz, an exam, notes, a cheat sheet or a mind map. <b>Using</b> picks which topic Apollo reads;
+                    type <b>/</b> for commands.</div>
+                )}
               </div>
             )}
             {[...messages, ...liveMessages].map((m) => (
@@ -359,12 +401,12 @@ export default function ChatView({ subject, launch, floating, collapsed, mode, o
             {myCards.map((c) => (
               <div key={c.id} className="msg msg-local">
                 {c.node}
-                <button className="x-btn msg-local-x" title="Dismiss" onClick={() => setCards((cs) => cs.filter((x) => x.id !== c.id))}>×</button>
+                <button className="x-btn msg-local-x" title="Dismiss" onClick={() => setCards((cs) => cs.filter((x) => x.id !== c.id))}><Icon name="close" size={14} /></button>
               </div>
             ))}
             {(error || streamError) && (
-              <div className="banner banner-bad">{error || streamError}
-                <button className="x-btn" title="Dismiss" onClick={() => { setError(null); if (chat) clearError(chat.id); }}>×</button>
+              <div className="banner banner-bad"><ErrorText text={error || streamError} />
+                <button className="x-btn" title="Dismiss" onClick={() => { setError(null); if (chat) clearError(chat.id); }}><Icon name="close" size={14} /></button>
               </div>
             )}
             <div ref={bottom} />

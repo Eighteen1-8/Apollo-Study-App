@@ -1,9 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
+import { toast } from './toast';
+import { deleteUndoably } from '../views/chatActions';
+import { ErrorCode } from './ErrorText';
+import { splitError } from '../errors';
 import { api, Doc } from '../api';
 import { fmtTokens } from '../hooks';
 import { MenuItem, useOverlay } from './overlay';
 import { Pill, Progress } from './ui';
 import { useReorder } from './reorder';
+import { statusWord, term, useTerms } from '../terms';
+import { useAdvanced } from '../theme';
+import Icon from './Icon';
 
 const ICON: Record<string, string> = { '.pdf': 'PDF', '.pptx': 'PPT', '.docx': 'DOC' };
 
@@ -34,9 +41,9 @@ export const isPickClick = (e: React.MouseEvent) => e.shiftKey || e.ctrlKey || e
 const BUSY = ['queued', 'parsing', 'embedding', 'vision'];
 
 function statusOf(d: Doc): [string, string] {
-  if (d.status === 'vision') return ['vision', `Vision ${d.vision_done}/${d.vision_total}`];
-  if (d.status === 'ready' && d.vision_total > d.vision_done) return ['pending', 'Vision incomplete'];
-  return [d.status, d.status];
+  if (d.status === 'vision') return ['vision', `${term('vision') === 'Vision' ? 'Vision' : 'Pictures'} ${d.vision_done}/${d.vision_total}`];
+  if (d.status === 'ready' && d.vision_total > d.vision_done) return ['pending', term('visionIncomplete')];
+  return [d.status, statusWord(d.status)];
 }
 
 /** Compact file rows: click opens (or, with `onSelect`, click selects and double-click opens), drag moves or
@@ -51,6 +58,8 @@ export default function FileList({ docs, onOpen, onOpenSide, onSelect, onDetails
   reorder?: { group: string; commit: (ids: number[]) => Promise<unknown> };
 }) {
   const ov = useOverlay();
+  const tr = useTerms();
+  const advanced = useAdvanced();
   // clicking the already-selected file again (when a click only selects) shows a "double-click to open" hint
   const [hint, setHint] = useState<number | null>(null);
   const hintTimer = useRef(0);
@@ -67,11 +76,25 @@ export default function FileList({ docs, onOpen, onOpenSide, onSelect, onDetails
   docs.forEach((d) => picker?.register(d));
   const order = useReorder(reorder?.group ?? 'files:none', docs.map((d) => d.id), (ids) => reorder?.commit(ids), 'reorder files');
   const sorted = reorder ? order.order.map((id) => docs.find((d) => d.id === id)!).filter(Boolean) : docs;
+  /** At once, with Undo (toast or Ctrl+Z): the file waits a week in the trash, so nothing is read again. */
   const remove = async (d: Doc) => {
-    if (await ov.confirm({ title: `Remove ${d.filename}?`, body: 'Its extracted text, embeddings and vision notes are deleted from the app.', confirmText: 'Remove', danger: true })) {
-      await api.deleteDocument(d.id);
-      onChange();
-    }
+    await deleteUndoably({ what: 'file', name: d.filename, del: () => api.deleteDocument(d.id),
+      restore: async () => { const r = await api.restoreDocument(d.id); if (r.note) toast(r.note); onChange(); } });
+    onChange();
+  };
+  /** The row's menu (right-click or its ⋯ button); the selection's when the row is part of a multi-selection. */
+  const rowMenu = (e: React.MouseEvent, d: Doc, busy: boolean) => {
+    const bulk = picker?.menu(pickKey(d));
+    if (bulk) return ov.menu(e, bulk);
+    ov.menu(e, [
+      { label: 'Open', onClick: () => onOpen(d) },
+      ...(onOpenSide ? [{ label: 'Open side by side', onClick: () => onOpenSide(d) }] : []),
+      ...(onDetails ? [{ label: tr('details'), onClick: () => onDetails(d) }] : []),
+      { label: tr('runVision'), onClick: () => api.vision(d.id).then(onChange), disabled: busy || d.vision_total <= d.vision_done },
+      { label: tr('reingest'), onClick: () => api.reingest(d.id).then(onChange), disabled: busy },
+      ...(menu?.(d) ?? []).map((m, i) => (i ? m : { ...m, separatorBefore: true })),
+      { label: 'Remove', onClick: () => remove(d), danger: true, separatorBefore: true },
+    ]);
   };
   if (!docs.length) return <div className="files-empty">{empty ?? 'No files yet.'}</div>;
   return (
@@ -100,26 +123,22 @@ export default function FileList({ docs, onOpen, onOpenSide, onSelect, onDetails
             onDragOver={(e) => { r?.onDragOver(e); }}
             onDragLeave={(e) => { r?.onDragLeave(e); }}
             onDrop={(e) => { r?.onDrop(e); }}
-            onContextMenu={(e) => { const bulk = picker?.menu(pickKey(d)); if (bulk) return ov.menu(e, bulk); ov.menu(e, [
-              { label: 'Open', onClick: () => onOpen(d) },
-              ...(onOpenSide ? [{ label: 'Open side by side', onClick: () => onOpenSide(d) }] : []),
-              ...(onDetails ? [{ label: 'View ingested details', onClick: () => onDetails(d) }] : []),
-              { label: 'Run / resume vision', onClick: () => api.vision(d.id).then(onChange), disabled: busy || d.vision_total <= d.vision_done },
-              { label: 'Re-ingest', onClick: () => api.reingest(d.id).then(onChange), disabled: busy },
-              ...(menu?.(d) ?? []).map((m, i) => (i ? m : { ...m, separatorBefore: true })),
-              { label: 'Remove', onClick: () => remove(d), danger: true, separatorBefore: true },
-            ]); }}>
+            onContextMenu={(e) => rowMenu(e, d, busy)}>
             <span className={`file-icon ext-${d.ext.slice(1)}`}>{ICON[d.ext] ?? d.ext.slice(1).toUpperCase()}</span>
             <span className="file-name" title={`${d.filename}${d.unit_count ? ` · ${d.unit_count} ${d.ext === '.pptx' ? 'slides' : d.ext === '.pdf' ? 'pages' : 'sections'} · ~${fmtTokens(d.token_count)} tokens` : ''}`}>{d.filename}</span>
             <span className="file-meta">
-              {d.unit_count > 0 && `${d.unit_count} ${d.ext === '.pptx' ? 'slides' : d.ext === '.pdf' ? 'pages' : 'sections'} · ~${fmtTokens(d.token_count)} tok`}
+              {d.unit_count > 0 && `${d.unit_count} ${d.ext === '.pptx' ? 'slides' : d.ext === '.pdf' ? 'pages' : 'sections'}${advanced ? ` · ~${fmtTokens(d.token_count)} tok` : ''}`}
             </span>
             {busy && d.status === 'vision' ? (
               <span className="file-progress"><Progress value={d.vision_total ? d.vision_done / d.vision_total : 0} /></span>
-            ) : null}
-            <Pill status={tone}>{label}</Pill>
+            ) : busy && !advanced ? <span className="file-progress file-progress-busy"><Progress value={d.status === 'queued' ? 0.05 : d.status === 'parsing' ? 0.35 : 0.7} /></span> : null}
+            {(advanced || tone !== 'ready') && <Pill status={tone}>{label}</Pill>}
+            {d.status === 'failed' && d.error && splitError(d.error).code && <ErrorCode code={splitError(d.error).code!} context={splitError(d.error).message} />}
             {hint === d.id && <span className="dbl-hint" role="status">Double-click to open</span>}
-            <button className="x-btn file-x" title="Remove file" onClick={(e) => { e.stopPropagation(); remove(d); }}>×</button>
+            {!busy && <span className="file-open" aria-hidden>Open<Icon name="chevronRight" size={13} /></span>}
+            <button className="x-btn file-more" title="More options" aria-label={`More options for ${d.filename}`}
+              onClick={(e) => { e.stopPropagation(); rowMenu(e, d, busy); }}><Icon name="more" size={15} /></button>
+            <button className="x-btn file-x" title="Remove file" onClick={(e) => { e.stopPropagation(); remove(d); }}><Icon name="close" size={14} /></button>
           </div>
         );
       })}

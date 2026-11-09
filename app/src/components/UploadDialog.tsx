@@ -1,12 +1,43 @@
 import { useState } from 'react';
 import { api, inElectron, VisionMode } from '../api';
 import { Modal } from './overlay';
+import { term, useTerms } from '../terms';
+import { toast } from './toast';
+import Icon from './Icon';
+import ErrorText from './ErrorText';
+import Info from './Info';
 
 const MODE_HELP: Record<VisionMode, string> = {
   auto: 'Apollo reads slides/pages that look visual (2+ images, big figures, diagrams, scans).',
   all: 'Apollo reads every slide/page. Slowest, most thorough.',
   off: 'Text only. You can run vision later from the file view.',
 };
+const MODE_HELP_PLAIN: Record<VisionMode, string> = {
+  auto: 'Apollo looks at the pictures, diagrams and scans on pages that need it. A few seconds per such page.',
+  all: 'Apollo looks at every page. Best for scanned or very visual material, but takes much longer.',
+  off: 'Only the text is used. Fastest; you can have Apollo read the pictures later from the file’s menu.',
+};
+
+/** What a toast says once files are queued. */
+export const addedNotice = (n: number) =>
+  `Adding ${n} file${n === 1 ? '' : 's'}. Apollo reads ${n === 1 ? 'it' : 'them'} in the background: you can ask about ${n === 1 ? 'it' : 'them'} once the progress bar finishes.`;
+
+/** The "read pictures" choice for an upload, with what each option means. */
+export function VisionSelect({ mode, setMode }: { mode: VisionMode; setMode: (m: VisionMode) => void }) {
+  const tr = useTerms();
+  const help = tr('vision') === 'Vision' ? MODE_HELP : MODE_HELP_PLAIN;
+  return (
+    <label className="field">
+      <span className="field-label">{tr('vision')} <Info text="Apollo can look at the pictures, diagrams and scanned pages in your files, not just their text. It's slower, so by default it only looks where the text alone isn't enough." /></span>
+      <select value={mode} onChange={(e) => setMode(e.target.value as VisionMode)}>
+        <option value="auto">{tr('visionAuto')}</option>
+        <option value="all">{tr('visionAll')}</option>
+        <option value="off">{tr('visionOff')}</option>
+      </select>
+      <span className="field-help">{help[mode]}</span>
+    </label>
+  );
+}
 
 export function droppedPaths(e: React.DragEvent): string[] {
   if (!window.studyApp) return [];
@@ -31,6 +62,8 @@ export default function UploadDialog({ title, target, defaultMode, initialPaths,
       const res = await api.upload({ ...target, paths, vision_mode: mode });
       onDone();
       const problems = res.filter((r) => r.status !== 'queued');
+      const added = res.length - problems.length;
+      if (added) toast(addedNotice(added));
       if (problems.length) { setMessages(problems); setPaths([]); } else onClose();
     } catch (e) {
       setMessages([{ filename: '', status: 'error', message: String(e) }]);
@@ -61,23 +94,15 @@ export default function UploadDialog({ title, target, defaultMode, initialPaths,
           {paths.map((p) => (
             <div key={p} className="pending-file">
               <span title={p}>{p.split(/[\\/]/).pop()}</span>
-              <button className="x-btn" title="Remove from the list" onClick={() => setPaths(paths.filter((x) => x !== p))}>×</button>
+              <button className="x-btn" title="Remove from the list" onClick={() => setPaths(paths.filter((x) => x !== p))}><Icon name="close" size={14} /></button>
             </div>
           ))}
         </div>
       )}
-      <label className="field">
-        <span className="field-label">Vision</span>
-        <select value={mode} onChange={(e) => setMode(e.target.value as VisionMode)}>
-          <option value="auto">Auto</option>
-          <option value="all">Every page/slide</option>
-          <option value="off">Skip vision</option>
-        </select>
-        <span className="field-help">{MODE_HELP[mode]}</span>
-      </label>
+      <VisionSelect mode={mode} setMode={setMode} />
       {messages.map((m, i) => (
         <div key={i} className={`small ${m.status === 'error' ? 'bad' : 'muted'}`}>
-          {m.filename && <b>{m.filename}: </b>}{m.status === 'duplicate' ? `skipped (exact duplicate). ${m.message}` : m.message}
+          {m.filename && <b>{m.filename}: </b>}{m.status === 'duplicate' ? `skipped (${term('vision') === 'Vision' ? 'exact duplicate' : 'already added'}). ${m.message}` : <ErrorText text={m.message} />}
         </div>
       ))}
     </Modal>

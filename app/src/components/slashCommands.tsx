@@ -16,6 +16,7 @@ export const COMMANDS: SlashCommand[] = [
   { name: 'title', summary: 'Let Apollo name this chat' },
   { name: 'stop', summary: 'Stop the reply being written' },
   { name: 'delete', summary: 'Delete this chat' },
+  { name: 'shortcuts', summary: 'Keyboard shortcuts and mouse gestures' },
   { name: 'help', summary: 'List the commands' },
 ];
 

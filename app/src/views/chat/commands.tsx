@@ -4,7 +4,8 @@ import { CREATE_ITEMS } from '../SubjectView';
 import { stopReply } from '../../chatStreams';
 import { renameChatUndoable } from '../chatActions';
 import { COMMANDS, StatsCard } from '../../components/slashCommands';
-import { LEVEL_LABEL } from './types';
+import { levelLabel } from './types';
+import ShortcutsList from '../../components/Shortcuts';
 
 /** What a slash command can see and do in the chat (ChatView passes its own state and actions). */
 export interface CommandContext {
@@ -31,6 +32,9 @@ export async function runCommand(text: string, ctx: CommandContext) {
         {COMMANDS.map((c) => <div key={c.name} className="cmd-row"><b>/{c.name}</b>{c.args && <span className="muted"> {c.args}</span>} <span className="muted">· {c.summary}</span></div>)}
       </div>);
       break;
+    case 'shortcuts':
+      card(<div className="cmd-card"><div className="cmd-card-title">Shortcuts and gestures</div><ShortcutsList /></div>);
+      break;
     case 'stats': {
       if (!chat && arg !== 'all' && arg !== 'subject') { card(<div className="msg-note small">No chat yet: ask something first, or try <b>/stats subject</b>.</div>); break; }
       const c = await ensureChat();
@@ -40,10 +44,10 @@ export async function runCommand(text: string, ctx: CommandContext) {
     }
     case 'effort': {
       const want = arg.toLowerCase().replace(/^x-?high$/, 'xhigh');
-      if (!want) { card(<div className="msg-note small">Reasoning is <b>{LEVEL_LABEL[reasoning] ?? reasoning}</b>. Use /effort {['off', ...levels].join(' | ')}.</div>); break; }
+      if (!want) { card(<div className="msg-note small">Reasoning is <b>{levelLabel(reasoning)}</b>. Use /effort {['off', ...levels].join(' | ')}.</div>); break; }
       if (want !== 'off' && !levels.includes(want)) { card(<div className="msg-note small">Choose one of: {['off', ...levels].join(', ')}.</div>); break; }
       pickLevel(want);
-      card(<div className="msg-note small">Reasoning set to <b>{LEVEL_LABEL[want] ?? want}</b>.</div>);
+      card(<div className="msg-note small">Reasoning set to <b>{levelLabel(want)}</b>.</div>);
       break;
     }
     case 'create': {

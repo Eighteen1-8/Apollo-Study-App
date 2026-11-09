@@ -14,19 +14,21 @@ import { onChange } from '../events';
 import { sectionAt, quoteFromRange } from './source/selection';
 import { PdfView, SlidesView, DocxView, TextView } from './source/layouts';
 import { getPref, setPref } from '../prefs';
+import Icon, { IconName } from '../components/Icon';
+import { openFind } from '../components/FindBar';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
 const ZOOMS = [0.5, 0.67, 0.8, 1, 1.25, 1.5, 2];
 const BUSY = ['queued', 'parsing', 'embedding'];
 
-const TOOLS: { tool: Tool; label: string; icon: JSX.Element }[] = [
-  { tool: 'select', label: 'Select text (V)', icon: <path d="M3 2l9 5-4 1.2L6.5 13z" fill="currentColor" /> },
-  { tool: 'highlight', label: 'Highlight (H)', icon: <><path d="M4 10l5-7 3 2.2-5 7H4z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" /><path d="M2 14.5h12" stroke="currentColor" strokeWidth="2.4" className="hl-bar" /></> },
-  { tool: 'pen', label: 'Pen: draw on the page (P)', icon: <path d="M3 13l1-3.5L11 2.5l2.5 2.5L6.5 12zM9.5 4l2.5 2.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" /> },
-  { tool: 'eraser', label: 'Eraser: remove pen strokes (E)', icon: <path d="M6 13.5h7M2.8 9.8l6-6.3 4 3.8-6 6.2H5.3z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" /> },
-  { tool: 'textbox', label: 'Text box: write on the page (T)', icon: <path d="M3 3.5h10M8 3.5v9.5M6 13h4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /> },
-  { tool: 'note', label: 'Note box (N)', icon: <path d="M3 2.5h10v7.5l-3.5 3.5H3zM9.5 13.5V10H13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" /> },
+const TOOLS: { tool: Tool; name: string; label: string; icon: IconName }[] = [
+  { tool: 'select', name: 'Select', label: 'Select text (V)', icon: 'select' },
+  { tool: 'highlight', name: 'Highlight', label: 'Highlight (H)', icon: 'highlight' },
+  { tool: 'pen', name: 'Pen', label: 'Pen: draw on the page (P)', icon: 'pen' },
+  { tool: 'eraser', name: 'Eraser', label: 'Eraser: remove pen strokes (E)', icon: 'eraser' },
+  { tool: 'textbox', name: 'Text', label: 'Text box: write on the page (T)', icon: 'textbox' },
+  { tool: 'note', name: 'Note', label: 'Note box (N)', icon: 'note' },
 ];
 const KEYS: Record<string, Tool> = { v: 'select', h: 'highlight', p: 'pen', e: 'eraser', t: 'textbox', n: 'note', s: 'area' };
 
@@ -36,8 +38,10 @@ const KEYS: Record<string, Tool> = { v: 'select', h: 'highlight', p: 'pen', e: '
  * annotations are drawn over it. Selecting text offers Define / Ask Apollo / Highlight / Note; right-click also offers the
  * ingest details view. The right rail lists every annotation.
  */
-export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk, onAttach }: {
+export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk, onAttach, onMake }: {
   id: number; focus?: string; onClose: () => void; onDetails: () => void; onAsk: (q: Quote) => void;
+  /** Make content from just this file (the Make content steps). */
+  onMake?: () => void;
   /** Send files (a screenshot of part of a page) to the chat for the next message. */
   onAttach: (paths: string[]) => void;
   /** Scroll to this area and outline it briefly (a screenshot's source). */
@@ -459,12 +463,9 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
     <AnnoContext.Provider value={anno}>
       <div className={`source tool-${tool}`} ref={root}>
         <header className="source-head">
-          {outline.length > 0 && (
-            <button className={`outline-btn${outlineOpen ? ' on' : ''}`} title="Chapters" onClick={() => setOutlineOpen(!outlineOpen)}>
-              <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.5h11M5.5 8h8M5.5 12.5h8M2.5 8h.5M2.5 12.5h.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
-              Chapters
-            </button>
-          )}
+          <span className={`source-badge ext-${(doc?.filename.split('.').pop() ?? '').toLowerCase()}`} aria-hidden>
+            {(doc?.filename.split('.').pop() ?? '').slice(0, 4).toUpperCase()}
+          </span>
           <div className="source-title" title={doc?.filename}>{doc?.filename ?? ''}</div>
           {units.length > 1 && (
             <label className="page-box" title={`Go to ${unitName.toLowerCase()}`}>
@@ -475,19 +476,31 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
               <span className="page-total">/ {units.length}</span>
             </label>
           )}
-          {layout && layout.kind !== 'image' && layout.kind !== 'text' && (
-            <div className="zoom">
-              <button className="icon-btn" data-tip="Zoom out" disabled={zoom === ZOOMS[0]} onClick={() => zoomBy(-1)}>−</button>
-              <button className="zoom-val" data-tip="Reset zoom" onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button>
-              <button className="icon-btn" data-tip="Zoom in" disabled={zoom === ZOOMS[ZOOMS.length - 1]} onClick={() => zoomBy(1)}>+</button>
-            </div>
+          {onMake && (
+            <button className="btn btn-sm source-make" data-tip="Make flashcards, a quiz, notes… from just this file" onClick={onMake}>
+              <Icon name="create" size={14} /> Make content from this file
+            </button>
           )}
+          <button className="close-x" title="Close the file" onClick={onClose}><Icon name="close" size={18} /></button>
+        </header>
+        <div className="source-tools" role="toolbar" aria-label="File tools">
+          {outline.length > 0 && (
+            <button className={`tool-btn labelled${outlineOpen ? ' on' : ''}`} data-tip="Jump to a section of this file" onClick={() => setOutlineOpen(!outlineOpen)}>
+              <Icon name="chapters" size={16} /><span>Chapters</span>
+            </button>
+          )}
+          {outline.length > 0 && <span className="tools-sep" />}
           <div className="tools">
             {TOOLS.map((t) => (
-              <button key={t.tool} className={`tool-btn${tool === t.tool ? ' on' : ''}`} data-tip={t.label} onClick={() => setTool(t.tool)}>
-                <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style={{ '--hl': hlColor } as React.CSSProperties}>{t.icon}</svg>
+              <button key={t.tool} className={`tool-btn labelled${tool === t.tool ? ' on' : ''}${t.tool === 'highlight' ? ' hl-tool' : ''}`} data-tip={t.label}
+                aria-pressed={tool === t.tool} onClick={() => setTool(t.tool)} style={{ '--hl': hlColor } as React.CSSProperties}>
+                <Icon name={t.icon} size={16} /><span>{t.name}</span>
               </button>
             ))}
+            <button className={`tool-btn labelled${tool === 'area' ? ' on' : ''}`} data-tip="Snip: drag a box over the page to send it to the chat or pin a note to it (S)"
+              aria-pressed={tool === 'area'} onClick={() => setTool(tool === 'area' ? 'select' : 'area')}>
+              <Icon name="snip" size={16} /><span>Snip</span>
+            </button>
             {palette && (
               <span className="swatches">
                 {palette.map((c) => {
@@ -498,15 +511,24 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
               </span>
             )}
           </div>
-          <button className={`tool-btn shot-btn${tool === 'area' ? ' on' : ''}`} data-tip="Screenshot / select an area (S): drag over the page"
-            onClick={() => setTool(tool === 'area' ? 'select' : 'area')}>
-            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 5.5V4a1.5 1.5 0 0 1 1.5-1.5h1.5M10.5 2.5H12A1.5 1.5 0 0 1 13.5 4v1.5M13.5 10.5V12a1.5 1.5 0 0 1-1.5 1.5h-1.5M5.5 13.5H4A1.5 1.5 0 0 1 2.5 12v-1.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /><circle cx="8" cy="8" r="2" fill="currentColor" /></svg>
+          <span className="tools-sep" />
+          <button className="tool-btn labelled" data-tip="Find words in this file (Ctrl+F)" onClick={() => openFind('')}>
+            <Icon name="search" size={16} /><span>Find</span>
           </button>
-          <button className={`icon-btn rail-toggle${rail ? ' on' : ''}`} data-tip={rail ? 'Hide annotations' : 'Show annotations'} onClick={toggleRail}>
-            ☰{items.length > 0 && <span className="rail-dot">{items.length}</span>}{flags.needs_reingest && <span className="reingest-dot" />}
+          <button className={`tool-btn labelled rail-toggle${rail ? ' on' : ''}`} data-tip={rail ? 'Hide the list of your highlights and notes' : 'Show the list of your highlights and notes'}
+            aria-pressed={rail} onClick={toggleRail}>
+            <Icon name="show" size={16} /><span>My notes</span>
+            {items.length > 0 && <span className="rail-dot">{items.length}</span>}{flags.needs_reingest && <span className="reingest-dot" />}
           </button>
-          <button className="close-x" title="Close document" onClick={onClose}>×</button>
-        </header>
+          <span className="spacer" />
+          {layout && layout.kind !== 'image' && layout.kind !== 'text' && (
+            <div className="zoom">
+              <button className="icon-btn" data-tip="Zoom out" disabled={zoom === ZOOMS[0]} onClick={() => zoomBy(-1)}><Icon name="minus" /></button>
+              <button className="zoom-val" data-tip="Reset zoom" onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button>
+              <button className="icon-btn" data-tip="Zoom in" disabled={zoom === ZOOMS[ZOOMS.length - 1]} onClick={() => zoomBy(1)}><Icon name="add" /></button>
+            </div>
+          )}
+        </div>
 
         <div className="source-body">
           <div className="source-main">
@@ -530,7 +552,7 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
             {minimap && units.length > 0 && (
               <Minimap scroller={scroller} docId={id} thumbs={layout?.kind === 'pdf'} items={items} deps={[units, zoom, rail]} onClose={toggleMinimap} />
             )}
-            {!minimap && units.length > 0 && <button className="mm-open" title="Show the minimap" onClick={toggleMinimap}>‹</button>}
+            {!minimap && units.length > 0 && <button className="mm-open" title="Show the minimap" onClick={toggleMinimap}><Icon name="chevronLeft" /></button>}
           </div>
           </div>
           {rail && (
@@ -547,13 +569,13 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
         {askAt && tool === 'select' && (
           <div className={`ask-pop${askAt.below ? ' below' : ''}`} style={{ left: askAt.x, top: askAt.y }} onMouseDown={(e) => e.preventDefault()}>
             <button className="ask-main" onClick={() => define()}><span className="ask-spark">Aa</span> Define this</button>
-            <button className="ask-main" onClick={() => ask()}><span className="ask-spark">✦</span> Ask Apollo about this</button>
+            <button className="ask-main" onClick={() => ask()}><span className="ask-spark"><Icon name="ask" size={15} /></span> Ask Apollo about this</button>
             <div className="ask-row">
               {HIGHLIGHT_COLORS.map((c) => (
                 <button key={c} className="swatch" style={{ background: c }} title="Highlight" onClick={() => { setHlColor(c); highlight(undefined, c); }} />
               ))}
               <span className="ask-sep" />
-              <button className="ask-mini" title="Add a note to this text" onClick={() => addNote()}>🗒 Note</button>
+              <button className="ask-mini" title="Add a note to this text" onClick={() => addNote()}><Icon name="note" size={14} /> Note</button>
             </div>
           </div>
         )}

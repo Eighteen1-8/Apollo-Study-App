@@ -20,7 +20,7 @@ import logging
 import threading
 import time
 
-from . import db, generate, llm, pipeline, review, vision_audit
+from . import db, errors, generate, llm, pipeline, review, vision_audit
 
 log = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ class Job:
             raise pipeline.Cancelled()
 
 
-LANES = {"ingest": ("ingest", "embed"), "vision": ("vision", "audit"), "generate": ("generate", "mark", "review")}
+LANES = {"ingest": ("ingest", "embed"), "vision": ("vision", "audit"), "generate": ("generate", "mark", "review", "questions")}
 NEEDS = {"ingest": "embed", "vision": "llm", "generate": "llm"}  # the model each lane's jobs can't start without
 PAUSED_MSG = {"llm": "Paused: waiting for the language model to be resumed",
               "embed": "Paused: waiting for the embedding model to be resumed"}
@@ -131,6 +131,7 @@ def _run(lane):
             if row["type"] == "ingest":
                 if pipeline.ingest(row["document_id"], job, keep_vision=row["ref_id"] == pipeline.KEEP_VISION):
                     enqueue("vision", row["document_id"])
+                _ask_questions(row["document_id"])
             elif row["type"] == "vision":
                 pipeline.run_vision(row["document_id"], job)
             elif row["type"] == "embed":
@@ -143,6 +144,9 @@ def _run(lane):
                 generate.run_marking(row["ref_id"], job)
             elif row["type"] == "review":
                 review.run_review(row["ref_id"], job)
+            elif row["type"] == "questions":
+                from . import questions  # imports jobs
+                questions.run(row["ref_id"], job)
             db.ex("UPDATE jobs SET status='done', progress=1, message='Done', updated_at=? WHERE id=?", (time.time(), row["id"]))
         except pipeline.Yield:
             db.ex("UPDATE jobs SET status='queued', priority=0, queued_at=?, updated_at=?, message='Waiting: other files go first' "
@@ -151,9 +155,23 @@ def _run(lane):
             db.ex("UPDATE jobs SET status='cancelled', message='Cancelled', updated_at=? WHERE id=?", (time.time(), row["id"]))
             _mark_owner(row, "cancelled", None)
         except Exception as e:
-            log.exception("job %s (%s) failed", row["id"], row["type"])
-            db.ex("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?", (str(e), time.time(), row["id"]))
-            _mark_owner(row, "failed", str(e)[:500])
+            # coded (errors.py): "plain message [APO-…]" for the student, the technical detail and traceback in the log
+            err = errors.classify(e, "embed" if row["type"] in ("ingest", "embed") else "llm")
+            log.exception("%s job %s (%s, ref %s) failed: %s", err.code, row["id"], row["type"], row["document_id"] or row["ref_id"],
+                          err.technical or err.plain)
+            db.ex("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?", (str(err)[:500], time.time(), row["id"]))
+            _mark_owner(row, "failed", str(err)[:500])
+
+
+def _ask_questions(document_id):
+    """A file finished reading: its subject's example questions, if it has none yet (questions.py)."""
+    from . import questions  # imports jobs
+    d = db.q1("SELECT subject_id FROM documents WHERE id=?", (document_id,))
+    if d:
+        try:
+            questions.ensure(d["subject_id"])
+        except Exception:  # never fails the ingest job
+            log.exception("could not queue example questions for subject %s", d["subject_id"])
 
 
 def _mark_owner(row, status, error):
@@ -214,8 +232,9 @@ def track(type_: str, label: str, message: str = "Working", ref_id=None):
     except BaseException as e:
         # GeneratorExit: the student closed the chat stream mid-reply
         failed = not isinstance(e, GeneratorExit)
+        text = str(errors.classify(e, "llm"))[:500] if failed and isinstance(e, Exception) else str(e)[:500]
         db.ex("UPDATE jobs SET status=?, error=?, message=?, updated_at=? WHERE id=?",
-              ("failed" if failed else "cancelled", str(e)[:500] if failed else None, "Failed" if failed else "Stopped",
+              ("failed" if failed else "cancelled", text if failed else None, "Failed" if failed else "Stopped",
                time.time(), jid))
         raise
     else:

@@ -1,6 +1,8 @@
 /* Small notices at the bottom of the window ("Chat deleted · Undo"). They go away by themselves. */
 import { useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
+import Icon from './Icon';
+import ErrorText from './ErrorText';
 
 interface Toast { id: number; text: string; action?: { label: string; run: () => unknown } }
 
@@ -24,9 +26,9 @@ export function ToastLayer() {
     <div className="toasts" role="status" aria-live="polite">
       {list.map((t) => (
         <div key={t.id} className="toast">
-          <span className="toast-text">{t.text}</span>
+          <span className="toast-text"><ErrorText text={t.text} /></span>
           {t.action && <button className="toast-action" onClick={() => { dismiss(t.id); t.action!.run(); }}>{t.action.label}</button>}
-          <button className="x-btn toast-x" title="Dismiss" onClick={() => dismiss(t.id)}>×</button>
+          <button className="x-btn toast-x" title="Dismiss" onClick={() => dismiss(t.id)}><Icon name="close" size={14} /></button>
         </div>
       ))}
     </div>,

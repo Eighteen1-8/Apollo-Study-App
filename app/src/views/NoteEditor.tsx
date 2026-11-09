@@ -16,6 +16,7 @@ import { highlightCss, highlightRow } from '../components/highlights';
 import { quoteParts, replaceText, selectionIn } from '../components/textRange';
 import { logError } from '../log';
 import { getPref, setPref } from '../prefs';
+import Icon from '../components/Icon';
 
 const FONTS: [string, string][] = [
   ['', 'Default font'], ['Segoe UI, sans-serif', 'Segoe UI'], ['Calibri, sans-serif', 'Calibri'], ['Arial, sans-serif', 'Arial'],
@@ -352,8 +353,8 @@ export default function NoteEditor({ id, subject, onClose, onAsk, onAttach }: {
         <button className={`btn btn-sm${showReviews ? ' on' : ''}`} onClick={() => setShowReviews(!showReviews)}>
           Comments{active ? ` (${active})` : ''}
         </button>
-        <button className="btn btn-sm" onClick={exportMenu}>Export ▾</button>
-        <button className="close-x" title="Close" onClick={onClose}>×</button>
+        <button className="btn btn-sm" onClick={exportMenu}>Export <Icon name="chevronDown" size={14} /></button>
+        <button className="close-x" title="Close" onClick={onClose}><Icon name="close" size={18} /></button>
       </header>
       <div className="ne-toolbar" role="toolbar" aria-label="Formatting">
         <div className="ne-group">
@@ -384,13 +385,13 @@ export default function NoteEditor({ id, subject, onClose, onAsk, onAttach }: {
             <button className="ne-btn ne-color" data-tip="Text colour" aria-label="Text colour" onMouseDown={(e) => e.preventDefault()} onClick={() => foreColor(textColor)}>
               <span className="ne-a">A</span><span className="ne-swatch" style={{ background: textColor }} />
             </button>
-            <button className="ne-btn ne-caret" data-tip="More text colours" aria-label="More text colours" onMouseDown={(e) => colourPopover(e, 'text')}>▾</button>
+            <button className="ne-btn ne-caret" data-tip="More text colours" aria-label="More text colours" onMouseDown={(e) => colourPopover(e, 'text')}><Icon name="chevronDown" size={12} /></button>
           </span>
           <span className="ne-split">
             <button className="ne-btn ne-hl" data-tip="Highlight" aria-label="Highlight" onMouseDown={(e) => e.preventDefault()} onClick={() => highlight(hlColor)}>
               <HighlighterIcon /><span className="ne-swatch" style={{ background: highlightCss(hlColor) }} />
             </button>
-            <button className="ne-btn ne-caret" data-tip="Highlight colours" aria-label="Highlight colours" onMouseDown={(e) => colourPopover(e, 'hilite')}>▾</button>
+            <button className="ne-btn ne-caret" data-tip="Highlight colours" aria-label="Highlight colours" onMouseDown={(e) => colourPopover(e, 'hilite')}><Icon name="chevronDown" size={12} /></button>
           </span>
         </div>
         <div className="ne-group">

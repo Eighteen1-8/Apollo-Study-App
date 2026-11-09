@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { openErrorHelp } from './ErrorText';
 import { api, inElectron, Subject } from '../api';
 import type { Route } from '../App';
 import logo from '../../assets/icon.svg';
@@ -7,10 +8,18 @@ import JobsPanel from './JobsPanel';
 import { Modal, useOverlay } from './overlay';
 import StaleBadge from './StaleBadge';
 import SubjectIcon, { PALETTE } from './SubjectIcon';
+import IconPicker from './IconPicker';
 import { useReorder } from './reorder';
 import { useChatStreams } from '../chatStreams';
 import { redo, undo, useUndo } from '../undo';
 import { openPalette } from './CommandPalette';
+import ShortcutsList from './Shortcuts';
+import { openSetup } from './SetupWizard';
+import { startTour } from './Tour';
+import Icon from './Icon';
+import { usePoll } from '../hooks';
+import { useAdvanced } from '../theme';
+import { useTerms } from '../terms';
 
 /** Narrow icon bar: home, one tile per subject, add, background jobs, settings. */
 export default function Minibar({ subjects, route, go, onChange, online }: {
@@ -19,32 +28,35 @@ export default function Minibar({ subjects, route, go, onChange, online }: {
   const ov = useOverlay();
   const act = useLibraryActions(subjects, go, onChange);
   const [colorFor, setColorFor] = useState<Subject | null>(null);
+  const [iconFor, setIconFor] = useState<Subject | null>(null);
   const active = route.name === 'subject' ? route.id : null;
   const reorder = useReorder('subjects', subjects.map((s) => s.id), async (ids) => { await api.orderSubjects(ids); onChange(); }, 'reorder subjects');
   const streams = useChatStreams();
   const history = useUndo();
+  const advanced = useAdvanced();
+  const tr = useTerms();
+  const [help, setHelp] = useState(false);
 
   const menu = (e: React.MouseEvent, s: Subject) => ov.menu(e, [
     { label: 'Open', onClick: () => go({ name: 'subject', id: s.id }) },
     { label: 'New topic…', onClick: () => act.newTopic(s) },
-    { label: 'Check vision notes', onClick: () => act.checkVision({ subject_id: s.id }, s.name, s.id), separatorBefore: true },
-    { label: 'Maintenance…', onClick: () => go({ name: 'settings', tab: 'maintenance', subjectId: s.id }) },
-    { label: 'Export / share…', onClick: () => go({ name: 'settings', tab: 'share', subjectId: s.id }) },
+    ...(advanced ? [
+      { label: tr('checkVision'), onClick: () => act.checkVision({ subject_id: s.id }, s.name, s.id), separatorBefore: true },
+      { label: 'Maintenance…', onClick: () => go({ name: 'settings', tab: 'maintenance', subjectId: s.id }) },
+    ] : []),
+    { label: 'Export / share…', separatorBefore: !advanced, onClick: () => go({ name: 'settings', tab: 'share', subjectId: s.id }) },
     { label: 'Rename…', onClick: () => act.renameSubject(s), separatorBefore: true },
     { label: 'Change colour…', onClick: () => setColorFor(s) },
     { label: 'Change letters…', onClick: async () => {
       const t = await ov.prompt({ title: 'Icon letters', label: 'Up to 3 characters', initial: s.icon_text ?? '', placeholder: 'PH' });
       if (t) { await api.setIcon(s.id, { icon_text: t }); onChange(); }
     } },
-    { label: 'Use an emoji…', onClick: async () => {
-      const t = await ov.prompt({ title: 'Icon emoji', label: 'Type or paste an emoji (Win + . opens the emoji picker)', initial: s.icon_emoji ?? '' });
-      if (t) { await api.setIcon(s.id, { icon_emoji: t }); onChange(); }
-    } },
+    { label: 'Choose an icon…', onClick: () => setIconFor(s) },
     { label: 'Upload an image…', disabled: !inElectron, onClick: async () => {
       const p = await window.studyApp!.openFiles({ multi: false });
       if (p[0]) { await api.setIcon(s.id, { image_path: p[0] }); onChange(); }
     } },
-    { label: 'Reset icon', onClick: async () => { await api.setIcon(s.id, { icon_text: '', icon_emoji: '', clear_image: true }); onChange(); } },
+    { label: 'Reset icon', onClick: async () => { await api.setIcon(s.id, { icon_text: '', icon_emoji: '', icon_name: '', clear_image: true }); onChange(); } },
     { label: 'Delete subject', danger: true, separatorBefore: true, onClick: () => act.deleteSubject(s) },
   ]);
 
@@ -67,7 +79,7 @@ export default function Minibar({ subjects, route, go, onChange, online }: {
               onReingest={async () => { await api.reingestStale(s.id); onChange(); }} />
           </button>
         ))}
-        <button className="mini-add" data-tip="New subject" onClick={act.newSubject}>+</button>
+        <button className="mini-add" data-tip="New subject" onClick={act.newSubject}><Icon name="add" size={18} /></button>
       </div>
       <div className="mini-bottom">
         <button className="mini-icon mini-search" data-tip="Search and go anywhere (Ctrl+K)" onClick={openPalette}>
@@ -91,7 +103,9 @@ export default function Minibar({ subjects, route, go, onChange, online }: {
             </svg>
           </button>
         )}
+        <ModelLight onOpen={() => go({ name: 'settings' })} />
         <JobsPanel />
+        <button className="mini-icon mini-help" data-tip="Shortcuts and help" onClick={() => setHelp(true)}><Icon name="help" size={19} strokeWidth={1.9} /></button>
         <button className={`mini-icon${route.name === 'settings' ? ' active' : ''}`} data-tip="Settings" onClick={() => go({ name: 'settings' })}>
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="3" />
@@ -100,6 +114,27 @@ export default function Minibar({ subjects, route, go, onChange, online }: {
         </button>
       </div>
 
+      {help && (
+        <Modal title="Shortcuts and help" wide onClose={() => setHelp(false)}
+          footer={<>
+            <button className="btn" onClick={() => {
+              setHelp(false);
+              // the tour points at a subject's page: open one first if none is showing
+              if (route.name !== 'subject' && subjects.length) { go({ name: 'subject', id: subjects[0].id }); setTimeout(startTour, 900); } else startTour();
+            }}>Show the tour</button>
+            <button className="btn" onClick={() => { setHelp(false); openSetup(); }}>Set up models again</button>
+            <button className="btn" onClick={() => { setHelp(false); openErrorHelp(null); }}>Error codes</button>
+            <span className="spacer" />
+            <button className="btn btn-primary" onClick={() => setHelp(false)}>Got it</button>
+          </>}>
+          <p className="muted small help-intro">Make a <b>subject</b> (e.g. Physics) with <b>topics</b> inside it (e.g. Motion), add your
+            slides, notes and textbooks, then ask Apollo questions or have it make flashcards, quizzes, notes and more. Everything you make
+            is saved in the left sidebar; your files are on the right.</p>
+          <ShortcutsList />
+        </Modal>
+      )}
+      {iconFor && <IconPicker subject={iconFor} onClose={() => setIconFor(null)}
+        onPick={async (k) => { await api.setIcon(iconFor.id, { icon_name: k }); onChange(); }} />}
       {colorFor && <ColorDialog subject={colorFor} onClose={() => setColorFor(null)}
         onPick={async (c) => { await api.setIcon(colorFor.id, { color: c }); onChange(); }} />}
     </nav>
@@ -124,5 +159,26 @@ function ColorDialog({ subject, onPick, onClose }: { subject: Subject; onPick: (
         </label>
       </div>
     </Modal>
+  );
+}
+
+/** A light for the AI models: green when both answer, amber while one is paused, red when one can't be reached.
+ * Click opens Settings, where Test connections says more. */
+function ModelLight({ onOpen }: { onOpen: () => void }) {
+  const st = usePoll(api.modelStatus, 30000, [], ['pause']);
+  const tr = useTerms();
+  if (!st.data) return null;
+  const parts = [['llm', 'Apollo (chat and generation)'], ['embed', 'Search']] as const;
+  const down = parts.filter(([k]) => !st.data![k].ok && !st.data![k].paused);
+  const paused = parts.filter(([k]) => st.data![k].paused);
+  const tone = down.length ? 'bad' : paused.length ? 'warn' : 'ok';
+  const tip = down.length
+    ? `${down.map(([k, n]) => `${n}: not available. ${st.data![k].error ?? ''}`).join('\n')}\nMake sure the model servers are running, then click to test the connections.`
+    : paused.length ? `Paused: ${paused.map(([k]) => tr(k === 'llm' ? 'llm' : 'embeddings')).join(' and ')} (resume from the jobs list)`
+      : 'Apollo and search are ready';
+  return (
+    <button className={`mini-icon mini-light light-${tone}`} data-tip={tip} aria-label={tip} onClick={onOpen}>
+      <span className="light-dot" aria-hidden />
+    </button>
   );
 }

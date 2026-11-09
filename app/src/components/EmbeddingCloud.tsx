@@ -7,9 +7,11 @@
    Display only: nothing here feeds retrieval. */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, EmbeddingMap } from '../api';
-import { cloudDrift, cloudFps, REF_COLOR, reducedMotion, topicColor } from '../theme';
+import { cloudDrift, cloudFps, isAdvanced, REF_COLOR, reducedMotion, topicColor } from '../theme';
 import { logError } from '../log';
 import { onChange } from '../events';
+import { term } from '../terms';
+import Icon from './Icon';
 
 type RGB = [number, number, number];
 
@@ -578,18 +580,17 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
       <div className="cloud-hud cloud-hud-top">
         <div className="cloud-kicker"><span className="cloud-live" />{title ?? 'Knowledge cloud'}</div>
         <div className="cloud-meta">
-          {!loaded ? 'Loading vectors…'
-            : scene?.demo ? (subjectMode ? 'Nothing embedded in this subject yet. Upload files to a topic and they will appear here.'
-              : 'Nothing embedded yet. Upload material and it will appear here.')
-            : kept ? (kept.chunks ? <>{kept.chunks.toLocaleString()} of {map!.points.length.toLocaleString()} chunks
-              {focus?.kind !== 'doc' && <> · {kept.files} file{kept.files === 1 ? '' : 's'}</>}</> : 'No embedded chunks here yet.')
-            : <>{map!.points.length.toLocaleString()} chunks · {fileCount} file{fileCount === 1 ? '' : 's'} · PCA → 3D</>}
+          {!loaded ? term('loadingMap')
+            : scene?.demo ? term(subjectMode ? 'emptyMapSubject' : 'emptyMap')
+            : kept ? (kept.chunks ? <>{kept.chunks.toLocaleString()} of {map!.points.length.toLocaleString()} {term('chunks')}
+              {focus?.kind !== 'doc' && <> · {kept.files} file{kept.files === 1 ? '' : 's'}</>}</> : term('emptyFocus'))
+            : <>{map!.points.length.toLocaleString()} {term('chunks')} · {fileCount} file{fileCount === 1 ? '' : 's'}{isAdvanced() && ' · PCA → 3D'}</>}
         </div>
         {focus && (
           <button className="cloud-focus" onClick={() => onFocus?.(null)} title="Show the whole subject">
             <span className="cloud-focus-kind">{({ doc: 'File', folder: 'Folder', ref: 'Library', topic: 'Topic' } as const)[focus.kind]}</span>
             <span className="cloud-focus-name">{focus.name}</span>
-            {onFocus && <span className="cloud-focus-x" aria-hidden>×</span>}
+            {onFocus && <span className="cloud-focus-x" aria-hidden><Icon name="close" size={13} /></span>}
           </button>
         )}
         {legend.length > 0 && (
@@ -608,6 +609,9 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
           </div>
         )}
       </div>
+      {!isAdvanced() && subjectMode && scene && !scene.demo && (
+        <div className="cloud-explain">Each dot is a passage from your files; similar ideas sit close together. Click a dot to open it, or pick a topic on the right.</div>
+      )}
       <div className="cloud-hint">Drag to orbit · Scroll to zoom · Double-click to reset{subjectMode ? ' · Click a point to open it' : ''}
         {scene && !scene.demo && <> · <button className="link-btn cloud-refit" onClick={rearrange} title="New files join the existing layout; this lays the cloud out again from everything now embedded">Re-arrange</button></>}
       </div>

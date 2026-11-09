@@ -100,15 +100,26 @@ async function startBackend() {
   const env = { ...process.env, APOLLO_TOKEN: backendToken, APOLLO_GRANT_KEY: grantKey, ...(app.isPackaged ? { STUDY_ENV_FILE: path.join(exeDir, '.env') } : {}) };
   backend = spawn(cmd, args, { cwd, windowsHide: true, env });
   let startupError = '';
+  let stderrTail = '';
   let exited = false;
+  let exitCode = null;
   backend.stdout.on('data', (d) => process.stdout.write(`[backend] ${d}`));
   backend.stderr.on('data', (d) => {
     process.stderr.write(`[backend] ${d}`);
+    stderrTail = (stderrTail + String(d)).slice(-1500);
     const m = /STUDYAPP_ERROR (.*)/.exec(String(d));
     if (m) startupError = m[1].trim();
   });
-  backend.on('exit', (code) => { console.log(`[backend] exited ${code}`); backend = null; exited = true; });
-  if (!(await waitHealthy(port, 30000, () => exited))) throw new Error(startupError || 'Backend did not start');
+  backend.on('exit', (code) => { console.log(`[backend] exited ${code}`); backend = null; exited = true; exitCode = code; });
+  if (!(await waitHealthy(port, 30000, () => exited))) {
+    // the backend's own explanation when it gave one; otherwise the end of what it printed, so the cause is visible
+    const last = stderrTail.trim().split(/\r?\n/).filter(Boolean).slice(-3).join('\n');
+    const log = path.join(dataDir, 'logs', 'backend.log');
+    throw new Error(startupError
+      || (exited ? `The background service stopped while starting (exit code ${exitCode}). [APO-APP-003]${last ? `\n\n${last}` : ''}`
+        : 'The background service took longer than 30 seconds to start. Your computer may be busy; try again. [APO-APP-003]')
+      + `\n\nThe log is at ${log}. The code is explained in docs/ERRORS.md.`);
+  }
   return port;
 }
 
@@ -293,6 +304,12 @@ ipcMain.handle('capture:rect', async (e, r) => {
 ipcMain.handle('clipboard:image', (_e, png) => { clipboard.writeImage(nativeImage.createFromBuffer(Buffer.from(String(png), 'base64'))); });
 
 ipcMain.on('backend:info', (e) => { e.returnValue = { url: `http://127.0.0.1:${backendPort}`, token: backendToken }; });
+
+// Settings → Appearance → Text size: the page's zoom (Chromium's own, so pointer maths and pdf.js stay right).
+ipcMain.on('window:zoom', (e, f) => {
+  const z = Number(f);
+  if (Number.isFinite(z) && z >= 0.8 && z <= 1.6) e.sender.setZoomFactor(z);
+});
 
 ipcMain.on('window:chrome', (e, c) => {
   const win = BrowserWindow.fromWebContents(e.sender);

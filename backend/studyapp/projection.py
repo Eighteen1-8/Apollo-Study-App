@@ -33,8 +33,9 @@ _HASH = "((c.id * 2654435761) % 4294967296)"  # Knuth's multiplicative hash: a s
 def _scope(subject_id: int | None) -> tuple[str, str, tuple]:
     """(scope key, extra WHERE for chunks aliased c, its args)."""
     if subject_id is None:
-        return "all", "", ()
-    return f"subject:{subject_id}", " AND c.document_id IN (SELECT id FROM documents WHERE subject_id=?)", (subject_id,)
+        return "all", " AND c.document_id NOT IN (SELECT id FROM documents WHERE kind='trash')", ()
+    return (f"subject:{subject_id}", " AND c.document_id IN (SELECT id FROM documents WHERE subject_id=? AND kind<>'trash')",
+            (subject_id,))
 
 
 def _vectors(ids: list[int]) -> dict[int, np.ndarray]:

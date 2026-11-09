@@ -23,7 +23,7 @@ import pymupdf
 from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel
 
-from . import config, db, llm, render
+from . import citations, config, db, llm, render
 
 log = logging.getLogger(__name__)
 
@@ -39,14 +39,8 @@ def _doc_for(subject_id: int, file: str):
 
 
 def _unit_for(doc, label: str):
-    units = db.q("SELECT idx, label, images FROM units WHERE document_id=? ORDER BY idx", (doc["id"],))
-    l = label.lower().strip()
-    m = re.match(r"^(slide|page|part)\s+(\d+)", l)
-    if m:
-        return next((u for u in units if u["idx"] == int(m.group(2))), None)
-    return (next((u for u in units if u["label"].lower() == l), None)
-            or next((u for u in units if u["label"].lower().startswith(l) or l.startswith(u["label"].lower())), None)
-            or next((u for u in units if l in u["label"].lower()), None))
+    units = db.q("SELECT idx, kind, label, images FROM units WHERE document_id=? ORDER BY idx", (doc["id"],))
+    return citations.find_unit(units, label)  # reads "Section 14 · …", ranges and "(part k)" too
 
 
 # ---------------------------------------------------------------- finding figures on a page

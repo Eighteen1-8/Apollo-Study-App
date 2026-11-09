@@ -64,5 +64,5 @@ def require(path: str, mode: str = "read") -> Path:
     if KEY and not (mode == "read" and _inside_data(path)):
         grant = _given.get().get(normalise(path))
         if not grant or not hmac.compare_digest(grant, sign(path, mode)):
-            raise HTTPException(403, f"{Path(path).name}: choose this file with the app's file picker (or drop it in) first")
+            raise HTTPException(403, f"[APO-FILE-302] {Path(path).name}: choose this file with the app's file picker (or drop it in) first")
     return Path(path)

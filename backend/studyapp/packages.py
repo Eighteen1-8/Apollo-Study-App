@@ -80,7 +80,7 @@ def _scope(b: ExportScope) -> tuple[dict, list[dict], str]:
         docs = db.q("SELECT * FROM documents WHERE topic_id=? ORDER BY id", (b.topic_id,))
         label = t["name"]
     elif b.subject_id is not None:
-        docs = db.q("SELECT * FROM documents WHERE subject_id=? ORDER BY id", (b.subject_id,))
+        docs = db.q("SELECT * FROM documents WHERE subject_id=? AND kind<>'trash' ORDER BY id", (b.subject_id,))
         label = None
     else:
         raise HTTPException(400, "Choose a subject, topic or files")
@@ -236,7 +236,7 @@ def export_pack(b: ExportBody):
                                       "topic": topics[d["topic_id"]]["key"] if d["topic_id"] else None,
                                       "notes": bool(notes), "file": src.is_file()})
             manifest = {"format": FORMAT, "version": VERSION, "created_at": time.time(), "scope": label,
-                        "subject": {k: subject[k] for k in ("name", "color", "icon_text", "icon_emoji")},
+                        "subject": {k: subject[k] for k in ("name", "color", "icon_text", "icon_emoji", "icon_name")},
                         "topics": [{k: t[k] for k in ("key", "name", "description")} for t in topics.values()],
                         "embed_model": llm.embed_model(), "embed_dim": max(dims) if dims else None,
                         "notes_included": b.include_notes, "documents": manifest_docs}
@@ -312,9 +312,9 @@ def _import(z: zipfile.ZipFile, m: dict, b: ImportBody) -> dict:
         sid = b.subject_id
     else:
         s = m["subject"]
-        sid = db.ex("INSERT INTO subjects(name, color, icon_text, icon_emoji, created_at) VALUES (?,?,?,?,?)",
+        sid = db.ex("INSERT INTO subjects(name, color, icon_text, icon_emoji, icon_name, created_at) VALUES (?,?,?,?,?,?)",
                     ((b.subject_name or s.get("name") or "Imported").strip()[:120], s.get("color") or "#7c8cff",
-                     s.get("icon_text"), s.get("icon_emoji"), now))
+                     s.get("icon_text"), s.get("icon_emoji"), s.get("icon_name"), now))
     existing = {t["name"].casefold(): t["id"] for t in db.q("SELECT id, name FROM topics WHERE subject_id=?", (sid,))}
     topic_ids = {}
     for t in m.get("topics", []):

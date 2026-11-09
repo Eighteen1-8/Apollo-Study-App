@@ -26,6 +26,7 @@ class IconBody(BaseModel):
     color: str | None = None
     icon_text: str | None = None
     icon_emoji: str | None = None
+    icon_name: str | None = None  # a Lucide icon name from the picker
     clear_image: bool = False
     image_path: str | None = None  # local file chosen by the user; copied into the app's assets
 
@@ -39,8 +40,13 @@ def set_icon(sid: int, body: IconBody):
     if body.icon_text is not None:
         fields["icon_text"] = body.icon_text.strip()[:3] or None
         fields["icon_emoji"] = None
+        fields["icon_name"] = None
     if body.icon_emoji is not None:
         fields["icon_emoji"] = body.icon_emoji.strip()[:8] or None
+    if body.icon_name is not None:
+        fields["icon_name"] = body.icon_name.strip()[:40] or None
+        fields["icon_emoji"] = None
+        fields["icon_text"] = None
     if body.image_path:
         src = grants.require(body.image_path)
         if not src.is_file() or src.suffix.lower() not in IMAGE_EXTS:
@@ -50,7 +56,7 @@ def set_icon(sid: int, body: IconBody):
         rel = f"subject_icons/{sid}_{int(time.time())}{src.suffix.lower()}"
         shutil.copyfile(src, config.assets_dir() / rel)
         fields["icon_image"] = rel
-    if body.clear_image or body.icon_text is not None or body.icon_emoji is not None:
+    if body.clear_image or body.icon_text is not None or body.icon_emoji is not None or body.icon_name is not None:
         if s["icon_image"] and not body.image_path:
             (config.assets_dir() / s["icon_image"]).unlink(missing_ok=True)
             fields["icon_image"] = None
@@ -63,7 +69,7 @@ def set_icon(sid: int, body: IconBody):
 def all_documents(sid: int):
     """Every document in the subject (topic material and textbooks): used to resolve citations to files."""
     return db.q("""SELECT d.id, d.filename, d.kind, d.topic_id, d.ext, t.name AS topic_name FROM documents d
-                   LEFT JOIN topics t ON t.id=d.topic_id WHERE d.subject_id=? ORDER BY d.id""", (sid,))
+                   LEFT JOIN topics t ON t.id=d.topic_id WHERE d.subject_id=? AND d.kind<>'trash' ORDER BY d.id""", (sid,))
 
 
 # ---------------------------------------------------------------- file folders (sidebar grouping only)
@@ -181,7 +187,7 @@ def order_folders(tid: int, body: FolderOrder):
 
 @router.get("/subjects/{sid}/library")
 def library(sid: int):
-    rows = db.q("""SELECT a.id, a.topic_id, a.chat_id, a.type, a.title, a.status, a.progress, a.message, a.created_at,
+    rows = db.q("""SELECT a.id, a.topic_id, a.chat_id, a.type, a.title, a.status, a.progress, a.message, a.error, a.created_at,
                           t.name AS topic_name FROM artifacts a LEFT JOIN topics t ON t.id=a.topic_id
                    WHERE a.subject_id=? AND a.status != 'cancelled' AND a.deleted_at IS NULL
                    ORDER BY date(a.created_at, 'unixepoch', 'localtime') DESC, a.position IS NULL, a.position, a.id DESC""", (sid,))
@@ -412,7 +418,7 @@ def palette():
     return {
         "subjects": db.q("SELECT id, name FROM subjects ORDER BY position IS NULL, position, name COLLATE NOCASE"),
         "topics": db.q("SELECT id, subject_id, name FROM topics ORDER BY position IS NULL, position, name COLLATE NOCASE"),
-        "documents": db.q("SELECT id, subject_id, topic_id, kind, filename FROM documents ORDER BY id DESC"),
+        "documents": db.q("SELECT id, subject_id, topic_id, kind, filename FROM documents WHERE kind<>'trash' ORDER BY id DESC"),
         "artifacts": db.q("""SELECT id, subject_id, topic_id, type, title FROM artifacts
                              WHERE status='ready' AND deleted_at IS NULL ORDER BY id DESC"""),
         "notes": db.q("SELECT id, subject_id, topic_id, title FROM user_notes WHERE deleted_at IS NULL ORDER BY updated_at DESC"),

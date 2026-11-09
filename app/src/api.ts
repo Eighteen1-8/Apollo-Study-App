@@ -1,3 +1,5 @@
+import { ApiError, ErrorEntry } from './errors';
+
 declare global {
   interface Window {
     studyApp?: {
@@ -13,6 +15,8 @@ declare global {
       /** Present when the window has no native title bar (the app draws it; see Titlebar). */
       titlebar?: boolean;
       setChrome?: (c: { color: string; symbol: string; bg: string; dark: boolean }) => void;
+      /** Page zoom for the Text size setting (Electron's zoom factor). */
+      setZoom?: (f: number) => void;
       /** Print the element marked #print-root to a PDF the student saves (exportDoc.ts). null: cancelled. */
       printPdf?: (opts: { defaultName: string }) => Promise<string | null>;
       /** A PNG (base64) of an area of the window, in CSS pixels. */
@@ -74,6 +78,10 @@ export interface Topic { id: number; subject_id: number; name: string; descripti
 export interface Subject {
   id: number; name: string; color: string; topics: Topic[]; reference_count: number; stale_docs?: number; stale_reference_docs?: number;
   icon_text: string | null; icon_emoji: string | null; icon_image: string | null;
+  /** A Lucide icon key from components/subjectIcons.ts (replaces the older emoji option). */
+  icon_name: string | null;
+  /** Three example questions Apollo wrote once the subject had material (empty until then): the study sheet's placeholder. */
+  questions: string[];
 }
 export interface TopicDetail extends Topic {
   subject_name: string; subject_color: string; context_budget: number;
@@ -177,20 +185,35 @@ export type Settings = Record<string, string | number | boolean | string[]>;
 export type Reasoning = 'off' | 'low' | 'medium' | 'xhigh';
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(BASE + path, {
-    method,
-    headers: body !== undefined ? { ...AUTH, ...grantHeader(body), 'Content-Type': 'application/json' } : AUTH,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  let res: Response;
+  try {
+    res = await fetch(BASE + path, {
+      method,
+      headers: body !== undefined ? { ...AUTH, ...grantHeader(body), 'Content-Type': 'application/json' } : AUTH,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch (e) { // no answer at all: the backend isn't running
+    throw new ApiError('Apollo’s background service isn’t answering. Restart the app if this lasts.', 'APO-APP-001', 0, String(e));
+  }
   if (!res.ok) {
-    let msg = `${res.status}`;
-    try { msg = (await res.json()).detail ?? msg; } catch { /* not json */ }
-    throw new Error(msg);
+    // {detail, code, technical} from the backend's error handlers (errors.py); anything else gets a code by status
+    let j: { detail?: unknown; code?: string; technical?: string } = {};
+    try { j = await res.json(); } catch { /* not json */ }
+    const detail = typeof j.detail === 'string' ? j.detail : `The request failed (HTTP ${res.status}).`;
+    const code = j.code ?? (res.status === 401 ? 'APO-APP-002' : res.status === 404 ? 'APO-DATA-504' : res.status < 500 ? 'APO-APP-400' : 'APO-APP-900');
+    throw new ApiError(detail, code, res.status, j.technical ?? '');
   }
   return res.json();
 }
 
+/** One model server's state for the side bar's status light (`/status/models`). */
+export interface ModelState { ok: boolean; online: boolean; paused: boolean; error: string | null; code?: string | null }
+
 export const api = {
+  /** The error reference (backend errors.py; the same as docs/ERRORS.md). */
+  errorCodes: () => req<ErrorEntry[]>('GET', '/errors'),
+  /** The example Physics subject (made once; asking again returns the same one). */
+  makeExample: () => req<{ id: number; created: boolean }>('POST', '/examples/physics'),
   health: () => req<{ ok: boolean; data_dir: string; auth: boolean }>('GET', '/health'),
   subjects: () => req<Subject[]>('GET', '/subjects'),
   createSubject: (name: string, color?: string) => req<Subject>('POST', '/subjects', { name, color }),
@@ -205,7 +228,9 @@ export const api = {
   upload: (body: { paths: string[]; topic_id?: number; subject_id?: number; vision_mode?: VisionMode }) =>
     req<{ filename: string; status: string; message?: string }[]>('POST', '/documents', body),
   document: (id: number) => req<DocDetail>('GET', `/documents/${id}`),
+  /** To the trash for a week (restoreDocument brings it back as it was; purged at start-up after that). */
   deleteDocument: (id: number) => req('DELETE', `/documents/${id}`),
+  restoreDocument: (id: number) => req<Doc & { note: string | null }>('POST', `/documents/${id}/restore`),
   /** Move a file to a topic, or to the subject's reference library (topic_id null). */
   moveDocument: (id: number, topic_id: number | null) => req<Doc>('POST', `/documents/${id}/move`, { topic_id }),
   documentLayout: (id: number) => req<DocLayout>('GET', `/documents/${id}/layout`),
@@ -249,7 +274,7 @@ export const api = {
   /** Browser fallback (no save dialog): the pack comes back as a download. */
   exportPackBlob: async (s: PackScope & { include_notes: boolean }) => {
     const res = await fetch(BASE + '/export', { method: 'POST', headers: { ...AUTH, ...grantHeader(s), 'Content-Type': 'application/json' }, body: JSON.stringify(s) });
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? String(res.status));
+    if (!res.ok) { const j = await res.json().catch(() => ({})); throw new ApiError(j.detail ?? `HTTP ${res.status}`, j.code ?? 'APO-APP-900', res.status, j.technical ?? ''); }
     const name = /filename="?([^"]+)"?/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? 'study-pack.apollo.zip';
     return { blob: await res.blob(), name };
   },
@@ -269,6 +294,7 @@ export const api = {
     req<{ results: SearchResult[]; warning: string | null }>('POST', '/search', { query, subject_id, include_reference: true, k }),
   settings: () => req<Settings>('GET', '/settings'),
   saveSettings: (s: Settings) => req<Settings>('PUT', '/settings', s),
+  modelStatus: () => req<Record<'llm' | 'embed', ModelState>>('GET', '/status/models'),
   testSettings: () => req<Record<string, { ok: boolean; online?: boolean; model?: string; error?: string; dim?: number; ms?: number; max_model_len?: number; models?: string[]; profile?: ServerProfile }>>('POST', '/settings/test'),
   openrouterModels: () => req<OpenRouterModel[]>('GET', '/settings/openrouter-models'),
   previewUrl: (docId: number, idx: number) => authUrl(`${BASE}/documents/${docId}/units/${idx}/preview`),
@@ -313,7 +339,7 @@ export const api = {
   exportDocx: (body: { title: string; html: string; path: string }) => req<{ path: string }>('POST', '/export/docx', body),
   exportDocxBlob: async (body: { title: string; html: string }) => {
     const res = await fetch(BASE + '/export/docx', { method: 'POST', headers: { ...AUTH, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? String(res.status));
+    if (!res.ok) { const j = await res.json().catch(() => ({})); throw new ApiError(j.detail ?? `HTTP ${res.status}`, j.code ?? 'APO-APP-900', res.status, j.technical ?? ''); }
     return res.blob();
   },
   /** A screenshot taken in the app, kept as a file the chat can attach. */
@@ -341,13 +367,18 @@ export const api = {
   submitTool: (messageId: number, args: Record<string, unknown>, topic_id: number | null) =>
     req<Message>('POST', `/messages/${messageId}/submit`, { args, topic_id }),
   dismissTool: (messageId: number) => req<Message>('POST', `/messages/${messageId}/dismiss`),
+  /** Make content from the Make content steps: a topic, the whole subject (topic_id null) or some files; extra files
+   * (read for this request only, never ingested) with instructions for them. */
+  createContent: (subjectId: number, body: { type: ArtifactType; topic_id: number | null; document_ids?: number[];
+    args: Record<string, unknown>; extra_paths?: string[]; instructions?: string }) =>
+    req<{ id: number; type: ArtifactType; title: string; status: string }>('POST', `/subjects/${subjectId}/artifacts`, body),
   artifact: (id: number) => req<Artifact>('GET', `/artifacts/${id}`),
   retryArtifact: (id: number) => req('POST', `/artifacts/${id}/retry`),
   cancelArtifact: (id: number) => req('POST', `/artifacts/${id}/cancel`),
   submitAttempt: (artifactId: number, answers: Record<string, string>) => req<Attempt>('POST', `/artifacts/${artifactId}/attempts`, { answers }),
   attempt: (id: number) => req<Attempt>('GET', `/attempts/${id}`),
 
-  setIcon: (id: number, body: { color?: string; icon_text?: string; icon_emoji?: string; clear_image?: boolean; image_path?: string }) =>
+  setIcon: (id: number, body: { color?: string; icon_text?: string; icon_emoji?: string; icon_name?: string; clear_image?: boolean; image_path?: string }) =>
     req('PATCH', `/subjects/${id}/icon`, body),
   allDocuments: (subjectId: number) => req<DocRef[]>('GET', `/subjects/${subjectId}/all-documents`),
   library: (subjectId: number) => req<LibraryItem[]>('GET', `/subjects/${subjectId}/library`),
@@ -384,13 +415,19 @@ export const api = {
 
 /** Server-sent chat events: user | status | reasoning | delta | assistant | tool | error | stopped | end. */
 async function streamChat(path: string, body: unknown, onEvent: (e: ChatEvent) => void) {
-  const res = await fetch(BASE + path, {
-    method: 'POST', headers: { ...AUTH, ...grantHeader(body), 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetch(BASE + path, {
+      method: 'POST', headers: { ...AUTH, ...grantHeader(body), 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+  } catch (e) {
+    throw new ApiError('Apollo’s background service isn’t answering. Restart the app if this lasts.', 'APO-APP-001', 0, String(e));
+  }
   if (!res.ok || !res.body) {
-    let msg = `HTTP ${res.status}`;
-    try { msg = (await res.json()).detail ?? msg; } catch { /* not json */ }
-    throw new Error(msg);
+    let j: { detail?: unknown; code?: string; technical?: string } = {};
+    try { j = await res.json(); } catch { /* not json */ }
+    throw new ApiError(typeof j.detail === 'string' ? j.detail : `The request failed (HTTP ${res.status}).`,
+      j.code ?? (res.status < 500 ? 'APO-APP-400' : 'APO-APP-900'), res.status, j.technical ?? '');
   }
   const reader = res.body.getReader();
   const dec = new TextDecoder();
@@ -459,9 +496,11 @@ export interface ChatStats {
   prompt: number; completion: number; reasoning: number; seconds: number; reasoning_seconds: number; cost: number;
   local_replies: number; online_replies: number; models: string[];
 }
-/** Context window use for a chat's next question (tokens). `exact`: the last reply's real numbers; the breakdown is estimated. */
+/** Context window use for a chat's next question (tokens). `exact`: the last reply's real numbers; the breakdown is estimated.
+ * `conversation`: the whole chat so far; only the latest `history_limit` tokens of it go with each question. */
 export interface ChatContext {
   limit: number; system: number; material: number; history: number; total: number; estimate: number; exact: boolean; full_context: boolean;
+  conversation: number; history_limit: number;
 }
 export interface PaletteData {
   subjects: { id: number; name: string }[];
@@ -544,7 +583,7 @@ export interface OutlineItem { level: number; title: string; unit: number; y: nu
 export interface DocRef { id: number; filename: string; kind: 'topic' | 'reference'; topic_id: number | null; ext: string; topic_name: string | null }
 export interface LibraryItem {
   id: number; topic_id: number | null; topic_name: string | null; chat_id: number | null; type: ArtifactType; title: string;
-  status: string; progress: number; message: string; created_at: number;
+  status: string; progress: number; message: string; error: string | null; created_at: number;
 }
 export interface QuizReview {
   attempt_id: number; score: number; total: number; summary: string; strengths: string[];

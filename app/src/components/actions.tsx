@@ -1,6 +1,7 @@
 import { api, MaintScope, Subject, Topic } from '../api';
 import type { Route } from '../App';
 import { useOverlay } from './overlay';
+import { term } from '../terms';
 
 const COLORS = ['#7c8cff', '#4fd1c5', '#f6ad55', '#f687b3', '#68d391', '#b794f4', '#63b3ed', '#fc8181'];
 
@@ -53,7 +54,7 @@ export function useLibraryActions(subjects: Subject[], go: (r: Route) => void, o
     async deleteTopic(t: Topic) {
       const ok = await ov.confirm({
         title: `Delete topic ${t.name}?`, danger: true, confirmText: 'Delete topic',
-        body: 'Its uploaded files, extracted text and embeddings are removed. Generated content stays.',
+        body: term('topicData'),
       });
       if (ok) { await api.deleteTopic(t.id); onChange(); }
     },

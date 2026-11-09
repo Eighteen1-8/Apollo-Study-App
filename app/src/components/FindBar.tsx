@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { findAll, paint } from './textRange';
+import Icon from './Icon';
 
 let lastTarget: Element | null = null;
 /** Where the find bar was dragged to, relative to its usual corner of the content. */
@@ -226,9 +227,9 @@ function FindBar({ scope, initial, onClose }: { scope: HTMLElement; initial?: st
         }} />
       <span className="find-count" title={more ? 'Still searching the rest of the file' : undefined}>
         {q.trim() ? (searching ? '…' : count ? `${at + 1}/${count}${more}` : more ? '…' : 'No matches') : ''}</span>
-      <button className="icon-btn" title="Previous (Shift+Enter)" disabled={!count} onClick={() => step(-1)}>↑</button>
+      <button className="icon-btn" title="Previous (Shift+Enter)" disabled={!count} onClick={() => step(-1)}><Icon name="chevronUp" /></button>
       <button className="icon-btn" title="Next (Enter)" disabled={!count} onClick={() => step(1)}>↓</button>
-      <button className="icon-btn" title="Close (Esc)" onClick={onClose}>×</button>
+      <button className="icon-btn" title="Close (Esc)" onClick={onClose}><Icon name="close" size={15} /></button>
     </div>,
     document.body,
   );

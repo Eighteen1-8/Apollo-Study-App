@@ -63,9 +63,16 @@ def _convert(src: Path, out: Path, kind: str) -> bool:
         try:
             tmp = out.parent / f"lo-{out.stem}"
             tmp.mkdir(exist_ok=True)
-            subprocess.run([soffice, "--headless", "--convert-to", "pdf", "--outdir", str(tmp), str(src)], capture_output=True,
-                           timeout=300, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             made = tmp / (src.stem + ".pdf")
+            # hidden slides included, so page N is always slide N (as with Office); LibreOffice before 7.4 doesn't
+            # take the JSON options, so it's tried again plainly
+            kinds = (['pdf:impress_pdf_Export:{"ExportHiddenSlides":{"type":"boolean","value":"true"}}', "pdf"]
+                     if src.suffix.lower() == ".pptx" else ["pdf"])
+            for kind in kinds:
+                subprocess.run([soffice, "--headless", "--convert-to", kind, "--outdir", str(tmp), str(src)], capture_output=True,
+                               timeout=300, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                if made.exists():
+                    break
             if made.exists():
                 made.replace(out)
             shutil.rmtree(tmp, ignore_errors=True)

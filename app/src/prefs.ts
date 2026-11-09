@@ -1,6 +1,6 @@
 /** Per-machine UI preferences, kept in this browser profile's localStorage (not in the database, so they don't follow a
  * backup, a study pack or a new PC). Every key in one place:
- *   apollo.appearance  theme, accent, motion, cloud, cloud drift and frame rate (theme.ts)
+ *   apollo.appearance  theme, accent, motion, cloud, cloud drift, frame rate and advanced mode (theme.ts)
  *   sides              workspace sidebar widths and folded state (SubjectView)
  *   chatSide, chatSize floating chat corner and size (SubjectView)
  *   chatReasoning      the chat's reasoning level (ChatView)

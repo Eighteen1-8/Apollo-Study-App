@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api, Annotation, OutlineItem } from '../api';
 import { HIGHLIGHT_COLORS } from './annotate';
+import Icon from '../components/Icon';
 
 /** Where a unit sits in the scroll content (px). */
 type UnitBox = { unit: number; top: number; left: number; w: number; h: number };
@@ -121,7 +122,7 @@ export function Minimap({ scroller, docId, thumbs, items, deps, onClose }: {
         {markers.map((m) => <span key={m.id} className="mm-marker" style={{ top: m.top, background: m.color }} />)}
       </div>
       <div className="mm-slider" style={{ top: view.top * s - offset, height: Math.max(view.h * s, 8) }} />
-      <button className="mm-close" title="Hide the minimap" onPointerDown={(e) => e.stopPropagation()} onClick={onClose}>›</button>
+      <button className="mm-close" title="Hide the minimap" onPointerDown={(e) => e.stopPropagation()} onClick={onClose}><Icon name="chevronRight" size={14} /></button>
     </div>
   );
 }
@@ -156,7 +157,7 @@ export function OutlinePanel({ items, current, onGo, onClose }: {
     <div className="outline-panel" onContextMenu={(e) => e.stopPropagation()}>
       <div className="ol-head">
         <span>Chapters</span>
-        <button className="icon-btn" title="Close" onClick={onClose}>×</button>
+        <button className="icon-btn" title="Close" onClick={onClose}><Icon name="close" size={15} /></button>
       </div>
       {items.length > 12 && <input className="ol-search" placeholder="Find a chapter" value={q} onChange={(e) => setQ(e.target.value)} />}
       <div className="ol-list" ref={list}>
@@ -169,7 +170,7 @@ export function OutlinePanel({ items, current, onGo, onClose }: {
                   const n = new Set(f);
                   if (n.has(i)) n.delete(i); else n.add(i);
                   return n;
-                })}>▾</button>
+                })}><Icon name="chevronDown" size={13} /></button>
               ) : <span className="ol-caret-space" />}
               <button className="ol-title" title={o.title} onClick={() => onGo(o)}>{o.title}</button>
               <span className="ol-page">{o.unit}</span>

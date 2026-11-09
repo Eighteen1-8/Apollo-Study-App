@@ -14,6 +14,11 @@ import { ToastLayer } from './components/toast';
 import CommandPalette from './components/CommandPalette';
 import { installUndoKeys, isApplying, undoable } from './undo';
 import { currentView, OpenRequest, registerRouter, ViewSnap } from './viewHistory';
+import SetupWizard, { openSetup } from './components/SetupWizard';
+import Tour from './components/Tour';
+import Icon from './components/Icon';
+import ErrorText, { ErrorCode, ErrorHelpLayer } from './components/ErrorText';
+import { splitError } from './errors';
 
 /** `launch` opens a create-content form in the chat (from a topic's Create menu). */
 export type Launch = { tool: ToolName; topicId: number | null; nonce: number };
@@ -32,8 +37,12 @@ export default function App() {
   const [needsToken, setNeedsToken] = useState(false);
   /** Which parts run on OpenRouter (shown as a warning badge in the minibar; data leaves the computer). */
   const [online, setOnline] = useState<string[]>([]);
+  const [setupDone, setSetupDone] = useState(false);
   const loadProvider = () => api.settings()
-    .then((s) => setOnline([s.llm_provider === 'openrouter' && 'chat', s.embed_provider === 'openrouter' && 'embeddings'].filter(Boolean) as string[]))
+    .then((s) => {
+      setOnline([s.llm_provider === 'openrouter' && 'chat', s.embed_provider === 'openrouter' && 'embeddings'].filter(Boolean) as string[]);
+      setSetupDone(!!s.setup_done);
+    })
     .catch((e) => logError('settings', e, 'warning'));
 
   useEffect(() => {
@@ -101,14 +110,18 @@ export default function App() {
               token is in the <code>backend-token</code> file in the data folder).</div>
           )}
           {backendUp === false && (
-            <div className="banner banner-bad">Local backend is not responding. Restart the app if this persists.</div>
+            <div className="banner banner-bad"><ErrorText text="Apollo’s background service isn’t answering. Restart the app if this lasts. [APO-APP-001]" /></div>
           )}
+          {backendUp && setupDone && <ModelCheck />}
           <ErrorBoundary name="This page" resetKey={JSON.stringify(route)}>{view}</ErrorBoundary>
         </main>
         <TooltipLayer />
         <FindLayer />
         <ToastLayer />
         <CommandPalette go={go} route={route} />
+        {backendUp && <SetupWizard subjectsCount={list.length} onFinished={(id) => { refresh(); if (id) go({ name: 'subject', id }); }} />}
+        <Tour ready={route.name === 'subject'} />
+        <ErrorHelpLayer />
       </div>
     </OverlayProvider>
   );
@@ -124,5 +137,33 @@ function Titlebar({ route, subjects }: { route: Route; subjects: { id: number; n
       <span className="tb-app">Apollo Study</span>
       {where && <span key={where} className="tb-where">{where}</span>}
     </header>
+  );
+}
+
+/** When a model can't be reached: a plain banner (instead of an error mid-chat) with Check again and the setup steps.
+ * Dismissed for the session; it comes back if the models go down again later. */
+function ModelCheck() {
+  const st = usePoll(api.modelStatus, 30000, [], ['pause']);
+  const [hidden, setHidden] = useState(false);
+  const [checking, setChecking] = useState(false);
+  if (!st.data || hidden) return null;
+  const down = ([['llm', 'the language model'], ['embed', 'the search model']] as const).filter(([k]) => !st.data![k].ok && !st.data![k].paused);
+  if (!down.length) return null;
+  return (
+    <div className="model-check" role="status">
+      <span className="model-check-dot" aria-hidden />
+      <div className="model-check-text">
+        <b>Apollo can’t reach {down.map(([, n]) => n).join(' or ')}.</b>
+        <span>{down.length === 2 ? 'Chat, search and making study material' : down[0][0] === 'llm' ? 'Chat and making study material' : 'Search and adding files'} will wait until it’s back. Make sure the model servers are running, or change where Apollo looks for them.</span>
+        <span className="model-check-codes">{down.map(([k]) => {
+          const { message, code } = splitError(st.data![k].error ?? '');
+          return code ? <ErrorCode key={k} code={code} context={message} /> : null;
+        })}</span>
+      </div>
+      <button className="btn btn-sm" disabled={checking} onClick={async () => { setChecking(true); try { await st.reload(); } finally { setChecking(false); } }}>
+        {checking ? 'Checking…' : 'Check again'}</button>
+      <button className="btn btn-sm btn-primary" onClick={openSetup}>Set up models</button>
+      <button className="x-btn" title="Hide until next time" aria-label="Hide" onClick={() => setHidden(true)}><Icon name="close" size={14} /></button>
+    </div>
   );
 }

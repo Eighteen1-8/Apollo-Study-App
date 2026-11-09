@@ -3,6 +3,8 @@
    placed beside their row in window coordinates so a scrolling menu can't clip them. */
 import { createPortal } from 'react-dom';
 import { createContext, CSSProperties, ReactNode, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import Icon from './Icon';
+import ErrorText from './ErrorText';
 
 export interface MenuItem {
   label: string;
@@ -103,7 +105,7 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
             <button autoFocus className={`btn ${dialog.opts.danger ? 'btn-danger-solid' : 'btn-primary'}`}
               onClick={() => { dialog.resolve(true); setDialog(null); }}>{dialog.opts.confirmText ?? 'OK'}</button>
           </>}>
-          {dialog.opts.body && <div className="muted">{dialog.opts.body}</div>}
+          {dialog.opts.body && <div className="muted">{typeof dialog.opts.body === 'string' ? <ErrorText text={dialog.opts.body} /> : dialog.opts.body}</div>}
         </Modal>
       )}
     </Ctx.Provider>
@@ -177,7 +179,7 @@ function MenuItems({ items }: { items: MenuItem[] }) {
               {it.swatch && <span className="ctx-swatch" style={{ background: swatchCss(it.swatch) }} />}
               <span className="ctx-label">{it.label}</span>
               {it.hint && <span className="ctx-hint">{it.hint}</span>}
-              {it.children && <span className="ctx-arrow">›</span>}
+              {it.children && <span className="ctx-arrow"><Icon name="chevronRight" size={14} /></span>}
             </button>
           )}
           {it.children && open === i && <SubMenu items={it.children} row={rows.current[i]} />}
@@ -219,7 +221,7 @@ export function Modal({ title, children, footer, onClose, wide }: {
       <div className={`modal${wide ? ' modal-wide' : ''}`}>
         <div className="modal-head">
           <div className="modal-title">{title}</div>
-          <button className="icon-btn" onClick={onClose} title="Close">×</button>
+          <button className="icon-btn" onClick={onClose} title="Close"><Icon name="close" size={16} /></button>
         </div>
         {children && <div className="modal-body">{children}</div>}
         {footer && <div className="modal-foot">{footer}</div>}

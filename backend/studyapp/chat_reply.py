@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from . import config, context, db, figures, generate, jobs, llm, pipeline
+from . import citations, config, context, db, errors, figures, generate, jobs, llm, pipeline
 from .chat_files import _read_chat_file
 from .chat_prompt import (ATTACHED_RULES, DEFAULT_RULES, QUOTE_RULES, SEARCH_TOOL, _attachment_material, _history,
                           _other_topic_docs, _system_prompt)
@@ -166,8 +166,16 @@ def _respond(cid: int, user_msg: dict, reasoning: str, announce_user: bool):
                 last = hist[-1]["content"]
                 hist[-1] = {"role": "user", "content": last + extra if isinstance(last, str)
                             else [{"type": "text", "text": last[0]["text"] + extra}, *last[1:]]}
+            if llm.gate_busy():  # a background job is mid-call; chat goes next (llm._Gate), but that call has to end
+                yield ev({"type": "status", "text": "Waiting for Apollo to finish a background task"})
+                tracked.update("Waiting for a background task")
+                while llm.gate_busy():  # waited here, not in the gate, so Stop works while waiting
+                    if tracked.cancelled():
+                        raise pipeline.Cancelled()
+                    time.sleep(0.3)
+                tracked.update("Reading your material")
             yield ev({"type": "status", "text": "Reading your material"})
-            convo = [{"role": "system", "content": system}, *hist]
+            convo =[{"role": "system", "content": system}, *hist]
             level = reasoning if reasoning in ("low", "medium", "xhigh") else "off"
             st["level"] = level
 
@@ -230,6 +238,11 @@ def _respond(cid: int, user_msg: dict, reasoning: str, announce_user: bool):
                 st["content"] = ""
             final = (st["prefix"] + content).strip()
             if final:
+                # each citation checked against the text it supports; a clearly wrong slide/page is moved (citations.py)
+                try:
+                    final, _ = citations.verify(final, chat["subject_id"])
+                except Exception:  # never lose a reply over the check
+                    log.warning("citation check failed", exc_info=True)
                 # Figures Apollo asked for are cropped from the student's material now (the model call is over, so
                 # the vision check can use the connection).
                 found = {}
@@ -251,8 +264,10 @@ def _respond(cid: int, user_msg: dict, reasoning: str, announce_user: bool):
                 yield ev({"type": "assistant", "message": _add_message(cid, "assistant", partial, m)})
             yield ev({"type": "stopped"})
         except Exception as e:
-            tracked.fail(str(e))
-            yield ev({"type": "error", "text": str(e)})
+            err = errors.classify(e, "llm")
+            log.warning("%s chat %s reply failed: %s", err.code, cid, err.technical or err.plain, exc_info=err.code == "APO-APP-900")
+            tracked.fail(str(err))
+            yield ev({"type": "error", "text": str(err), "code": err.code})
 
     return StreamingResponse(events(), media_type="text/event-stream")
 

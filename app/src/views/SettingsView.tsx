@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
+import ErrorText from '../components/ErrorText';
 import { api, OpenRouterModel, ServerProfile, Settings } from '../api';
 import type { SettingsTab } from '../App';
 import MaintenanceView from './MaintenanceView';
 import ShareView from './ShareView';
 import { useOverlay } from '../components/overlay';
 import { Button } from '../components/ui';
-import { ACCENTS, CLOUD_FPS, THEMES, useAppearance } from '../theme';
+import { ACCENTS, CLOUD_FPS, TEXT_SIZES, useAdvanced, useAppearance } from '../theme';
+import { MotionSeg, ThemeGrid } from '../components/AppearancePickers';
 import { logError } from '../log';
 
 type Field = {
@@ -78,6 +80,25 @@ const DIALS: { key: string; label: string; levels: [string, string, string]; hel
     help: 'At the top level Apollo breaks a problem into smaller questions for you to answer instead of giving the answer straight away.' },
 ];
 
+/** The tutor's personality dials (Settings → Chat tutor, and the first-run setup). */
+export function PersonalityDials({ s, set, help }: { s: Settings; set: (k: string, v: number) => void; help?: boolean }) {
+  return (
+    <div className="dials">
+      {DIALS.map((d) => {
+        const v = Math.max(0, Math.min(2, Number(s[d.key] ?? 1)));
+        return (
+          <div key={d.key} className="dial" title={d.help}>
+            <div className="dial-head"><span>{d.label}</span><b>{d.levels[v]}</b></div>
+            <input type="range" min={0} max={2} step={1} value={v} aria-label={d.label} onChange={(e) => set(d.key, Number(e.target.value))} />
+            <div className="dial-ticks">{d.levels.map((l) => <span key={l}>{l}</span>)}</div>
+            {help && <small className="dial-help">{d.help}</small>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export const ONLINE_WARNING = <>
   Your messages, uploaded material, page images and generated content will be sent to <b>OpenRouter</b> and the
   model provider behind it. They will be <b>logged on external servers</b> and <b>may be used for training or other
@@ -104,7 +125,7 @@ const profileText = (p: ServerProfile) => [
 ].join(', ');
 
 /** OpenRouter's current chat models as suggestions for the model field (free ones first), loaded on request. */
-function OpenRouterModelField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+export function OpenRouterModelField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const [models, setModels] = useState<OpenRouterModel[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -174,6 +195,29 @@ function ProviderSettings({ s, set }: { s: Settings; set: (k: string, v: string 
   );
 }
 
+/** Children shown as they are in advanced mode, and folded behind a summary otherwise. */
+function Expert({ open, summary, children }: { open: boolean; summary: string; children: React.ReactNode }) {
+  if (open) return <>{children}</>;
+  return <details className="expert"><summary>{summary}</summary><div className="form">{children}</div></details>;
+}
+
+/** Advanced mode: technical terms and every power-user control. Saved instantly on this computer. */
+function ModeSettings() {
+  const [a, set] = useAppearance();
+  return (
+    <section className="section mode-section">
+      <h2>Mode</h2>
+      <div className="seg mode-seg">
+        <button className={a.advanced ? '' : 'active'} onClick={() => set({ advanced: false })}>Standard</button>
+        <button className={a.advanced ? 'active' : ''} onClick={() => set({ advanced: true })}>Advanced</button>
+      </div>
+      <p className="field-help mode-help">{a.advanced
+        ? 'Advanced mode shows technical terms (ingest, embeddings, vision, tokens), the context meter, Maintenance, vision checks, every model and tuning setting, and the map-first subject layout where a click narrows the map and a double-click opens a file.'
+        : 'Standard mode uses plain words, guides you through setting up each subject and keeps the technical settings folded away. Switch to Advanced for the full set of power-user tools.'}</p>
+    </section>
+  );
+}
+
 /** Theme, accent, motion and the home cloud. Saved instantly on this computer (not with the Save button). */
 function AppearanceSettings() {
   const [a, set] = useAppearance();
@@ -182,23 +226,18 @@ function AppearanceSettings() {
       <h2>Appearance</h2>
       <div className="form appearance">
         <div className="field field-wide">
-          <span className="field-label">Theme</span>
-          <div className="theme-grid">
-            {THEMES.map((t) => (
-              <button key={t.id} className={`theme-card${a.theme === t.id ? ' on' : ''}`} onClick={() => set({ theme: t.id })}>
-                <span className="theme-preview" style={{ background: t.swatch[0] }}>
-                  <span className="tp-bar" style={{ background: t.swatch[1] }} />
-                  <span className="tp-panel" style={{ background: t.swatch[1] }}>
-                    <span className="tp-line" style={{ background: a.accent ?? t.swatch[2] }} />
-                    <span className="tp-line short" style={{ background: t.light ? '#0002' : '#fff2' }} />
-                  </span>
-                  <span className="tp-orb" style={{ background: a.accent ?? t.swatch[2], color: a.accent ?? t.swatch[2] }} />
-                </span>
-                <span className="theme-name">{t.name}</span>
-                <span className="theme-blurb">{t.blurb}</span>
-              </button>
+          <span className="field-label">Text size</span>
+          <div className="seg text-size-seg">
+            {TEXT_SIZES.map((t) => (
+              <button key={t.id} className={a.textSize === t.id ? 'active' : ''} onClick={() => set({ textSize: t.id })}
+                style={{ fontSize: `${Math.round(13 * t.zoom)}px` }}>{t.label}</button>
             ))}
           </div>
+          <span className="field-help">Makes everything in the window bigger. Applies straight away.</span>
+        </div>
+        <div className="field field-wide">
+          <span className="field-label">Theme</span>
+          <ThemeGrid />
         </div>
         <div className="field field-wide">
           <span className="field-label">Accent</span>
@@ -212,16 +251,16 @@ function AppearanceSettings() {
             </label>
           </div>
         </div>
-        <label className="field field-bool">
-          <input type="checkbox" checked={a.motion === 'reduced'} onChange={(e) => set({ motion: e.target.checked ? 'reduced' : 'full' })} />
-          <span>Reduce motion (turns off most animations; also follows the Windows setting)</span>
-        </label>
+        <div className="field field-wide">
+          <span className="field-label">Animations</span>
+          <MotionSeg />
+        </div>
         <label className="field field-bool">
           <input type="checkbox" checked={a.cloud} onChange={(e) => set({ cloud: e.target.checked })} />
           <span>Show the 3D knowledge cloud (home page background, and each subject's map)</span>
         </label>
         <label className="field field-bool">
-          <input type="checkbox" checked={a.cloudDrift} disabled={!a.cloud || a.motion === 'reduced'} onChange={(e) => set({ cloudDrift: e.target.checked })} />
+          <input type="checkbox" checked={a.cloudDrift} disabled={!a.cloud || a.motion === 'off'} onChange={(e) => set({ cloudDrift: e.target.checked })} />
           <span>Let the cloud drift and twinkle while idle (off: it only redraws while you move it, which saves power)</span>
         </label>
         <label className="field">
@@ -280,25 +319,16 @@ function TutorSettings({ s, set }: { s: Settings; set: (k: string, v: string | n
   const [def, setDef] = useState('');
   useEffect(() => { api.defaultPrompt().then((r) => setDef(r.prompt)).catch((e) => logError('default prompt', e, 'warning')); }, []);
   const custom = String(s.chat_system_prompt ?? '');
+  const adv = useAdvanced();
   return (
     <section className="section">
       <h2>Chat tutor</h2>
       <div className="form">
         <div className="field">
           <span className="field-label">Personality</span>
-          <div className="dials">
-            {DIALS.map((d) => {
-              const v = Math.max(0, Math.min(2, Number(s[d.key] ?? 1)));
-              return (
-                <div key={d.key} className="dial" title={d.help}>
-                  <div className="dial-head"><span>{d.label}</span><b>{d.levels[v]}</b></div>
-                  <input type="range" min={0} max={2} step={1} value={v} onChange={(e) => set(d.key, Number(e.target.value))} />
-                  <div className="dial-ticks">{d.levels.map((l) => <span key={l}>{l}</span>)}</div>
-                </div>
-              );
-            })}
-          </div>
+          <PersonalityDials s={s} set={set} />
         </div>
+        <Expert open={adv} summary="More tutor options (the tutor's rules, file size limit)">
         <label className="field">
           <span className="field-label">System prompt</span>
           <textarea className="input prompt-edit" rows={12} spellCheck={false} value={custom || def}
@@ -319,6 +349,7 @@ function TutorSettings({ s, set }: { s: Settings; set: (k: string, v: string | n
             onChange={(e) => set('chat_file_word_limit', Number(e.target.value))} />
           <span className="field-help">Longer files must be added to a topic or the reference library (ingested) first.</span>
         </label>
+        </Expert>
       </div>
     </section>
   );
@@ -330,6 +361,8 @@ const effectiveEmbedModel = (s: Settings) => String(s.embed_provider === 'openro
 export default function SettingsView({ onSaved, tab: initialTab, subjectId }: { onSaved: () => void; tab?: SettingsTab; subjectId?: number }) {
   const ov = useOverlay();
   const [tab, setTab] = useState<SettingsTab>(initialTab ?? 'general');
+  const advanced = useAdvanced();
+  const [dirty, setDirty] = useState(false);
   const [s, setS] = useState<Settings | null>(null);
   const [savedModel, setSavedModel] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -355,12 +388,13 @@ export default function SettingsView({ onSaved, tab: initialTab, subjectId }: { 
     setS(next);
     setSavedModel(effectiveEmbedModel(next));
     setSaved(true);
+    setDirty(false);
     onSaved();
   };
   const tabs = (
     <div className="seg settings-tabs">
       <button className={tab === 'general' ? 'active' : ''} onClick={() => setTab('general')}>General</button>
-      <button className={tab === 'maintenance' ? 'active' : ''} onClick={() => setTab('maintenance')}>Maintenance</button>
+      {(advanced || tab === 'maintenance') && <button className={tab === 'maintenance' ? 'active' : ''} onClick={() => setTab('maintenance')}>Maintenance</button>}
       <button className={tab === 'share' ? 'active' : ''} onClick={() => setTab('share')}>Share</button>
     </div>
   );
@@ -384,15 +418,16 @@ export default function SettingsView({ onSaved, tab: initialTab, subjectId }: { 
   );
   if (!s) return <div className="page" />;
 
-  const set = (k: string, v: string | number | boolean | string[]) => { setS({ ...s, [k]: v }); setSaved(false); };
+  const set = (k: string, v: string | number | boolean | string[]) => { setS({ ...s, [k]: v }); setSaved(false); setDirty(true); };
   const levels = Array.isArray(s.reasoning_levels) ? (s.reasoning_levels as string[]) : ['low', 'medium', 'xhigh'];
+  const groups = <SettingsGroups s={s} set={set} levels={levels} />;
 
   return (
     <div className="page settings">
       <header className="page-head">
         <div><h1>Settings</h1><p className="muted">{s.llm_provider === 'openrouter' || s.embed_provider === 'openrouter'
           ? 'Some models run online through OpenRouter. See Model provider below.'
-          : 'All endpoints are local. Nothing leaves this computer.'}</p></div>
+          : advanced ? 'All endpoints are local. Nothing leaves this computer.' : 'Everything runs on this computer. Nothing is sent anywhere.'}</p></div>
         <div className="head-actions">
           {tabs}
           <Button onClick={async () => { setTesting(true); try { setTest(await api.testSettings()); } finally { setTesting(false); } }}>
@@ -406,19 +441,42 @@ export default function SettingsView({ onSaved, tab: initialTab, subjectId }: { 
         <div className="test-results">
           {Object.entries(test).map(([k, r]) => (
             <div key={k} className={`banner ${r.ok ? 'banner-ok' : 'banner-bad'}`}>
-              <b>{k === 'llm' ? 'Apollo (language model)' : 'Embeddings'}{r.online ? ' · OpenRouter' : ''}:</b>{' '}
-              {r.ok ? (k === 'llm' ? `connected · context ${r.max_model_len?.toLocaleString()} · ${r.ms} ms` : `connected · ${r.dim}-dim vectors · ${r.ms} ms`) : r.error}
-              {r.profile && <div className="small test-profile">Server accepts: {profileText(r.profile)}. Saved, so requests follow it.</div>}
+              <b>{k === 'llm' ? 'Apollo (language model)' : advanced ? 'Embeddings' : 'Search model'}{r.online ? ' · OpenRouter' : ''}:</b>{' '}
+              {r.ok ? (!advanced ? 'working.' : k === 'llm' ? `connected · context ${r.max_model_len?.toLocaleString()} · ${r.ms} ms` : `connected · ${r.dim}-dim vectors · ${r.ms} ms`)
+                : <ErrorText text={r.error} />}
+              {advanced && r.profile && <div className="small test-profile">Server accepts: {profileText(r.profile)}. Saved, so requests follow it.</div>}
             </div>
           ))}
         </div>
       )}
 
+      {dirty && (
+        <div className="banner banner-warn unsaved-bar">
+          <span>You have unsaved changes.</span>
+          <Button kind="primary" small onClick={save}>Save</Button>
+        </div>
+      )}
+
+      <ModeSettings />
       <AppearanceSettings />
+      <TutorSettings s={s} set={set} />
       <SpellingSettings />
       <ProviderSettings s={s} set={set} />
-      <TutorSettings s={s} set={set} />
 
+      {advanced ? groups : (
+        <details className="section expert expert-section">
+          <summary><h2>Advanced: model connections and tuning</h2>
+            <span className="muted small">Server addresses, how much Apollo thinks for each task, when it reads pictures, and how files are split up. The defaults work; change these only if you know you need to.</span></summary>
+          {groups}
+        </details>
+      )}
+    </div>
+  );
+}
+
+function SettingsGroups({ s, set, levels }: { s: Settings; set: (k: string, v: string | number | boolean | string[]) => void; levels: string[] }) {
+  return (
+    <>
       {GROUPS.map((g) => (
         <section key={g.title} className="section">
           <h2>{g.title}</h2>
@@ -456,6 +514,6 @@ export default function SettingsView({ onSaved, tab: initialTab, subjectId }: { 
           </div>
         </section>
       ))}
-    </div>
+    </>
   );
 }

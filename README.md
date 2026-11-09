@@ -67,6 +67,8 @@ No model or key is needed for any of these. `.github/workflows/check.yml` runs `
 ## Using it
 
 ### Getting started
+The first launch walks you through setup: where the models run (this computer or OpenRouter) and a connection check, then a theme and animation speed, how Apollo should teach, and your first subject. You can also **try the example** (a small Physics course with flashcards, a quiz, notes and a chat already made, no model needed) from setup or the home screen. *Help → Set up models again* replays it.
+
 1. **Create a subject** — `+` on the left minibar (or *New subject* on the home screen). Right click to customise.
 2. **Create a topic** —  Create a topic within a subject to group material and everything you generate.
 3. **Upload study material** — Drag files in (PPTX, DOCX, PDF, text, images), or click on `+` to upload reference material. Each file is parsed into units (slides/pages/sections), exactly deduplicated, chunked and embedded.
@@ -96,6 +98,7 @@ No model or key is needed for any of these. `.github/workflows/check.yml` runs `
 - The file search at the top of the right sidebar matches file names and the text inside files, and opens a file with the find bar already filled in.
 
 ### Organising
+- Deleted files wait a week in the trash: Undo in the notice (or Ctrl+Z) puts them back where they were. Deleting a whole topic or subject is permanent and asks first.
 - Drag to reorder subjects, topics, to-dos, files and generated content (generated content moves within its own day). Shift/Ctrl-click to select several files or folders.
 - **Ctrl+Z / Ctrl+Y** (outside text fields) undo and redo deletes, renames, reorders, highlights and navigation. Deleted chats, generated content and notes stay recoverable for a week.
 - The revision to-do list folds away from its heading, like the chat list and My notes.
@@ -104,22 +107,65 @@ No model or key is needed for any of these. `.github/workflows/check.yml` runs `
 Click a document in a topic to open the viewer. A toolbar in the top right helps you annotate and work through content.
 
 ### Studying
+- **Start studying** sits in front of a subject's knowledge cloud, which stays darkened and still until you press *Press to explore the map* (the button fades away and you can orbit, zoom and click; *Back to studying* at the top right brings it back). It opens the study panel: a chat box (its placeholder suggests three questions Apollo wrote for the subject; press Enter and the chat grows out of it to fill the screen; close it to come back), what to continue, your to-do list (ticked ones fold into *Completed*) and the Make content buttons.
 - **Quizzes/Flashcards** open fullscreen. With flashcards, mark `✓` / `✗`under each card for confidence. Marking `✗` lets Apollo know in chat the topics you are struggling with.
 
 ### Settings
 - Endpoints, model ids and keys (local or OpenRouter - online mode is optional; the OpenRouter models are listed to pick from). **Test connections** also checks what the model server supports (reasoning levels, JSON, tools, streamed usage).
-- Appearance: themes, accent colour, Reduce motion, 3D knowledge cloud, its idle drift, and its **frame rate** (30 for laptops, 60, 120, or match the display).
+- Appearance: text size, themes (Hydrogen, Lithium, Iodine, Carbon, Oxygen, Helium, Fluorine), accent colour, **animation speed** (Off, Fast, Normal, Gentle), 3D knowledge cloud, its idle drift, and its **frame rate** (30 for laptops, 60, 120, or match the display).
+- **Chat tutor**: how Apollo answers (Assistive, Length, Interactive) and, in advanced mode, its rules.
+- **Mode**: Standard (plain words, guided steps) or Advanced (technical terms, the context meter, Maintenance, every tuning setting).
 - **Maintenance**: disk use, clean-up, re-embedding and re-reading files, vision flags, the log, and database backups (daily and on demand, restored at the next start).
 - **Share**: export or import a subject, topic or files as a study pack.
 - Where everything is kept, and how to move to a new PC: [`docs/DATA.md`](docs/DATA.md).
 - **Browser preview of the UI** (dev only): `http://localhost:5173/?backend=PORT` points the page at a backend on another port.
 
+## Architecture
+
+Apollo is a desktop app made of three processes that only talk to each other on `127.0.0.1`, plus the model servers you point it at.
+
+```mermaid
+flowchart LR
+  subgraph Electron["Electron (app/electron)"]
+    M["Main process<br/>starts the backend, makes a per-launch token,<br/>blocks every non-localhost request"]
+    R["Renderer: React UI (app/src)"]
+    M -- preload: token, file grants --> R
+  end
+  subgraph Backend["Python backend (backend/studyapp)"]
+    API["FastAPI<br/>REST + SSE"]
+    J["Job queue<br/>ingest · vision · generate lanes"]
+    DB[("SQLite<br/>WAL, FTS5, vectors as BLOBs")]
+    API --> DB
+    J --> DB
+  end
+  R -- "HTTP + X-Apollo-Token" --> API
+  M -- "spawns, --parent-pid" --> Backend
+  Backend -- "OpenAI-compatible API" --> LLM["Language model<br/>(chat, generation, vision)"]
+  Backend -- "OpenAI-compatible API" --> EMB["Embedding model<br/>(search)"]
+```
+
+**Processes.** The Electron main process picks a port, generates a token, and starts the backend (`python -m studyapp.main`, or the bundled PyInstaller exe in a build), which exits when Electron does. The UI is a single React page; every request carries the token, and file paths the student picked are signed by the main process (`grants.py`) so the backend only touches files it was given. Nothing goes online unless OpenRouter is switched on, and then only from the backend.
+
+**Storage.** One SQLite database in the data folder holds everything: subjects, topics, files and their *units* (a slide, page or Word section), chunks with their embeddings (float32 BLOBs) and an FTS5 keyword index, generated content, chats, notes, annotations, settings (API keys encrypted with Windows DPAPI) and the job queue. Original files, rendered PDFs and images sit beside it. Schema changes are numbered migrations run once at start-up, after a backup.
+
+**Reading a file** (an `ingest` job): parse into units with native parsers (python-pptx, python-docx, PyMuPDF; Office equations become LaTeX) → drop exact duplicates (SHA-256, never a model's judgement) → chunk by structure → embed. A separate `vision` job then has the language model describe slides and pages with pictures; those notes are embedded as their own chunks so diagrams and scans can be found. Word and PowerPoint files are also exported once to an exact PDF (Office or LibreOffice) for the viewer.
+
+**Answering** (chat): if a scope's material fits in about 60% of the context window, all of it goes in the system prompt, kept byte-identical between turns so the server's prefix cache hits; otherwise hybrid search (BM25 + cosine similarity, fused by rank) adds the best passages to the question. Textbooks are always searched per question. Replies stream to the UI as server-sent events, cite `[[file · Page N]]`, and each citation is checked against the text it supports after the reply ends. The model can call tools to make content or read the to-do list and notes.
+
+**Making content** (a `generate` job): flashcards, quizzes, exams, notes, cheat sheets and mind maps are coverage-driven. Item counts are shared out across every section of the material in proportion to its size, one model call per section, so nothing is skipped. Practice exams are reproduced in their exact structure, and marking compares written answers against a rubric.
+
+**Jobs.** A persistent queue with three lanes (`ingest` on the CPU, `vision`, `generate`), all model calls going through one gate sized to what the server can run at once. Jobs survive restarts, can be cancelled, prioritised or paused per model, and long vision jobs yield to waiting work.
+
+**The UI** has no router library: `App.tsx` switches between home, a subject and settings. A subject is a three-column workspace (chats and generated content · the knowledge cloud or an open file, with the chat floating over it · files and notes). Panels reload when the backend's `/events` stream says their data changed, instead of polling. The knowledge cloud is a stored 3D PCA projection of the chunk embeddings.
+
+How the code is organised, and how to change it: [`docs/CODE_GUIDE.md`](docs/CODE_GUIDE.md). Design decisions and measurements: [`PLAN.md`](PLAN.md).
+
 ## Layout
-- `backend/studyapp/`: `parsers.py` (PPTX/DOCX/PDF/text/images, native Python), `omml.py` (equations → LaTeX), `dedupe.py` (exact, deterministic), `pipeline.py` (parse → dedupe → chunk → embed → vision notes), `jobs.py` (persistent queue), `search.py` (BM25 + vectors), `context.py` (material Qwen reads), `generate.py` (flashcards/quiz/notes/cheat sheet/exam/mind map + marking), `chats.py` / `chat_reply.py` / `chat_tools.py` / `chat_api.py` (chats, the streaming turn, tool forms), `notes_api.py` + `review.py` (your notes and reviews), `projection.py` (the knowledge cloud), `api.py`
-- `app/electron/`: main process (spawns backend, blocks all non-localhost traffic from the UI; online model calls go through the backend), preload
+- `backend/studyapp/`: the FastAPI backend (one module per area: parsing, pipeline, jobs, search, context, generation, chat, notes, maintenance…)
+- `app/electron/`: main process (spawns the backend, blocks all non-localhost traffic from the UI; online model calls go through the backend), preload
 - `app/src/`: React UI (`views/` screens, `components/` shared parts, `styles/` one cascade in five files)
 - `app/tests/`: unit, Playwright, Electron, CSS and PDF checks; `backend/tests/`: pytest, incl. golden Office parsing tests
-- `docs/`: `DATA.md` (where data lives), `APP_ANALYSIS.md` (known weak spots), `FIX_PLAN.md` and `IMPROVEMENT_PLAN.md` (recent work and its status)
+- `docs/`: `CODE_GUIDE.md` (code structure and how to change it), `DATA.md` (where data lives), `ERRORS.md` (every error code), `APP_ANALYSIS.md` (known weak spots), `FIX_PLAN.md` and `IMPROVEMENT_PLAN.md` (recent work and its status)
 - `spike/`: Phase 0 experiments
 
 ## Note

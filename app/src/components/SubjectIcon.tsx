@@ -1,4 +1,5 @@
 import { api, Subject } from '../api';
+import { subjectIcon } from './subjectIcons';
 
 export function initials(name: string) {
   const words = name.trim().split(/\s+/).filter(Boolean);
@@ -6,8 +7,9 @@ export function initials(name: string) {
   return name.trim().slice(0, 2).toUpperCase() || '?';
 }
 
-/** Rounded gradient tile for a subject: uploaded image, emoji, or initials (custom or derived from the name). */
+/** Rounded gradient tile for a subject: uploaded image, a chosen icon, an emoji (older subjects), or initials. */
 export default function SubjectIcon({ s, size = 42 }: { s: Subject; size?: number }) {
+  const Glyph = subjectIcon(s.icon_name);
   const style = {
     width: size, height: size,
     background: `linear-gradient(140deg, color-mix(in srgb, ${s.color} 45%, white) 0%, ${s.color} 55%, color-mix(in srgb, ${s.color} 70%, black) 100%)`,
@@ -16,6 +18,7 @@ export default function SubjectIcon({ s, size = 42 }: { s: Subject; size?: numbe
   return (
     <span className="subject-icon" style={style}>
       {s.icon_image ? <img src={api.assetUrl(s.icon_image)} alt="" />
+        : Glyph ? <Glyph className="subject-icon-glyph" size={Math.round(size * 0.5)} strokeWidth={2.1} />
         : s.icon_emoji ? <span className="subject-icon-emoji">{s.icon_emoji}</span>
         : <span className="subject-icon-text">{s.icon_text || initials(s.name)}</span>}
     </span>

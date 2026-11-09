@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { toast } from '../components/toast';
+import { undoable, undoEntry } from '../undo';
 import { api, Doc, FolderMap, Subject, ToolName } from '../api';
 import type { Route } from '../App';
 import { usePoll } from '../hooks';
@@ -18,6 +20,11 @@ import { EMPTY_FOLDERS, FileProps, Folder, FolderOps, SidePicker, TopicRow } fro
 import { MyNotes } from './resources/MyNotes';
 import { Todos } from './resources/Todos';
 import { FileSearchResults } from './resources/FileSearch';
+import { useAdvanced } from '../theme';
+import { useTerms } from '../terms';
+import { getPref, setPref } from '../prefs';
+import Icon from '../components/Icon';
+import Info from '../components/Info';
 
 type UploadTarget = { title: string; target: { topic_id?: number; subject_id?: number }; mode: 'auto' | 'all'; paths?: string[] };
 
@@ -30,18 +37,26 @@ export interface Selection {
 /** Right sidebar: revision to-do, reference library (textbooks), topics with their files and folders, and the
  * student's own notes pinned at the bottom. Clicking a topic name, folder or file narrows the subject's cloud to it; a
  * click anywhere else in the sidebar resets it. */
-export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCreate, onDocsChanged, sel, notes, onOpenSplit }: {
+export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCreate, onDocsChanged, onAddFiles, sel, notes, onOpenSplit, showTodos }: {
+  /** The to-do list lives in the study panel; it's shown here only when the map (and so the panel) is turned off. */
+  showTodos: boolean;
   onOpenSplit: (kind: 'note' | 'doc', id: number) => void;
+  /** The "What are you adding?" dialog (SubjectView). */
+  onAddFiles: () => void;
   subject: Subject; go: (r: Route) => void; onChange: () => void; onOpenDoc: (id: number, focus?: string, details?: boolean) => void;
   onCreate: (tool: ToolName, topicId: number | null) => void; onDocsChanged: () => void; sel: Selection;
   notes: { openId: number | null; onOpen: (id: number) => void };
 }) {
   const ov = useOverlay();
+  const advanced = useAdvanced();
+  const tr = useTerms();
   const act = useLibraryActions([subject], go, onChange);
   const refs = usePoll(() => api.referenceDocs(subject.id), 1000, [subject.id], ['documents']);
   const [open, setOpen] = useState<Set<number>>(new Set());
   const [upload, setUpload] = useState<UploadTarget | null>(null);
   const [refDrag, setRefDrag] = useState(false);
+  const [booksOpen, setBooksOpen] = useState(() => getPref<string>('booksFolded', '0') !== '1');
+  const toggleBooks = () => setBooksOpen((v) => { setPref('booksFolded', v ? '1' : '0'); return !v; });
   const [folders, setFolders] = useState<FolderMap>({});
   const foldersRef = useRef(folders);
   foldersRef.current = folders;
@@ -145,14 +160,21 @@ export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCrea
     const { docs, folders: fs } = pickedItems();
     const parts = [docs.length && `${docs.length} file${docs.length === 1 ? '' : 's'}`, fs.length && `${fs.length} folder${fs.length === 1 ? '' : 's'}`].filter(Boolean);
     if (!parts.length) return clearPicked();
-    const ok = await ov.confirm({ title: `Delete ${parts.join(' and ')}?`, confirmText: 'Delete', danger: true,
-      body: `${docs.length ? 'Files lose their extracted text, embeddings and vision notes. ' : ''}${fs.length ? 'Files inside the deleted folders stay in their topic.' : ''}` });
-    if (!ok) return;
+    // folders can't be brought back, so only they ask first; files go to the trash with Undo
+    if (fs.length && !(await ov.confirm({ title: `Delete ${parts.join(' and ')}?`, confirmText: 'Delete', danger: true,
+      body: `Files inside the deleted folders stay in their topic.${docs.length ? ' Deleted files can be brought back with Undo.' : ''}` }))) return;
     clearPicked();
-    for (const d of docs) await api.deleteDocument(d.id).catch(() => undefined);
+    const gone: number[] = [];
+    for (const d of docs) await api.deleteDocument(d.id).then(() => gone.push(d.id)).catch((e) => logError('delete file', e));
     for (const { folder } of fs) await ops.remove(folder.id);
     if (docs.some((d) => sel.focus?.kind === 'doc' && sel.focus.id === d.id)) sel.onFocus(null);
     refresh();
+    if (gone.length) {
+      const restore = async () => { for (const id of gone) await api.restoreDocument(id).catch((e) => logError('restore file', e)); refresh(); };
+      const entry = undoable({ label: `delete ${gone.length} file${gone.length === 1 ? '' : 's'}`, undo: restore,
+        redo: async () => { for (const id of gone) await api.deleteDocument(id); refresh(); } });
+      toast(`${gone.length} file${gone.length === 1 ? '' : 's'} deleted`, { label: 'Undo', run: () => undoEntry(entry) });
+    }
   };
   const moveItems = (): MenuItem[] => {
     const { docs, folders: fs } = pickedItems();
@@ -225,9 +247,13 @@ export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCrea
   };
   const subjectMenu: MenuItem[] = [
     { label: 'New topic…', onClick: () => act.newTopic(subject) },
+    { label: 'Add files…', onClick: onAddFiles },
     { label: 'Add textbook…', onClick: () => uploadRef() },
-    { label: 'Check vision notes', onClick: () => act.checkVision({ subject_id: subject.id }, subject.name, subject.id), separatorBefore: true },
-    { label: 'Maintenance…', onClick: () => go({ name: 'settings', tab: 'maintenance', subjectId: subject.id }) },
+    ...(advanced ? [
+      { label: tr('checkVision'), onClick: () => act.checkVision({ subject_id: subject.id }, subject.name, subject.id), separatorBefore: true },
+      { label: 'Maintenance…', onClick: () => go({ name: 'settings', tab: 'maintenance', subjectId: subject.id }) },
+    ] : []),
+    { label: 'Export / share…', onClick: () => go({ name: 'settings', tab: 'share', subjectId: subject.id }), separatorBefore: !advanced },
     { label: 'Rename subject…', onClick: () => act.renameSubject(subject), separatorBefore: true },
     { label: 'Delete subject', onClick: () => act.deleteSubject(subject), danger: true },
   ];
@@ -235,11 +261,12 @@ export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCrea
   const selectDoc = (d: Doc) => {
     anchor.current = `d:${d.id}`;
     sel.onFocus({ kind: 'doc', id: d.id, name: d.filename });
-    if (!sel.cloudVisible) onOpenDoc(d.id);
+    // advanced mode: with the map showing, a click narrows it to the file and a double-click opens it
+    if (!sel.cloudVisible || !advanced) onOpenDoc(d.id);
   };
   const files: FileProps = { subjectId: subject.id, onSelect: selectDoc, selectedId: sel.focus?.kind === 'doc' ? sel.focus.id : null, openId: sel.openId, picker,
     onOpenSide: (d) => onOpenSplit('doc', d.id),
-    menu: (d) => [{ label: 'Check vision notes', onClick: () => act.checkVision({ document_id: d.id }, d.filename, subject.id) }] };
+    menu: (d) => (advanced ? [{ label: tr('checkVision'), onClick: () => act.checkVision({ document_id: d.id }, d.filename, subject.id) }] : []) };
 
   return (
     <aside ref={asideRef} className="side side-right" onClick={(e) => {
@@ -252,15 +279,20 @@ export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCrea
       <div className="side-head" onContextMenu={(e) => ov.menu(e, subjectMenu)}>
         <SubjectIcon s={subject} size={30} />
         <div className="side-title" data-tip={subject.name}>{subject.name}</div>
-        <button className="icon-btn" title="Subject options" onClick={(e) => ov.menu(e, subjectMenu)}>⋯</button>
+        <button className="icon-btn" title="Subject options" onClick={(e) => ov.menu(e, subjectMenu)}><Icon name="more" /></button>
       </div>
 
       <div className="file-search">
         <svg className="file-search-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>
         <input ref={searchBox} className="file-search-input" placeholder="Search files (Ctrl+Shift+F)" value={query} spellCheck={false}
           onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') { setQuery(''); e.currentTarget.blur(); } }} />
-        {query && <button className="x-btn" title="Clear search" onClick={() => setQuery('')}>×</button>}
+        {query && <button className="x-btn" title="Clear search" onClick={() => setQuery('')}><Icon name="close" size={14} /></button>}
       </div>
+      {!advanced && (
+        <div className="side-add">
+          <button className="btn btn-primary btn-sm side-add-btn" onClick={onAddFiles}>+ Add files</button>
+        </div>
+      )}
       {query.trim() ? (
         <FileSearchResults subject={subject} query={query.trim()} onOpen={(id, label, q) => {
           onOpenDoc(id, label);
@@ -268,28 +300,42 @@ export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCrea
         }} />
       ) : (
       <div className="side-scroll">
-        <Todos subject={subject} />
+        {showTodos && <Todos subject={subject} />}
 
-        <section className={`side-section${refDrag ? ' drag' : ''}`}
+        <section className={`topic res-books${booksOpen ? ' open' : ''}${refDrag ? ' drag' : ''}`}
           onDragOver={(e) => { e.preventDefault(); setRefDrag(true); }} onDragLeave={() => setRefDrag(false)}
           onDrop={(e) => { setRefDrag(false); dropOn(null, uploadRef)(e); }}>
-          <div className="side-section-head">
-            <span>Reference library <StaleBadge count={subject.stale_reference_docs} where="the reference library"
-              onReingest={async () => { await api.reingestStale(subject.id, { reference: true }); refresh(); }} /></span>
-            <button className="icon-btn" title="Add textbook" onClick={() => uploadRef()}>+</button>
+          <div className="topic-row" onClick={toggleBooks} role="button" aria-expanded={booksOpen}
+            data-tip={advanced ? undefined : 'Textbooks and references for the whole subject: Apollo looks things up in them for every question'}>
+            <span className="topic-badge"><Icon name="textbook" size={14} /></span>
+            <span className="topic-name">{tr('references')}</span>
+            <StaleBadge count={subject.stale_reference_docs} where="the reference library"
+              onReingest={async () => { await api.reingestStale(subject.id, { reference: true }); refresh(); }} />
+            <span className="topic-count">{refs.data?.length ?? 0}</span>
+            <span className="topic-actions" onClick={(e) => e.stopPropagation()}>
+              <button className="icon-btn" data-tip="Add textbook" aria-label="Add textbook" onClick={() => uploadRef()}><Icon name="add" size={15} /></button>
+            </span>
+            <span className={`topic-caret${booksOpen ? ' open' : ''}`}><Icon name="chevronRight" size={14} /></span>
           </div>
-          <FileList compact docs={refs.data ?? []} onChange={refresh} onOpen={(d) => onOpenDoc(d.id)} {...files}
-            onDetails={(d) => onOpenDoc(d.id, undefined, true)}
-            reorder={{ group: `refs:${subject.id}`, commit: async (ids) => { await api.orderDocuments(subject.id, ids); refs.reload(); } }}
-            empty="Drop textbooks here." />
+          {booksOpen && (
+            <div className="topic-files">
+              <FileList compact docs={refs.data ?? []} onChange={refresh} onOpen={(d) => onOpenDoc(d.id)} {...files}
+                onDetails={(d) => onOpenDoc(d.id, undefined, true)}
+                reorder={{ group: `refs:${subject.id}`, commit: async (ids) => { await api.orderDocuments(subject.id, ids); refs.reload(); } }}
+                empty={advanced ? 'Drop textbooks here.' : 'Drop textbooks here, or use + to add one.'} />
+            </div>
+          )}
         </section>
 
         <section className="side-section">
           <div className="side-section-head">
-            <span>Topics</span>
-            <button className="icon-btn" title="New topic" onClick={() => act.newTopic(subject)}>+</button>
+            <span>Topics <Info text="A topic holds the material for one part of the subject, like a chapter or a week. Textbooks are for the whole subject: Apollo looks things up in them for every question." /></span>
+            <button className="icon-btn" title="New topic" onClick={() => act.newTopic(subject)}><Icon name="add" /></button>
           </div>
-          {subject.topics.length === 0 && <div className="files-empty">No topics yet.</div>}
+          {subject.topics.length === 0 && (advanced ? <div className="files-empty">No topics yet.</div> : (
+            <div className="files-empty">Topics hold your lecture material, e.g. one per chapter or week.{' '}
+              <button className="link-btn" onClick={() => act.newTopic(subject)}>Create your first topic</button></div>
+          ))}
           {topicOrder.order.map((id) => subject.topics.find((x) => x.id === id)!).map((t) => (
             <TopicRow key={t.id} topic={t} reorder={topicOrder.item(t.id)} color={topicColor(subject.topics, t.id)} open={open.has(t.id)}
               focused={sel.focus?.kind === 'topic' && sel.focus.id === t.id}
@@ -302,7 +348,7 @@ export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCrea
               folders={folders[t.id] ?? EMPTY_FOLDERS} ops={ops}
               files={files} sel={sel}
               onRename={() => act.renameTopic(t)} onDelete={() => act.deleteTopic(t)} onChange={refresh}
-              onCheckVision={() => act.checkVision({ topic_id: t.id }, t.name, subject.id)} />
+              onCheckVision={advanced ? () => act.checkVision({ topic_id: t.id }, t.name, subject.id) : undefined} />
           ))}
         </section>
       </div>
@@ -316,7 +362,7 @@ export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCrea
           <span className="pick-count">{picked.size} selected</span>
           <button className="btn btn-sm" onClick={(e) => ov.menu(e, moveItems(), { anchor: e.currentTarget, place: 'above' })}>Move to…</button>
           <button className="btn btn-sm btn-danger" onClick={deletePicked}>Delete</button>
-          <button className="icon-btn" title="Clear selection (Esc)" onClick={clearPicked}>×</button>
+          <button className="icon-btn" title="Clear selection (Esc)" onClick={clearPicked}><Icon name="close" size={15} /></button>
         </div>
       )}
 

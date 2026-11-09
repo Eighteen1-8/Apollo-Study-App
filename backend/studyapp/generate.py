@@ -10,7 +10,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from . import context, db, figures, llm, notehtml
+from . import citations, context, db, figures, llm, notehtml
 from .parsers import IMAGE_EXTS, approx_tokens, parse, render_pdf_page, sha
 
 TOOLS = {
@@ -60,7 +60,22 @@ def _allocate(total: int, weights: list[float]) -> list[int]:
 
 def _focus_text(params):
     f = (params.get("focus") or "").strip()
-    return f"\nFocus on: {f}. Still stay within the material." if f else ""
+    return (f"\nFocus on: {f}. Still stay within the material." if f else "") + _extra_text(params)
+
+
+def _extra_text(params):
+    """Files the student added for this one request (read when it was made, never ingested) and what to do with them.
+    Goes after the cached material, in the task."""
+    out = ""
+    extra = params.get("extra") or []
+    if extra:
+        out += ("\n\nEXTRA MATERIAL the student added for this request only (it is not part of their study files). "
+                "Use it the way their instructions say; if they give none, use it to decide what matters most:\n"
+                + "\n\n".join(f"=== {e['name']} ===\n{e['text']}" for e in extra))
+    ins = (params.get("instructions") or "").strip()
+    if ins:
+        out += f"\n\nThe student's instructions for this request: {ins}\nFollow them, still basing the content on the study material."
+    return out
 
 
 def _textbook(subject_id, query, topic_id=None):
@@ -155,6 +170,8 @@ def gen_flashcards(art, params, groups, prog):
                 "Cover its most important definitions, laws, formulas, relationships and facts. Fronts are clear questions or "
                 "prompts; backs are concise, complete answers." + ITEM_FORMAT + ex)
     cards = _per_section(art, params, groups, n, prog, task, Cards, lambda c: c.front)
+    for c in cards:  # the slide/page that actually holds each card's answer (citations.py)
+        c.source = citations.fix_source(c.source, f"{c.front} {c.back}", art["subject_id"])
     return {"cards": [c.model_dump() for c in cards]}
 
 
@@ -167,6 +184,9 @@ def gen_quiz(art, params, groups, prog):
                 "others are wrong. Put the options only in 'options', never listed inside the question text."
                 + ITEM_FORMAT + ex)
     qs = _per_section(art, params, groups, n, prog, task, MCQs, lambda q: q.question)
+    for q in qs:  # the slide/page that actually holds the answer (citations.py)
+        right = q.options[q.answer_index] if 0 <= q.answer_index < len(q.options) else ""
+        q.source = citations.fix_source(q.source, f"{q.question} {right} {q.explanation}", art["subject_id"])
     return {"questions": [_tidy_mcq(q).model_dump() for q in qs]}
 
 
@@ -238,6 +258,7 @@ def gen_notes(art, params, groups, prog):
         if focus:  # per section: a focus list must not pull the same topics into every page
             task += (f"\nThe student is focusing on: {focus}. Give extra depth to those topics where THIS section covers "
                      "them; never bring them in from other documents, and write the section's other content normally.")
+        task += _extra_text(params)
         covered = _covered(written)
         if covered:
             task += ("\n\nEarlier pages of these notes already cover the following. Do not repeat their definitions, "
@@ -446,6 +467,7 @@ def gen_exam(art, params, groups, prog):
                     "MCQ/true-false: give options and answer_index. Written questions: give a model answer and a marking rubric "
                     "whose point marks add up to the question's marks. Case studies: put the scenario in 'stimulus' and the parts "
                     f"in 'subquestions' (multiple-choice sub-questions get their own options and answer_index).\n\nPractice exam text, for STYLE reference only:\n{text[:12000]}"
+                    + _extra_text(params)
                     + _textbook(art["subject_id"], f"{part.name} {part.question_type} {art['scope']}", art["topic_id"]))
             out = llm.chat_json([{"role": "system", "content": _system(art["scope"], groups[gi])}, {"role": "user", "content": task}],
                                 ExamQs, max_tokens=20000, reasoning=db.setting("generation_reasoning"), temperature=0.5)
@@ -471,12 +493,18 @@ def run_artifact(artifact_id: int, job):
     art = db.q1("SELECT * FROM artifacts WHERE id=?", (artifact_id,))
     params = json.loads(art["params"])
     art["scope"] = context.scope_label(art["subject_id"], art["topic_id"])
+    if params.get("document_ids"):
+        names = [d["filename"] for d in db.q(f"SELECT filename FROM documents WHERE id IN ({','.join('?' * len(params['document_ids']))})",
+                                             tuple(params["document_ids"]))]
+        if names:
+            art["scope"] = f"{art['scope'].split(' (')[0].split(' › ')[0]} › {', '.join(names)}"
     db.ex("UPDATE artifacts SET status='running', error=NULL, updated_at=? WHERE id=?", (time.time(), artifact_id))
     prog = Progress(artifact_id, job)
     prog(0.01, "Collecting material")
-    groups = context.material_groups(art["subject_id"], art["topic_id"], _gen_budget())
+    doc_ids = params.get("document_ids") or None
+    groups = context.material_groups(art["subject_id"], art["topic_id"], _gen_budget(), doc_ids)
     if not groups:
-        raise ValueError(context.material_problem(art["subject_id"], art["topic_id"]) or "No readable material in this scope.")
+        raise ValueError(context.material_problem(art["subject_id"], art["topic_id"], doc_ids) or "No readable material in this scope.")
     content = GENERATORS[art["type"]](art, params, groups, prog)
     db.ex("UPDATE artifacts SET status='ready', content=?, progress=1, message='Ready', updated_at=? WHERE id=?",
           (json.dumps(content), time.time(), artifact_id))

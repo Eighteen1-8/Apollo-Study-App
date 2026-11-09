@@ -3,6 +3,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { MindNode } from '../../api';
 import Markdown from '../../components/Markdown';
+import Icon from '../../components/Icon';
 
 const ROW = 38;      // vertical space per leaf
 const GAP_X = 64;    // between columns
@@ -149,9 +150,9 @@ export default function MindMap({ root, title, onAsk, onCite }: {
         </g>
       </svg>
       <div className="mm-tools">
-        <button className="ne-btn" data-tip="Zoom in" onClick={() => zoom(1.2)}>+</button>
-        <button className="ne-btn" data-tip="Zoom out" onClick={() => zoom(1 / 1.2)}>−</button>
-        <button className="ne-btn" data-tip="Fit to the screen" onClick={fit}>⤢</button>
+        <button className="ne-btn" data-tip="Zoom in" onClick={() => zoom(1.2)}><Icon name="add" /></button>
+        <button className="ne-btn" data-tip="Zoom out" onClick={() => zoom(1 / 1.2)}><Icon name="minus" /></button>
+        <button className="ne-btn" data-tip="Fit to the screen" onClick={fit}><Icon name="fit" size={15} /></button>
         <button className="ne-btn" data-tip="Unfold every branch" onClick={() => setFolded(new Set())}>Expand all</button>
         <button className="ne-btn" data-tip="Show only the main branches" onClick={() => setFolded(new Set(pathsFrom(root, '0', 0, 1)))}>Collapse</button>
       </div>

@@ -18,7 +18,7 @@ const procs = [
   spawn(python, ['-m', 'studyapp.main', '--port', String(E2E.backend), '--data-dir', data], {
     cwd: backend, stdio: 'inherit',
     env: {
-      ...process.env, APOLLO_TOKEN: E2E.token, STUDY_ENV_FILE: join(data, 'no.env'),
+      ...process.env, APOLLO_TOKEN: E2E.token, APOLLO_SETUP_DONE: '1', STUDY_ENV_FILE: join(data, 'no.env'),
       LLM_BASE_URL: fake, LLM_MODEL: 'fake-chat', EMBED_BASE_URL: fake, EMBED_MODEL: 'fake-embed',
     },
   }),

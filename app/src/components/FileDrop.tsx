@@ -1,7 +1,10 @@
 import { useState } from 'react';
 import { api, Subject, VisionMode } from '../api';
 import { Modal } from './overlay';
-import { droppedPaths } from './UploadDialog';
+import { addedNotice, droppedPaths, VisionSelect } from './UploadDialog';
+import { useTerms } from '../terms';
+import { toast } from './toast';
+import Icon from './Icon';
 
 /**
  * Shown while files are dragged in from Explorer: left = reference library, right = a topic, bottom = send to the
@@ -11,15 +14,16 @@ export function FileDropOverlay({ topicCount, singleTopic, onReference, onTopic,
   topicCount: number; singleTopic?: string;
   onReference: (paths: string[]) => void; onTopic: (paths: string[]) => void; onChat: (paths: string[]) => void;
 }) {
+  const tr = useTerms();
   return (
     <div className="filedrop">
       <div className="filedrop-top">
-        <Zone kind="ref" title="Reference library" sub="Textbooks and references. Ingested and searched for every question." onDrop={onReference} />
+        <Zone kind="ref" title={tr('references')} sub={tr('ingestedRef')} onDrop={onReference} />
         <Zone kind="topic" title={singleTopic ? `Topic: ${singleTopic}` : 'Topic material'}
-          sub={topicCount > 1 ? "Ingested into a topic. You'll pick the topic for each file." : topicCount === 1 ? 'Ingested into this topic.' : "You'll be asked to name a topic first."}
+          sub={topicCount > 1 ? tr('ingestedTopics') : topicCount === 1 ? tr('ingestedTopic') : "You'll be asked to name a topic first."}
           onDrop={onTopic} />
       </div>
-      <Zone kind="chat" title="Send to chat" sub="Read for your next message only. Not ingested or added to your library." onDrop={onChat} />
+      <Zone kind="chat" title="Send to chat" sub={tr('notIngested')} onDrop={onChat} />
     </div>
   );
 }
@@ -32,7 +36,7 @@ function Zone({ kind, title, sub, onDrop }: { kind: string; title: string; sub: 
       onDragEnter={() => setOver(true)}
       onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setOver(false); }}
       onDrop={(e) => { e.preventDefault(); setOver(false); onDrop(droppedPaths(e)); }}>
-      <div className="fd-icon">{kind === 'ref' ? '📚' : kind === 'topic' ? '🗂' : '💬'}</div>
+      <div className="fd-icon"><Icon name={kind === 'ref' ? 'textbook' : kind === 'topic' ? 'topic' : 'chat'} size={kind === 'chat' ? 26 : 32} /></div>
       <div className="fd-title">{title}</div>
       <div className="fd-sub">{sub}</div>
     </div>
@@ -58,6 +62,8 @@ export function TopicAssignDialog({ subject, paths, defaultTopic, onClose, onDon
       }
       onDone();
       const bad = out.filter((r) => r.status !== 'queued');
+      const added = out.length - bad.length;
+      if (added) toast(addedNotice(added));
       if (bad.length) setProblems(bad); else onClose();
     } catch (e) {
       setProblems([{ filename: '', status: 'error', message: String(e) }]);
@@ -92,17 +98,10 @@ export function TopicAssignDialog({ subject, paths, defaultTopic, onClose, onDon
           </div>
         ))}
       </div>
-      <label className="field">
-        <span className="field-label">Vision</span>
-        <select value={mode} onChange={(e) => setMode(e.target.value as VisionMode)}>
-          <option value="auto">Auto</option>
-          <option value="all">Every page/slide</option>
-          <option value="off">Skip vision</option>
-        </select>
-      </label>
+      <VisionSelect mode={mode} setMode={setMode} />
       {problems.map((m, i) => (
         <div key={i} className={`small ${m.status === 'error' ? 'bad' : 'muted'}`}>
-          {m.filename && <b>{m.filename}: </b>}{m.status === 'duplicate' ? `skipped (exact duplicate). ${m.message}` : m.message}
+          {m.filename && <b>{m.filename}: </b>}{m.status === 'duplicate' ? `skipped (already added). ${m.message}` : m.message}
         </div>
       ))}
     </Modal>

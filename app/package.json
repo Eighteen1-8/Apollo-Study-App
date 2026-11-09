@@ -1,7 +1,7 @@
 {
   "name": "apollo-study",
   "productName": "Apollo Study",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "private": true,
   "description": "Apollo Study: private AI study app (local models by default)",
   "main": "electron/main.cjs",
@@ -21,6 +21,7 @@
   "dependencies": {
     "dompurify": "^3.2.3",
     "katex": "^0.16.11",
+    "lucide-react": "1.59.0",
     "marked": "^14.1.4",
     "pdfjs-dist": "6.4.299",
     "react": "^18.3.1",

@@ -38,7 +38,8 @@ def main():
     try:
         db.init()
     except db.StartupError as e:
-        print(f"STUDYAPP_ERROR {e}", file=sys.stderr, flush=True)
+        logging.getLogger("studyapp.main").error("APO-DATA-503 database start-up failed: %s", e)
+        print(f"STUDYAPP_ERROR {e} [APO-DATA-503]", file=sys.stderr, flush=True)
         sys.exit(3)
     config.token_file().write_text(config.API_TOKEN, encoding="utf-8")
     db.start_backup_schedule()
@@ -49,12 +50,38 @@ def main():
         purge_deleted_chats()
         purge_deleted()
     except Exception:
-        logging.getLogger(__name__).warning("couldn't purge deleted chats, content or notes", exc_info=True)
+        logging.getLogger("studyapp.main").warning("couldn't purge deleted chats, content or notes", exc_info=True)
     if args.parent_pid and os.name == "nt":
         threading.Thread(target=_watch_parent, args=(args.parent_pid,), daemon=True).start()
-    from .api import app
+    try:
+        from .api import app
+    except Exception as e:  # a missing or broken module: say so plainly (Electron shows this line) and log the traceback
+        logging.getLogger("studyapp.main").exception("APO-APP-003 backend start-up failed: %s: %s", type(e).__name__, e)
+        print(f"STUDYAPP_ERROR Apollo's background service couldn't start ({type(e).__name__}: {e}). "
+              f"Details are in {config.DATA_DIR / 'logs' / 'backend.log'}. [APO-APP-003]", file=sys.stderr, flush=True)
+        sys.exit(4)
+    try:
+        from .api import purge_trash
+        purge_trash()
+    except Exception:
+        logging.getLogger("studyapp.main").warning("couldn't empty the file trash", exc_info=True)
+    try:  # subjects with material but no example questions yet (made once each; questions.py)
+        from .questions import ensure_all
+        ensure_all()
+    except Exception:
+        logging.getLogger("studyapp.main").warning("couldn't queue example questions", exc_info=True)
+    # files read while the embedding model was off (the example subject) get their vectors once it answers
+    threading.Thread(target=_embed_waiting, daemon=True).start()
     print(f"STUDYAPP_READY port={args.port} data={config.DATA_DIR}", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
+
+
+def _embed_waiting():
+    try:
+        from .examples import embed_waiting
+        embed_waiting()
+    except Exception:
+        logging.getLogger("studyapp.main").warning("couldn't queue waiting embeddings", exc_info=True)
 
 
 if __name__ == "__main__":

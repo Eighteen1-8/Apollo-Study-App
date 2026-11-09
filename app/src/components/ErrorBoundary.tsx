@@ -1,4 +1,5 @@
 import { Component, ReactNode } from 'react';
+import { ErrorCode } from './ErrorText';
 import { logError } from '../log';
 
 /** Keeps one broken pane from blanking the whole window: shows what failed with a retry, and logs it. Give it a
@@ -22,7 +23,7 @@ ${info.componentStack ?? ''}` }));
     return (
       <div className={`crash${this.props.compact ? ' crash-compact' : ''}`} role="alert">
         <div className="crash-title">{this.props.name} ran into a problem</div>
-        <div className="crash-msg">{error.message || String(error)}</div>
+        <div className="crash-msg">{error.message || String(error)} <ErrorCode code="APO-UI-601" context={`${this.props.name}: ${error.message}`} /></div>
         <span className="crash-actions">
           <button className="btn btn-sm" onClick={() => this.setState({ error: null })}>Try again</button>
           {this.props.onClose && <button className="btn btn-sm" onClick={this.props.onClose}>Close</button>}

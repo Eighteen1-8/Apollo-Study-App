@@ -6,8 +6,9 @@ import { Progress } from '../../components/ui';
 import { onChange } from '../../events';
 import { useLiveReply } from '../../chatStreams';
 
-import { LEVEL_LABEL } from './types';
+import { levelLabel } from './types';
 import { ArtifactCard, ToolForm } from './ToolForm';
+import Icon from '../../components/Icon';
 
 /** The reply being written: the only part of the chat that re-renders as text streams in (`useLiveReply`). */
 export function LiveBubble({ chatId, onCite, onGrow }: { chatId: number; onCite: (file: string, label: string) => void; onGrow: () => void }) {
@@ -40,9 +41,9 @@ function ReasoningBlock({ text, live, seconds, started, level }: {
   return (
     <div className={`reasoning-block${open ? ' open' : ''}${live ? ' live' : ''}`}>
       <button className="reasoning-head" onClick={() => setOpen(!open)}>
-        <span className="reasoning-chevron">{open ? '▾' : '▸'}</span>
+        <span className="reasoning-chevron"><Icon name={open ? 'chevronDown' : 'chevronRight'} size={13} /></span>
         <span className="reasoning-label">{live ? 'Reasoning' : 'Reasoned'}{secs != null ? ` for ${secs.toFixed(1)}s` : ''}</span>
-        {level && level !== 'off' && <span className="reasoning-level">{LEVEL_LABEL[level] ?? level}</span>}
+        {level && level !== 'off' && <span className="reasoning-level">{levelLabel(level)}</span>}
       </button>
       {open && <div className="reasoning-body">{text || '…'}</div>}
     </div>
@@ -91,11 +92,11 @@ export function MessageView({ m, subject, chatTopic, onReplace, onOpenArtifact, 
           <div className="attach-row attach-row-sent">
             {m.meta.files.map((f, i) => (f.source ? (
               <button key={i} className="attach-chip attach-temp" title="Show where this screenshot came from" onClick={() => onShowArea(f.source!)}>
-                <span className="attach-icon">🖼</span><span className="attach-name">{f.name}</span><span className="attach-tag">↗ source</span>
+                <span className="attach-icon"><Icon name="image" size={13} /></span><span className="attach-name">{f.name}</span><span className="attach-tag">↗ source</span>
               </button>
             ) : (
               <span key={i} className="attach-chip attach-temp" title="Sent with this message only">
-                <span className="attach-icon">{f.kind === 'image' ? '🖼' : '📄'}</span><span className="attach-name">{f.name}</span>
+                <span className="attach-icon"><Icon name={f.kind === 'image' ? 'image' : 'file'} size={13} /></span><span className="attach-name">{f.name}</span>
               </span>
             )))}
           </div>
@@ -104,7 +105,7 @@ export function MessageView({ m, subject, chatTopic, onReplace, onOpenArtifact, 
           <div className="attach-row attach-row-sent">
             {m.meta.attachments.map((a) => (
               <button key={a.id} className="attach-chip" title={`Open ${a.filename}`} onClick={() => onOpenDoc(a.id)}>
-                <span className="attach-icon">📎</span><span className="attach-name">{a.filename}</span>
+                <span className="attach-icon"><Icon name="attach" size={13} /></span><span className="attach-name">{a.filename}</span>
               </button>
             ))}
           </div>
@@ -112,7 +113,7 @@ export function MessageView({ m, subject, chatTopic, onReplace, onOpenArtifact, 
         <div className="bubble">{m.content}</div>
         {!actions.busy && (
           <div className="msg-actions">
-            <button className="msg-act" title="Edit and resend" onClick={() => setEditing(m.content)}>✎ Edit</button>
+            <button className="msg-act" title="Edit and resend" onClick={() => setEditing(m.content)}><Icon name="edit" size={13} /> Edit</button>
             <button className="msg-act" title="Remove this message and everything after it" onClick={() => actions.onRollback(m)}>↶ Undo from here</button>
           </div>
         )}
@@ -135,7 +136,7 @@ export function MessageView({ m, subject, chatTopic, onReplace, onOpenArtifact, 
               navigator.clipboard.writeText(m.content);
               setCopied(true);
               setTimeout(() => setCopied(false), 1200);
-            }}>{copied ? '✓ Copied' : '⧉ Copy'}</button>
+            }}><Icon name={copied ? 'check' : 'copy'} size={13} /> {copied ? 'Copied' : 'Copy'}</button>
           </div>
         )}
       </div>
@@ -174,7 +175,7 @@ function ReviewMsgCard({ id, title, mode, onOpen }: { id: number; title: string;
   const verdict = r?.result?.verdict;
   return (
     <div className={`msg artifact-card status-${r?.status ?? 'queued'}`}>
-      <div className="artifact-icon t-notes">{mode === 'check' ? '✓' : '✎'}</div>
+      <div className="artifact-icon t-notes"><Icon name={mode === 'check' ? 'check' : 'edit'} size={19} /></div>
       <div className="artifact-main">
         <div className="artifact-title">{mode === 'check' ? 'Checking' : 'Revising'} {title}</div>
         {gone && <div className="muted small">This comment was dismissed.</div>}

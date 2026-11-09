@@ -14,6 +14,7 @@ from . import context, db, generate, grants, jobs
 from . import chat_reply, chats
 from .chat_tools import READ_TOOLS, TOOL_SPECS, _read_tool, _tool_message  # noqa: F401 (re-exported)
 from .chats import _add_message, _chat, _clean_title, _msg_out, auto_title, purge_deleted_chats  # noqa: F401 (re-exported)
+from .chat_files import _read_chat_file
 
 log = logging.getLogger(__name__)
 
@@ -58,10 +59,10 @@ def submit_tool(mid: int, body: Submit):
         if args.get("difficulty") not in ("easy", "normal", "hard"):
             raise HTTPException(400, "Choose a difficulty")
         if not args.get("practice_exam_path") or not grants.require(args["practice_exam_path"]).is_file():
-            raise HTTPException(400, "Upload a practice exam")
+            raise HTTPException(400, "[APO-GEN-402] Upload a practice exam")
     problem = context.material_problem(chat["subject_id"], body.topic_id)
     if problem:  # say so on the form instead of failing in the queue
-        raise HTTPException(400, problem)
+        raise HTTPException(400, f"[APO-GEN-401] {problem}")
     scope = context.scope_label(chat["subject_id"], body.topic_id)
     title = f"{generate.TYPE_TITLES[kind]}: {scope.split(' › ')[-1]}" + (f" ({args['difficulty'].title()})" if kind == "exam" else "")
     now = time.time()
@@ -72,6 +73,71 @@ def submit_tool(mid: int, body: Submit):
     meta.update(status="submitted", args=args, artifact_id=aid, topic_id=body.topic_id)
     db.ex("UPDATE messages SET meta=?, content=? WHERE id=?", (json.dumps(meta), title, mid))
     return _msg_out(db.q1("SELECT * FROM messages WHERE id=?", (mid,)))
+
+
+class CreateBody(BaseModel):
+    type: str
+    topic_id: int | None = None
+    document_ids: list[int] = []
+    args: dict = {}
+    extra_paths: list[str] = []
+    instructions: str = ""
+
+
+EXTRA_WORD_LIMIT = 15000
+
+
+@router.post("/subjects/{sid}/artifacts")
+def create_artifact(sid: int, body: CreateBody):
+    """Make content straight from the Make content steps (no chat form). Scope: the whole subject, one topic, or
+    `document_ids` (files of this subject). `extra_paths` are files the student added for this request only: read now
+    (not ingested; the paths need grants) and kept in the artifact's params with the `instructions` for them."""
+    if body.type not in generate.TYPE_TITLES:
+        raise HTTPException(400, "Unknown content type")
+    if db.q1("SELECT id FROM subjects WHERE id=?", (sid,)) is None:
+        raise HTTPException(404, "Subject not found")
+    args = dict(body.args)
+    if body.type == "exam":
+        if args.get("difficulty") not in ("easy", "normal", "hard"):
+            raise HTTPException(400, "Choose a difficulty")
+        if not args.get("practice_exam_path") or not grants.require(args["practice_exam_path"]).is_file():
+            raise HTTPException(400, "[APO-GEN-402] Upload a practice exam")
+    doc_ids = sorted(set(body.document_ids))
+    docs = []
+    if doc_ids:
+        docs = db.q(f"SELECT id, filename FROM documents WHERE subject_id=? AND id IN ({','.join('?' * len(doc_ids))})", (sid, *doc_ids))
+        if len(docs) != len(doc_ids):
+            raise HTTPException(404, "File not found")
+    if body.topic_id is not None and db.q1("SELECT id FROM topics WHERE id=? AND subject_id=?", (body.topic_id, sid)) is None:
+        raise HTTPException(404, "Topic not found")
+    problem = context.material_problem(sid, None if doc_ids else body.topic_id, doc_ids or None)
+    if problem:
+        raise HTTPException(400, f"[APO-GEN-401] {problem}")
+    extra, words = [], 0
+    for p in body.extra_paths:
+        f = _read_chat_file(p)
+        if f["kind"] != "text":
+            raise HTTPException(400, f"[APO-FILE-308] {f['name']}: pictures can't be used as extra material yet. Add a PDF or Word file instead.")
+        words += f["words"]
+        if words > EXTRA_WORD_LIMIT:
+            raise HTTPException(413, f"[APO-FILE-307] The extra material is too long together (the limit is {EXTRA_WORD_LIMIT:,} words). "
+                                     "Add fewer files, or add them to a topic so they're read properly.")
+        extra.append({"name": f["name"], "text": f["text"]})
+    if extra:
+        args["extra"] = extra
+    if body.instructions.strip():
+        args["instructions"] = body.instructions.strip()[:2000]
+    if doc_ids:
+        args["document_ids"] = doc_ids
+    where = (docs[0]["filename"].rsplit(".", 1)[0] if len(docs) == 1 else f"{len(docs)} files") if docs \
+        else context.scope_label(sid, body.topic_id).split(" › ")[-1]
+    title = f"{generate.TYPE_TITLES[body.type]}: {where}" + (f" ({args['difficulty'].title()})" if body.type == "exam" else "")
+    now = time.time()
+    aid = db.ex("""INSERT INTO artifacts(subject_id, topic_id, chat_id, type, title, params, status, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (sid, None if doc_ids else body.topic_id, None, body.type, title, json.dumps(args), "queued", now, now))
+    jobs.enqueue("generate", ref_id=aid)
+    return {"id": aid, "type": body.type, "title": title, "status": "queued"}
 
 
 @router.post("/messages/{mid}/dismiss")

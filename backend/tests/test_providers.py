@@ -156,8 +156,9 @@ def test_retries_rate_limits_then_succeeds(monkeypatch, settings):
 def test_gives_up_after_retries(monkeypatch, settings):
     settings(llm_provider="openrouter")
     mock_transport(monkeypatch, lambda req: httpx.Response(429, text="slow down"))
-    with pytest.raises(RuntimeError, match="HTTP 429"):
+    with pytest.raises(RuntimeError) as e:
         llm.chat([{"role": "user", "content": "x"}])
+    assert e.value.code == "APO-LLM-105" and "HTTP 429" in e.value.technical  # plain words for the student, detail kept
 
 
 def test_daily_cap_is_not_retried(monkeypatch, settings):
@@ -169,25 +170,29 @@ def test_daily_cap_is_not_retried(monkeypatch, settings):
         return httpx.Response(429, json={"error": {"message": "Rate limit exceeded: free-models-per-day"}})
 
     mock_transport(monkeypatch, handler)
-    with pytest.raises(RuntimeError, match="free-models-per-day"):
+    with pytest.raises(RuntimeError) as e:
         llm.chat([{"role": "user", "content": "x"}])
-    with pytest.raises(RuntimeError, match="free-models-per-day"):
+    assert e.value.code == "APO-LLM-105" and "free-models-per-day" in e.value.technical
+    with pytest.raises(RuntimeError) as e:
         list(llm.chat_stream([{"role": "user", "content": "x"}]))
+    assert e.value.code == "APO-LLM-105" and "free-models-per-day" in e.value.technical
     assert len(calls) == 2
 
 
 def test_error_inside_200_is_raised(monkeypatch, settings):
     settings(llm_provider="openrouter")
     mock_transport(monkeypatch, lambda req: httpx.Response(200, json={"error": {"message": "Provider returned error"}}))
-    with pytest.raises(RuntimeError, match="Provider returned error"):
+    with pytest.raises(RuntimeError) as e:
         llm.chat([{"role": "user", "content": "x"}])
+    assert e.value.code == "APO-LLM-108" and "Provider returned error" in e.value.technical
 
 
 def test_bad_key_message(monkeypatch, settings):
     settings(llm_provider="openrouter")
     mock_transport(monkeypatch, lambda req: httpx.Response(401, json={"error": {"message": "No auth credentials found"}}))
-    with pytest.raises(RuntimeError, match="OpenRouter HTTP 401"):
+    with pytest.raises(RuntimeError) as e:
         llm.chat([{"role": "user", "content": "x"}])
+    assert e.value.code == "APO-LLM-103" and "OpenRouter HTTP 401" in e.value.technical and "key" in str(e.value)
 
 
 def sse(*events):
@@ -231,8 +236,9 @@ def test_stream_error_event_raises(monkeypatch, settings):
     settings(llm_provider="openrouter")
     body = sse({"choices": [{"delta": {"content": "par"}}]}, {"error": {"message": "upstream died"}})
     mock_transport(monkeypatch, lambda req: httpx.Response(200, content=body))
-    with pytest.raises(RuntimeError, match="upstream died"):
+    with pytest.raises(RuntimeError) as e:
         list(llm.chat_stream([{"role": "user", "content": "x"}]))
+    assert e.value.code == "APO-LLM-108" and "upstream died" in e.value.technical
 
 
 # ---------------------------------------------------------------- API & secrets

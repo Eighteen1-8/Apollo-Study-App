@@ -1,5 +1,5 @@
-/* Deleting and renaming chats from anywhere (the chat header, the sidebar's × and its multi-select, /delete), with a
-   confirmation first and an undo afterwards. */
+/* Deleting and renaming chats from anywhere (the chat header, the sidebar's × and its multi-select, /delete): deleted at
+   once with Undo in a toast (and Ctrl+Z); it only asks first when Apollo is still replying in one of them. */
 import { api, Chat } from '../api';
 import type { useOverlay } from '../components/overlay';
 import { toast } from '../components/toast';
@@ -8,17 +8,15 @@ import { undoable, undoEntry } from '../undo';
 
 type Overlay = ReturnType<typeof useOverlay>;
 
-/** Ask, then delete (soft: Undo restores them). Returns whether they were deleted. */
+/** Delete (soft: Undo restores them), asking first only if a reply would be stopped. Returns whether they were deleted. */
 export async function confirmDeleteChats(ov: Overlay, chats: Pick<Chat, 'id' | 'title'>[]): Promise<boolean> {
   if (!chats.length) return false;
   const n = chats.length;
   const replying = chats.filter((c) => isLive(c.id)).length;
-  const ok = await ov.confirm({
+  if (replying && !(await ov.confirm({
     title: n === 1 ? `Delete “${chats[0].title}”?` : `Delete ${n} chats?`, danger: true, confirmText: 'Delete',
-    body: `${replying ? 'Apollo is still replying in ' + (n === 1 ? 'it' : `${replying} of them`) + '; that reply stops. ' : ''}`
-      + 'Generated content stays in the library. You can undo this with Ctrl+Z.',
-  });
-  if (!ok) return false;
+    body: `Apollo is still replying in ${n === 1 ? 'it' : `${replying} of them`}; that reply stops. You can undo the delete, but not the stopped reply.`,
+  }))) return false;
   const ids = chats.map((c) => c.id);
   ids.forEach((id) => { if (isLive(id)) stopReply(id); });
   await api.deleteChats(ids);
@@ -31,8 +29,8 @@ export async function confirmDeleteChats(ov: Overlay, chats: Pick<Chat, 'id' | '
   return true;
 }
 
-/** Delete something that's deleted softly on the server (generated content, a note), with Undo in a toast and on
- * Ctrl+Z. Deleted items are purged after a week. */
+/** Delete something that's deleted softly on the server (generated content, a note, a file), with Undo in a toast and
+ * on Ctrl+Z. Deleted items are purged after a week. */
 export async function deleteUndoably({ what, name, del, restore }: {
   what: string; name: string; del: () => Promise<unknown>; restore: () => Promise<unknown>;
 }) {

@@ -26,7 +26,7 @@ KEEPALIVE = 15
 _SQL = {
     "jobs": "SELECT COUNT(*), MAX(updated_at), SUM(dismissed) FROM jobs",
     "documents": "SELECT COUNT(*), MAX(updated_at), SUM(vec_version), MAX(id), group_concat(COALESCE(position, ''), ',') FROM documents",
-    "subjects": "SELECT (SELECT group_concat(id || name || color || COALESCE(icon_text, '') || COALESCE(icon_emoji, '') || "
+    "subjects": "SELECT (SELECT group_concat(id || name || color || COALESCE(icon_text, '') || COALESCE(icon_emoji, '') || COALESCE(icon_name, '') || "
                 "COALESCE(icon_image, '') || COALESCE(position, ''), '|') FROM subjects), "
                 "(SELECT group_concat(id || subject_id || name || COALESCE(position, ''), '|') FROM topics)",
     "library": "SELECT COUNT(*), MAX(updated_at), SUM(LENGTH(title)), group_concat(COALESCE(position, ''), ','), "

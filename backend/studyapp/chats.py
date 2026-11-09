@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from . import db, jobs, llm
-from .chat_prompt import _history, _system_prompt, _tokens
+from .chat_prompt import HISTORY_TOKENS, _history, _system_prompt, _tokens
 from .parsers import approx_tokens
 
 log = logging.getLogger(__name__)
@@ -178,8 +178,13 @@ def chat_context(cid: int):
             break
         latest = False
     total = max(real or 0, estimate)
+    # the whole conversation, against the share of it Apollo is sent (_history keeps only the latest turns within
+    # HISTORY_TOKENS): past that, the earliest messages are left out, usually long before the window itself fills
+    convo = sum(_tokens(m["content"]) for m in db.q(
+        "SELECT content FROM messages WHERE chat_id=? AND role IN ('user','assistant')", (cid,)))
     return {"limit": llm.context_tokens(), "system": rules, "material": material, "history": history,
-            "total": total, "estimate": estimate, "exact": real is not None and latest and real >= estimate, "full_context": full}
+            "total": total, "estimate": estimate, "exact": real is not None and latest and real >= estimate, "full_context": full,
+            "conversation": convo, "history_limit": HISTORY_TOKENS}
 
 
 class ChatPatch(BaseModel):

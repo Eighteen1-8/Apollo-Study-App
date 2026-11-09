@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, ArtifactType, Chat, LibraryItem, Subject } from '../api';
+import { api, ArtifactType, Chat, LibraryItem, Subject, ToolName } from '../api';
 import { usePoll } from '../hooks';
 import { useOverlay } from '../components/overlay';
 import { artifactHtml, exportAs, ExportFormat } from '../components/exportDoc';
@@ -9,18 +9,37 @@ import { useReorder } from '../components/reorder';
 import { useChatStreams } from '../chatStreams';
 import { confirmDeleteChats, deleteUndoably, renameChatUndoable } from './chatActions';
 import { undoable } from '../undo';
+import { CREATE_ITEMS } from './SubjectView';
+import Icon from '../components/Icon';
+import ErrorText from '../components/ErrorText';
+import Info from '../components/Info';
 
-export const TYPE_ICON: Record<ArtifactType, string> = { flashcards: '▤', quiz: '?', exam: '✎', notes: '¶', cheatsheet: '≡', mindmap: '✺' };
-const TYPE_LABEL: Record<ArtifactType, string> = { flashcards: 'Flashcards', quiz: 'Quiz', exam: 'Exam', notes: 'Notes', cheatsheet: 'Cheat sheet', mindmap: 'Mind map' };
+/** Each kind of generated content's icon (components/Icon.tsx names them after the types). */
+export const TYPE_ICON = (t: ArtifactType, size = 15) => <Icon name={t} size={size} />;
 const EXPORTABLE: ArtifactType[] = ['notes', 'cheatsheet', 'exam'];
 const PANE_TYPES: ArtifactType[] = ['notes', 'cheatsheet', 'mindmap']; // open in the centre, so also in split view
+const KIND_ORDER: ArtifactType[] = ['flashcards', 'quiz', 'exam', 'notes', 'cheatsheet', 'mindmap'];
+const KIND_LABEL: Record<ArtifactType, string> = { flashcards: 'Flashcards', quiz: 'Quizzes', exam: 'Practice exams', notes: 'Study notes', cheatsheet: 'Cheat sheets', mindmap: 'Mind maps' };
 
 /** The chat the centre shows, and how the sidebar opens or starts one. */
 export interface ChatNav { activeId: number | null; onOpen: (id: number) => void; onNew: () => void }
 
-/** Left sidebar: the subject's chats (searchable, newest first) above everything generated for it, grouped by topic. */
-export default function LibraryPanel({ subject, onOpen, onOpenSplit, chats }: {
+/** Left sidebar: the subject's chats (searchable, newest first), then what Apollo is making, then everything it made,
+ * grouped by kind in collapsible cards. */
+/** What each kind of generated content is for, on the Create menu and the empty list. */
+export const CREATE_BLURB: Record<string, string> = {
+  create_flashcards: 'Quick recall: rate each card and the ones you miss come back',
+  create_quiz: 'Multiple-choice and short questions, marked as you go',
+  create_exam: 'A full practice exam in the same layout as one you upload',
+  create_notes: 'Complete study notes covering every file',
+  create_cheatsheet: 'The key facts and formulas on one page',
+  create_mindmap: 'How the ideas connect, as a map you can expand',
+};
+
+export default function LibraryPanel({ subject, onOpen, onOpenSplit, chats, onCreate }: {
   subject: Subject; onOpen: (id: number) => void; onOpenSplit: (id: number) => void; chats: ChatNav;
+  /** Open a create form in the chat (null: every topic). */
+  onCreate: (tool: ToolName, topicId: number | null) => void;
 }) {
   const ov = useOverlay();
   const lib = usePoll(() => api.library(subject.id), 1000, [subject.id], ['library']);
@@ -38,12 +57,11 @@ export default function LibraryPanel({ subject, onOpen, onOpenSplit, chats }: {
   });
 
   const dragDay = useRef<string | null>(null);
-  const groups = new Map<string, LibraryItem[]>();
-  for (const t of subject.topics) groups.set(t.name, []);
-  for (const it of items) {
-    const key = it.topic_name ?? 'All topics';
-    groups.set(key, [...(groups.get(key) ?? []), it]);
-  }
+  // being made first (with their progress), then everything else grouped by kind, in the Make content order
+  const busyItems = items.filter((it) => it.status === 'queued' || it.status === 'running');
+  const groups: [ArtifactType, LibraryItem[]][] = KIND_ORDER
+    .map((t): [ArtifactType, LibraryItem[]] => [t, items.filter((it) => it.type === t && !busyItems.includes(it))])
+    .filter(([, list]) => list.length);
 
   const dayOf = (t: number) => new Date(t * 1000).toDateString();
   const reorder = useReorder(`lib:${subject.id}`, items.map((it) => it.id),
@@ -58,6 +76,14 @@ export default function LibraryPanel({ subject, onOpen, onOpenSplit, chats }: {
     }
   };
 
+  const createMenu = (e: React.MouseEvent) => ov.menu(e, CREATE_ITEMS.map((c) => ({ label: c.label, onClick: () => onCreate(c.tool, null) })),
+    { anchor: e.currentTarget as HTMLElement });
+  const retry = async (it: LibraryItem) => { await api.retryArtifact(it.id); lib.reload(); };
+  const remove = async (it: LibraryItem) => {
+    // deleted at once: Undo (toast or Ctrl+Z) brings it back for a week
+    await deleteUndoably({ what: 'content', name: it.title, del: () => api.deleteArtifact(it.id), restore: () => api.restoreArtifact(it.id) });
+    lib.reload();
+  };
   const menu = (e: React.MouseEvent, it: LibraryItem) => ov.menu(e, [
     { label: 'Open', disabled: it.status !== 'ready', onClick: () => onOpen(it.id) },
     ...(PANE_TYPES.includes(it.type) ? [{ label: 'Open side by side', disabled: it.status !== 'ready', onClick: () => onOpenSplit(it.id) }] : []),
@@ -69,7 +95,7 @@ export default function LibraryPanel({ subject, onOpen, onOpenSplit, chats }: {
         { label: 'Export to PDF with answers…', onClick: () => exportItem(it, 'pdf', true) },
       ] : []),
     ] : []),
-    { label: 'Regenerate', separatorBefore: true, disabled: it.status === 'queued' || it.status === 'running', onClick: async () => { await api.retryArtifact(it.id); lib.reload(); } },
+    { label: 'Regenerate', separatorBefore: true, disabled: it.status === 'queued' || it.status === 'running', onClick: () => retry(it) },
     { label: 'Rename…', onClick: async () => {
       const t = await ov.prompt({ title: 'Rename', initial: it.title });
       if (t) {
@@ -78,65 +104,99 @@ export default function LibraryPanel({ subject, onOpen, onOpenSplit, chats }: {
         lib.reload();
       }
     } },
-    { label: 'Delete', danger: true, separatorBefore: true, onClick: async () => {
-      if (await ov.confirm({ title: `Delete ${it.title}?`, danger: true, confirmText: 'Delete',
-        body: 'You can undo this (Ctrl+Z) for a week; after that it and its ratings and attempts are gone.' })) {
-        await deleteUndoably({ what: 'content', name: it.title, del: () => api.deleteArtifact(it.id), restore: () => api.restoreArtifact(it.id) });
-        lib.reload();
-      }
-    } },
+    { label: 'Delete', danger: true, separatorBefore: true, onClick: () => remove(it) },
   ]);
 
   return (
     <aside className="side side-left">
       <ChatHistory subject={subject} nav={chats} style={chatSplit.style} />
       <SplitHandle split={chatSplit} label="chats" edge="below" section={() => document.querySelector<HTMLElement>('.side-left > .chat-history:not(.folded)')} />
-      <div className="side-head side-head-sub"><div className="side-title">Generated</div></div>
-      <div className="side-scroll">
+      <div className="side-head side-head-sub">
+        <div className="side-title">Study material</div>
+        <button className="btn btn-sm lib-create" data-tip="Make flashcards, a quiz, an exam, notes, a cheat sheet or a mind map" onClick={createMenu}>
+          <Icon name="create" size={14} /> Make
+        </button>
+      </div>
+      <div className="side-scroll lib-scroll">
+        {busyItems.length > 0 && (
+          <section className="lib-making" aria-label="Being made">
+            <div className="lib-label">Being made <Info text="Apollo makes one thing at a time, in order. You can keep studying meanwhile; each one moves into its group below when it's ready." /></div>
+            {busyItems.map((it) => (
+              <div key={it.id} className="lib-made-card" title={it.message || 'Waiting for Apollo'} onContextMenu={(e) => menu(e, it)}>
+                <span className={`lib-icon t-${it.type}`}>{TYPE_ICON(it.type)}</span>
+                <span className="lib-main">
+                  <span className="lib-title">{it.title}</span>
+                  <span className="lib-progress"><span style={{ width: `${Math.max(4, Math.round(it.progress * 100))}%` }} /></span>
+                  <span className="lib-sub">{it.status === 'queued' ? 'Waiting its turn…' : `${it.message || 'Working'} · ${Math.round(it.progress * 100)}%`}</span>
+                </span>
+                <button className="x-btn lib-more" title="More options" aria-label={`More options for ${it.title}`} onClick={(e) => menu(e, it)}><Icon name="more" size={15} /></button>
+              </div>
+            ))}
+          </section>
+        )}
         {items.length === 0 && (
           <div className="files-empty side-empty">
-            Flashcards, quizzes, exams, notes and mind maps you create in chat are saved here, grouped by topic.
+            What you make is kept here, grouped by kind. Pick one to start:
+            <div className="lib-starters">
+              {CREATE_ITEMS.map((c) => (
+                <button key={c.tool} className="lib-starter" onClick={() => onCreate(c.tool, null)}>
+                  <b>{c.label.replace(' (from a practice exam)', '')}</b><span>{CREATE_BLURB[c.tool]}</span>
+                </button>
+              ))}
+            </div>
           </div>
         )}
-        {[...groups.entries()].filter(([, list]) => list.length).map(([name, list]) => (
-          <section key={name} className={`side-section lib-group${hidden.has(name) ? ' folded' : ''}`}>
-            <button className="side-section-head lib-group-head" onClick={() => toggle(name)} title={hidden.has(name) ? 'Show' : 'Hide'}>
-              <span className="lib-caret">▾</span><span>{name}</span><span className="lib-count">{list.length}</span>
-            </button>
-            {!hidden.has(name) && sortLike(list, reorder.order).map((it) => {
-              // drag to reorder, only among items made the same day in the same topic group (the dates stay in order)
-              const drag = reorder.item(it.id);
-              const sameDay = (_e: React.DragEvent) => dragDay.current === `${name}|${dayOf(it.created_at)}`;
-              const busy = it.status === 'queued' || it.status === 'running';
-              // Default titles are "Type: Topic (extra)"; inside a topic group the topic part is redundant.
-              const rest = it.title.replace(/^[^:]+:\s*/, '');
-              const extra = it.topic_name && rest.startsWith(it.topic_name) ? rest.slice(it.topic_name.length).trim() : rest;
-              const title = it.title.includes(':') ? `${TYPE_LABEL[it.type]}${extra ? ` ${extra}` : ''}` : it.title;
-              const date = new Date(it.created_at * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
-              return (
-                <button key={it.id} className={`lib-item status-${it.status}`} onClick={() => it.status === 'ready' && onOpen(it.id)}
-                  draggable data-drop={drag['data-drop']}
-                  onDragStart={(e) => { dragDay.current = `${name}|${dayOf(it.created_at)}`; drag.onDragStart(e); }}
-                  onDragEnd={() => { dragDay.current = null; drag.onDragEnd(); }}
-                  onDragOver={(e) => { if (sameDay(e)) drag.onDragOver(e); }}
-                  onDragLeave={(e) => { drag.onDragLeave(e); }}
-                  onDrop={(e) => { if (sameDay(e)) drag.onDrop(e); }}
-                  onContextMenu={(e) => menu(e, it)} title={busy ? it.message : it.status === 'failed' ? 'Failed: right-click to delete' : it.title}>
-                  <span className={`lib-icon t-${it.type}`}>{TYPE_ICON[it.type]}</span>
-                  <span className="lib-main">
-                    <span className="lib-title">{title}</span>
-                    <span className="lib-sub">
-                      {date}
-                      {busy && ` · ${Math.round(it.progress * 100)}%`}
-                      {it.status === 'failed' && ' · failed'}
-                    </span>
-                    {busy && <span className="lib-progress"><span style={{ width: `${Math.round(it.progress * 100)}%` }} /></span>}
-                  </span>
-                </button>
-              );
-            })}
-          </section>
-        ))}
+        {groups.map(([type, list], gi) => {
+          const open = !hidden.has(type);
+          return (
+            <section key={type} className={`lib-kind kind-${type}${open ? ' open' : ''}`} style={{ '--i': gi } as React.CSSProperties}>
+              <button className="lib-kind-head" onClick={() => toggle(type)} aria-expanded={open} title={open ? 'Hide' : 'Show'}>
+                <span className={`lib-kind-icon t-${type}`}>{TYPE_ICON(type, 16)}</span>
+                <span className="lib-kind-name">{KIND_LABEL[type]}</span>
+                <span className="lib-kind-count">{list.length}</span>
+                <span className="lib-kind-caret"><Icon name="chevronRight" size={14} /></span>
+              </button>
+              {open && (
+                <div className="lib-kind-list">
+                  {sortLike(list, reorder.order).map((it) => {
+                    // drag to reorder, only among items of the same kind made the same day (the dates stay in order)
+                    const drag = reorder.item(it.id);
+                    const sameDay = (_e: React.DragEvent) => dragDay.current === `${type}|${dayOf(it.created_at)}`;
+                    // default titles are "Type: Topic (extra)"; inside the type's group the type part is redundant
+                    const title = it.title.includes(':') ? it.title.replace(/^[^:]+:\s*/, '') : it.title;
+                    const date = new Date(it.created_at * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+                    return (
+                      <div key={it.id} className="lib-item-wrap">
+                        <button className={`lib-item status-${it.status}`} onClick={() => it.status === 'ready' && onOpen(it.id)}
+                          draggable data-drop={drag['data-drop']}
+                          onDragStart={(e) => { dragDay.current = `${type}|${dayOf(it.created_at)}`; drag.onDragStart(e); }}
+                          onDragEnd={() => { dragDay.current = null; drag.onDragEnd(); }}
+                          onDragOver={(e) => { if (sameDay(e)) drag.onDragOver(e); }}
+                          onDragLeave={(e) => { drag.onDragLeave(e); }}
+                          onDrop={(e) => { if (sameDay(e)) drag.onDrop(e); }}
+                          onContextMenu={(e) => menu(e, it)} title={it.status === 'failed' ? `Failed${it.error || it.message ? `: ${it.error || it.message}` : ''}` : it.title}>
+                          <span className="lib-main">
+                            <span className="lib-title">{title}</span>
+                            <span className="lib-sub">{it.topic_name ?? 'All topics'} · {date}{it.status === 'failed' && ' · failed'}{it.status === 'cancelled' && ' · cancelled'}</span>
+                            {(it.status === 'failed' || it.status === 'cancelled') && (
+                              <span className="lib-failed" onClick={(e) => e.stopPropagation()}>
+                                {(it.error || it.message) && <span className="lib-failed-why"><ErrorText text={it.error || it.message} /></span>}
+                                <span className="link-btn" role="button" tabIndex={0} onClick={() => retry(it)}>Try again</span>
+                                <span className="link-btn danger" role="button" tabIndex={0} onClick={() => remove(it)}>Delete</span>
+                              </span>
+                            )}
+                          </span>
+                          {it.status === 'ready' && <span className="lib-go" aria-hidden><Icon name="chevronRight" size={14} /></span>}
+                        </button>
+                        <button className="x-btn lib-more" title="More options" aria-label={`More options for ${title}`} onClick={(e) => menu(e, it)}><Icon name="more" size={15} /></button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          );
+        })}
       </div>
     </aside>
   );
@@ -249,9 +309,9 @@ function ChatHistory({ subject, nav, style }: { subject: Subject; nav: ChatNav; 
       }}>
       <div className="side-head">
         <button className="side-title ch-title" onClick={fold} title={folded ? 'Show chats' : 'Hide chats'}>
-          <span className="lib-caret">▾</span> Chats {chats.data && <span className="lib-count">{chats.data.length}</span>}
+          <span className="lib-caret"><Icon name="chevronDown" size={13} /></span> Chats {chats.data && <span className="lib-count">{chats.data.length}</span>}
         </button>
-        <button className="icon-btn" data-tip="New chat" onClick={nav.onNew}>＋</button>
+        <button className="icon-btn" data-tip="New chat" onClick={nav.onNew}><Icon name="add" /></button>
       </div>
       {!folded && (
         <>
@@ -286,7 +346,7 @@ function ChatHistory({ subject, nav, style }: { subject: Subject; nav: ChatNav; 
                       <span className="ch-name">{c.title}</span>
                       {topic(c.topic_id) && <span className="ch-topic">{topic(c.topic_id)}</span>}
                       <button className="x-btn ch-del" title="Delete chat" aria-label={`Delete ${c.title}`}
-                        onClick={(e) => { e.stopPropagation(); remove(picked.has(c.id) && picked.size > 1 ? pickedChats : [c]); }}>×</button>
+                        onClick={(e) => { e.stopPropagation(); remove(picked.has(c.id) && picked.size > 1 ? pickedChats : [c]); }}><Icon name="close" size={14} /></button>
                     </div>
                   );
                 })}

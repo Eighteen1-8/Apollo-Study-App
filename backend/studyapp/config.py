@@ -57,6 +57,9 @@ DEFAULT_SETTINGS = {
     "embed_batch": 16,
     # Online models (OpenRouter). Off by default: "local" keeps everything on this computer. Chat/generation and
     # embeddings switch independently. The key comes from the gitignored .env, never from source.
+    # First launch: the setup steps (where the models run) show until they are finished or skipped. An existing data
+    # folder counts as set up (db.init); APOLLO_SETUP_DONE=1 skips them (tests).
+    "setup_done": os.environ.get("APOLLO_SETUP_DONE") == "1",
     "llm_provider": "local",  # "local" | "openrouter"
     "embed_provider": "local",  # "local" | "openrouter"
     "openrouter_base_url": os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),

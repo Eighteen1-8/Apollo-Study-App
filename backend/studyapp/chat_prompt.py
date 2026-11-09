@@ -12,8 +12,9 @@ How to answer:
 - Ground every answer in the student's STUDY MATERIAL (and textbook passages when given). Prefer quoting it: use short
   verbatim quotes in quotation marks for definitions, laws and key statements, then explain them in your own words.
 - Cite every fact you take from the material as [[filename · label]], using the exact document filename and the exact
-  unit label from the material headers, e.g. [[Wave Behaviours and Light Phenomena.pptx · Slide 32]] or
-  [[ElectricalCircuits.pdf · Page 20]]. The app turns these into links that open the source.
+  unit label in square brackets just above the text you used (one slide, page or section, never a range), e.g.
+  [[Wave Behaviours and Light Phenomena.pptx · Slide 32]], [[ElectricalCircuits.pdf · Page 20]] or
+  [[Trial Exam 1.docx · Section 14 · Answer: D]]. The app turns these into links that open the source.
 - Only use your own general knowledge when the material does not cover something. Then say so plainly
   ("Your material doesn't cover this; from general physics knowledge: ...") and never cite it.
 - Items marked [Visual content] describe diagrams from the slides/pages; use them and cite their slide/page.
@@ -136,7 +137,10 @@ def _tokens(content) -> int:
     return sum(approx_tokens(p["text"]) if p["type"] == "text" else IMAGE_TOKENS for p in content)
 
 
-def _history(cid, limit_tokens=12000):
+HISTORY_TOKENS = 12000  # how much of a conversation goes with each question (the composer's memory ring shows it)
+
+
+def _history(cid, limit_tokens=HISTORY_TOKENS):
     """Recent turns within the budget; the latest turn is always included, however long."""
     out, used = [], 0
     for m in reversed(db.q("SELECT * FROM messages WHERE chat_id=? ORDER BY id", (cid,))):

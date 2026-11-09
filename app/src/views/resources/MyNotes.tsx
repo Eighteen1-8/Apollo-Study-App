@@ -6,6 +6,7 @@ import { getPref, setPref } from '../../prefs';
 import { usePoll } from '../../hooks';
 import { useOverlay } from '../../components/overlay';
 import { deleteUndoably } from '../chatActions';
+import Icon from '../../components/Icon';
 
 
 export function MyNotes({ subject, openId, onOpen, onOpenSplit, style }: {
@@ -43,20 +44,18 @@ export function MyNotes({ subject, openId, onOpen, onOpenSplit, style }: {
       if (t) { await api.saveNote(n.id, { title: t }); notes.reload(); }
     } },
     { label: 'Delete', danger: true, onClick: async () => {
-      if (await ov.confirm({ title: `Delete “${n.title}”?`, danger: true, confirmText: 'Delete',
-        body: 'You can undo this (Ctrl+Z) for a week; after that the note and Apollo\'s comments on it are gone.' })) {
-        await deleteUndoably({ what: 'note', name: n.title, del: () => api.deleteNote(n.id), restore: () => api.restoreNote(n.id) });
-        notes.reload();
-      }
+      // deleted at once: Undo (toast or Ctrl+Z) brings it back for a week
+      await deleteUndoably({ what: 'note', name: n.title, del: () => api.deleteNote(n.id), restore: () => api.restoreNote(n.id) });
+      notes.reload();
     } },
   ]);
   return (
     <section className={`my-notes${folded ? ' folded' : ''}`} style={folded ? undefined : style}>
       <div className="side-section-head">
         <button className="my-notes-title" onClick={() => { setFolded(!folded); setPref('notesFolded', folded ? '0' : '1'); }}>
-          <span className="lib-caret">▾</span> My notes {list.length > 0 && <span className="count-badge">{list.length}</span>}
+          <span className="lib-caret"><Icon name="chevronDown" size={13} /></span> My notes {list.length > 0 && <span className="count-badge">{list.length}</span>}
         </button>
-        <button className="icon-btn" title="New note" onClick={create}>+</button>
+        <button className="icon-btn" title="New note" onClick={create}><Icon name="add" /></button>
       </div>
       {!folded && (
         <div className="my-notes-list">
@@ -68,7 +67,7 @@ export function MyNotes({ subject, openId, onOpen, onOpenSplit, style }: {
           {list.map((n) => (
             <button key={n.id} className={`note-item${n.id === openId ? ' open' : ''}`} onClick={() => onOpen(n.id)} onContextMenu={(e) => menu(e, n)}
               title={n.title}>
-              <span className="note-icon">✎</span>
+              <span className="note-icon"><Icon name="note" size={14} /></span>
               <span className="lib-main">
                 <span className="lib-title">{n.title}</span>
                 <span className="lib-sub">{new Date(n.updated_at * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}

@@ -81,7 +81,7 @@ def scope_documents(topic_id=None, subject_id=None, include_reference=True) -> l
         if include_reference and subject_id is not None:
             ids += [r["id"] for r in db.q("SELECT id FROM documents WHERE subject_id=? AND kind='reference'", (subject_id,))]
         return ids
-    return [r["id"] for r in db.q("SELECT id FROM documents WHERE subject_id=?", (subject_id,))]
+    return [r["id"] for r in db.q("SELECT id FROM documents WHERE subject_id=? AND kind<>'trash'", (subject_id,))]
 
 
 def _fts_query(q):
@@ -122,7 +122,7 @@ def search(query: str, doc_ids: list[int], k=10):
         vision = c["source"] == "vision"
         if vision and (c["document_id"], c["unit_start"]) in shown:
             continue  # an earlier result already carries this unit's notes
-        notes = db.q("SELECT idx, label, vision_notes FROM units WHERE document_id=? AND idx BETWEEN ? AND ? "
+        notes = db.q("SELECT idx, kind, label, vision_notes FROM units WHERE document_id=? AND idx BETWEEN ? AND ? "
                      "AND vision_status='done' AND vision_relevant=1 ORDER BY idx", (c["document_id"], c["unit_start"], c["unit_end"]))
         notes = [n for n in notes if (c["document_id"], n["idx"]) not in shown]
         shown.update((c["document_id"], n["idx"]) for n in notes)
@@ -132,5 +132,6 @@ def search(query: str, doc_ids: list[int], k=10):
             text, label = u["text"] if u else "", u["label"] if u else label
         out.append({"chunk_id": cid, "document_id": c["document_id"], "filename": c["filename"], "doc_kind": c["doc_kind"],
                     "label": label, "text": text, "source": c["source"], "unit_start": c["unit_start"], "unit_end": c["unit_end"],
-                    "vision_notes": [{"label": n["label"], "vision_notes": n["vision_notes"]} for n in notes], **d})
+                    "vision_notes": [{"idx": n["idx"], "kind": n["kind"], "label": n["label"], "vision_notes": n["vision_notes"]}
+                                     for n in notes], **d})
     return out

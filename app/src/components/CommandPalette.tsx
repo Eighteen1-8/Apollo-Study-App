@@ -9,6 +9,7 @@ import { redo, undo } from '../undo';
 import { logError } from '../log';
 import { score } from './fuzzy';
 import type { OpenRequest } from '../viewHistory';
+import Icon from './Icon';
 
 let open = false;
 const listeners = new Set<() => void>();
@@ -16,7 +17,7 @@ const set = (v: boolean) => { open = v; listeners.forEach((fn) => fn()); };
 export const openPalette = () => set(true);
 
 interface Item {
-  key: string; kind: string; icon: string; title: string; sub?: string;
+  key: string; kind: string; icon: React.ReactNode; title: string; sub?: string;
   run: () => void;
   /** Lower case text matched against the query. */
   hay: string;
@@ -58,17 +59,17 @@ function Palette({ go, route, onClose }: { go: (r: Route) => void; route: Route;
       ['Undo', 'Ctrl+Z', () => { undo(); }],
       ['Redo', 'Ctrl+Y', () => { redo(); }],
     ];
-    for (const [title, sub, run] of actions) add({ key: `a:${title}`, kind: 'action', icon: '›', title, sub, run });
+    for (const [title, sub, run] of actions) add({ key: `a:${title}`, kind: 'action', icon: <Icon name="chevronRight" size={15} />, title, sub, run });
     if (!data) return out;
-    for (const s of data.subjects) add({ key: `s${s.id}`, kind: 'subject', icon: '◆', title: s.name, sub: 'Subject', run: () => go({ name: 'subject', id: s.id }) });
-    if (here != null) add({ key: 'newchat', kind: 'action', icon: '＋', title: 'New chat', sub: subjectName(here), run: () => openIn(here, { kind: 'chat', id: -1 }) });
-    for (const t of data.topics) add({ key: `t${t.id}`, kind: 'topic', icon: '▸', title: t.name, sub: `Topic · ${subjectName(t.subject_id)}`, run: () => openIn(t.subject_id, { kind: 'topic', id: t.id }) });
-    for (const d of data.documents) add({ key: `d${d.id}`, kind: 'file', icon: '📄', title: d.filename,
+    for (const s of data.subjects) add({ key: `s${s.id}`, kind: 'subject', icon: <Icon name="book" size={15} />, title: s.name, sub: 'Subject', run: () => go({ name: 'subject', id: s.id }) });
+    if (here != null) add({ key: 'newchat', kind: 'action', icon: <Icon name="add" size={15} />, title: 'New chat', sub: subjectName(here), run: () => openIn(here, { kind: 'chat', id: -1 }) });
+    for (const t of data.topics) add({ key: `t${t.id}`, kind: 'topic', icon: <Icon name="topic" size={15} />, title: t.name, sub: `Topic · ${subjectName(t.subject_id)}`, run: () => openIn(t.subject_id, { kind: 'topic', id: t.id }) });
+    for (const d of data.documents) add({ key: `d${d.id}`, kind: 'file', icon: <Icon name="file" size={15} />, title: d.filename,
       sub: `${d.kind === 'reference' ? 'Textbook' : topicName(d.topic_id) || 'File'} · ${subjectName(d.subject_id)}`, run: () => openIn(d.subject_id, { kind: 'doc', id: d.id }) });
-    for (const a of data.artifacts) add({ key: `g${a.id}`, kind: a.type, icon: TYPE_ICON[a.type], title: a.title,
+    for (const a of data.artifacts) add({ key: `g${a.id}`, kind: a.type, icon: TYPE_ICON(a.type), title: a.title,
       sub: `Generated · ${subjectName(a.subject_id)}`, run: () => openIn(a.subject_id, { kind: 'artifact', id: a.id }) });
-    for (const n of data.notes) add({ key: `n${n.id}`, kind: 'note', icon: '✎', title: n.title, sub: `My notes · ${subjectName(n.subject_id)}`, run: () => openIn(n.subject_id, { kind: 'note', id: n.id }) });
-    for (const c of data.chats) add({ key: `c${c.id}`, kind: 'chat', icon: '💬', title: c.title, sub: `Chat · ${subjectName(c.subject_id)}`, run: () => openIn(c.subject_id, { kind: 'chat', id: c.id }) });
+    for (const n of data.notes) add({ key: `n${n.id}`, kind: 'note', icon: <Icon name="note" size={15} />, title: n.title, sub: `My notes · ${subjectName(n.subject_id)}`, run: () => openIn(n.subject_id, { kind: 'note', id: n.id }) });
+    for (const c of data.chats) add({ key: `c${c.id}`, kind: 'chat', icon: <Icon name="chat" size={15} />, title: c.title, sub: `Chat · ${subjectName(c.subject_id)}`, run: () => openIn(c.subject_id, { kind: 'chat', id: c.id }) });
     return out;
   }, [data, go, here]);
 

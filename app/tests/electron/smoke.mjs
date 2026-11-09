@@ -25,7 +25,7 @@ try {
     args: ['.'], cwd: app, timeout: 60_000,
     env: {
       ...process.env, APOLLO_USER_DATA: join(tmp, 'profile'), APOLLO_DATA_DIR: join(tmp, 'data'),
-      STUDY_ENV_FILE: join(tmp, 'none.env'), LLM_BASE_URL: `http://127.0.0.1:${FAKE}/v1`, LLM_MODEL: 'fake-chat',
+      STUDY_ENV_FILE: join(tmp, 'none.env'), APOLLO_SETUP_DONE: '1', LLM_BASE_URL: `http://127.0.0.1:${FAKE}/v1`, LLM_MODEL: 'fake-chat',
       EMBED_BASE_URL: `http://127.0.0.1:${FAKE}/v1`, EMBED_MODEL: 'fake-embed',
     },
   });
