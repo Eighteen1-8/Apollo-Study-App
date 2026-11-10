@@ -62,7 +62,9 @@ function grantHeader(body: unknown): Record<string, string> {
   walk(body);
   if (!Object.keys(found).length) return {};
   const bytes = new TextEncoder().encode(JSON.stringify(found));
-  const b64 = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  let bin = '';  // in pieces: spreading a long list (hundreds of files) into one call overflows the argument limit
+  for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  const b64 = btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   return { 'X-Apollo-Grants': b64 };
 }
 
@@ -432,17 +434,37 @@ async function streamChat(path: string, body: unknown, onEvent: (e: ChatEvent) =
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = '';
+  let ended = false;
+  // The reply always finishes with an `end` event. A stream that breaks or just stops before it means the background
+  // service went away mid-reply: said in plain words, not as a raw network error (or as nothing at all).
+  const dropped = (why: string) => new ApiError('The connection to Apollo’s background service dropped while it was replying. '
+    + 'What it had written so far is kept; ask again to continue.', 'APO-APP-001', 0, why);
   for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
+    let chunk: ReadableStreamReadResult<Uint8Array>;
+    try { chunk = await reader.read(); } catch (e) { throw dropped(String(e)); }
+    if (chunk.done) break;
+    buf += dec.decode(chunk.value, { stream: true });
     let i;
     while ((i = buf.indexOf('\n\n')) >= 0) {
       const line = buf.slice(0, i).trim();
       buf = buf.slice(i + 2);
-      if (line.startsWith('data: ')) onEvent(JSON.parse(line.slice(6)));
+      if (!line.startsWith('data: ')) continue;
+      let ev: ChatEvent;
+      try { ev = JSON.parse(line.slice(6)); } catch { continue; }  // one damaged event must not end the reply
+      if (ev.type === 'end') ended = true;
+      onEvent(ev);
     }
   }
+  if (!ended) throw dropped('the stream closed before its end event');
+}
+
+/** Save a note as the page goes away (the window closing): `keepalive` lets the request outlive the page. Its body
+ * is limited to 64 KB by the browser; a longer note was already saved by the editor's own timer or on blur. */
+export function saveNoteOnExit(id: number, html: string) {
+  try {
+    fetch(`${BASE}/notes/${id}`, { method: 'PATCH', keepalive: true, headers: { ...AUTH, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ html }) }).catch(() => { /* the page is gone */ });
+  } catch { /* too large for keepalive */ }
 }
 
 export type ToolName = 'add_todos' | 'review_content' | 'create_flashcards' | 'create_quiz' | 'create_exam' | 'create_notes'

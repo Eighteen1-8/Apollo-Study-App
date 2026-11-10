@@ -23,6 +23,35 @@ def _watch_parent(pid: int):
     os._exit(0)
 
 
+_data_lock = None  # the open lock file: held for the life of the process
+
+
+def _lock_data_dir(wait: float = 6.0) -> bool:
+    """One backend per data folder: a second one would requeue the first one's running jobs and write to the same
+    database. Holds an exclusive lock on <data>/backend.lock until the process ends (the system releases it even after
+    a crash). Waits a few seconds first, for a previous backend that is still shutting down."""
+    global _data_lock
+    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    f = open(config.DATA_DIR / "backend.lock", "a+b")
+    end = time.monotonic() + wait
+    while True:
+        try:
+            f.seek(0)
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _data_lock = f
+            return True
+        except OSError:
+            if time.monotonic() >= end:
+                f.close()
+                return False
+            time.sleep(0.3)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=47615)
@@ -35,6 +64,11 @@ def main():
     # hand, the backend makes its own: open the UI with ?backend=PORT&token=<the backend-token file's contents>.
     config.API_TOKEN = os.environ.pop("APOLLO_TOKEN", None) or secrets.token_urlsafe(32)
     grants.KEY = os.environ.pop("APOLLO_GRANT_KEY", None)  # set by Electron; without it file paths aren't checked
+    if not _lock_data_dir():
+        logging.getLogger("studyapp.main").error("APO-APP-004 another backend is using %s", config.DATA_DIR)
+        print("STUDYAPP_ERROR Apollo Study is already open and using this data. Use the window that's already open, or "
+              "close it first. [APO-APP-004]", file=sys.stderr, flush=True)
+        sys.exit(5)
     try:
         db.init()
     except db.StartupError as e:
@@ -73,7 +107,9 @@ def main():
     # files read while the embedding model was off (the example subject) get their vectors once it answers
     threading.Thread(target=_embed_waiting, daemon=True).start()
     print(f"STUDYAPP_READY port={args.port} data={config.DATA_DIR}", flush=True)
-    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
+    # Headers up to 1 MB: the grants for the files of one request travel in a header (grants.py), and the default
+    # 16 KB refused an upload of more than about 70 files at once.
+    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning", h11_max_incomplete_event_size=1 << 20)
 
 
 def _embed_waiting():

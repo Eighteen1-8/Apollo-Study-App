@@ -411,12 +411,30 @@ def _apply_pending_restore():
     chosen = backup_path(name)
     if chosen is None:
         return
+    import os
     import shutil
+    # Copied beside the database first and checked, then swapped in with one rename: a copy that stops half-way (power
+    # cut, full disk) or a damaged backup leaves the current data as it was.
+    tmp = config.db_path().with_name(config.db_path().name + ".restoring")
+    try:
+        shutil.copyfile(chosen, tmp)
+        check = sqlite3.connect(tmp)
+        try:
+            ok = check.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+        finally:
+            check.close()
+    except (OSError, sqlite3.Error) as e:
+        log.error("restore of %s skipped: %s", name, e)
+        ok = False
+    if not ok:
+        tmp.unlink(missing_ok=True)
+        log.error("backup %s is damaged or unreadable; the current data was kept", name)
+        return
     if config.db_path().exists():
         backup("before-restore")
     for suffix in ("-wal", "-shm"):
         config.db_path().with_name(config.db_path().name + suffix).unlink(missing_ok=True)
-    shutil.copyfile(chosen, config.db_path())
+    os.replace(tmp, config.db_path())
 
 
 def start_backup_schedule():
@@ -436,7 +454,11 @@ def start_backup_schedule():
 
 @contextmanager
 def tx():
+    """One transaction on the writer. Nested on the same thread it joins the outer one (commits or rolls back with it)."""
     with _lock:
+        if getattr(_local, "depth", 0):
+            yield _conn
+            return
         _conn.execute("BEGIN")
         _local.depth = getattr(_local, "depth", 0) + 1
         try:

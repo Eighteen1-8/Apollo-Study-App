@@ -1,7 +1,6 @@
 """Study features around generated content: subject icons, revision to-dos, flashcard ratings, quiz review,
 and managing the saved content library."""
 import json
-import shutil
 import time
 
 from fastapi import APIRouter, HTTPException
@@ -54,7 +53,7 @@ def set_icon(sid: int, body: IconBody):
         folder = config.assets_dir() / "subject_icons"
         folder.mkdir(parents=True, exist_ok=True)
         rel = f"subject_icons/{sid}_{int(time.time())}{src.suffix.lower()}"
-        shutil.copyfile(src, config.assets_dir() / rel)
+        config.copy_atomic(src, config.assets_dir() / rel)
         fields["icon_image"] = rel
     if body.clear_image or body.icon_text is not None or body.icon_emoji is not None or body.icon_name is not None:
         if s["icon_image"] and not body.image_path:
@@ -230,7 +229,17 @@ def delete_artifact(aid: int):
 
 @router.post("/artifacts/{aid}/restore")
 def restore_artifact(aid: int):
+    """Undo a delete. Content that was still being made when it was deleted (deleting stopped it, leaving it
+    'cancelled', which the library doesn't list) is queued again, so it comes back as it was: on its way."""
     db.ex("UPDATE artifacts SET deleted_at=NULL WHERE id=?", (aid,))
+    a = db.q1("SELECT status, content FROM artifacts WHERE id=?", (aid,))
+    if a and not a["content"] and a["status"] in ("queued", "running", "cancelled"):
+        # the job being stopped for the deleted one is told to stop; a new one is queued behind it
+        db.ex("UPDATE jobs SET status='cancelled', updated_at=? WHERE type='generate' AND ref_id=? AND status='queued'",
+              (time.time(), aid))
+        if not db.q1("SELECT 1 FROM jobs WHERE type='generate' AND ref_id=? AND status='running'", (aid,)):
+            db.ex("UPDATE artifacts SET status='queued', error=NULL, progress=0, message='' WHERE id=?", (aid,))
+            jobs.enqueue("generate", ref_id=aid)
     return {"ok": True}
 
 
@@ -397,7 +406,7 @@ def add_todo(sid: int, body: TodoBody):
 
 @router.patch("/todos/{tid}")
 def patch_todo(tid: int, body: TodoPatch):
-    if body.text is not None:
+    if body.text is not None and body.text.strip():
         db.ex("UPDATE todos SET text=? WHERE id=?", (body.text.strip(), tid))
     if body.done is not None:
         db.ex("UPDATE todos SET done=? WHERE id=?", (int(body.done), tid))

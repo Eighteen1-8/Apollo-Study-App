@@ -11,17 +11,31 @@ export function usePoll<T>(fn: () => Promise<T>, ms: number, deps: unknown[] = [
   const [error, setError] = useState<string | null>(null);
   const fnRef = useRef(fn);
   fnRef.current = fn;
+  // Requests can answer out of order (a slow one started earlier lands last), and one started for the previous
+  // `deps` can land after they changed. An answer is used only if nothing newer has landed and it is for these deps.
+  const started = useRef(0);
+  const landed = useRef(0);
+  const epoch = useRef(0);
 
   const reload = useCallback(async () => {
+    const mine = ++started.current;
+    const forDeps = epoch.current;
+    const current = () => forDeps === epoch.current && mine > landed.current;
     try {
-      setData(await fnRef.current());
+      const value = await fnRef.current();
+      if (!current()) return;
+      landed.current = mine;
+      setData(value);
       setError(null);
     } catch (e) {
+      if (!current()) return;
+      landed.current = mine;
       setError(e instanceof Error ? e.message : String(e));
     }
   }, []);
 
   useEffect(() => {
+    epoch.current++;
     setData(null);
     reload();
     if (!topics) {

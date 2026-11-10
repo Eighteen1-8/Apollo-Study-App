@@ -19,7 +19,7 @@ from typing import Literal
 from lxml import html as lxml_html
 from pydantic import BaseModel
 
-from . import context, db, figures, llm, notehtml
+from . import context, db, errors, figures, llm, notehtml
 
 log = logging.getLogger(__name__)
 
@@ -70,11 +70,11 @@ def target_sections(r: dict) -> tuple[dict, list[dict]]:
     if r["target"] == "note":
         n = db.q1("SELECT * FROM user_notes WHERE id=? AND deleted_at IS NULL", (r["target_id"],))
         if n is None:
-            raise ValueError("That note was deleted.")
+            raise errors.AppError("APO-DATA-504", "review target note is gone", plain="That note was deleted.")
         return n, [{"title": n["title"], "html": n["html"]}]
     a = db.q1("SELECT * FROM artifacts WHERE id=? AND deleted_at IS NULL", (r["target_id"],))
     if a is None or not a["content"]:
-        raise ValueError("That content was deleted or isn't ready.")
+        raise errors.AppError("APO-DATA-504", "review target artifact is gone", plain="That content was deleted or isn't ready.")
     secs = json.loads(a["content"]).get("sections") or []
     return a, [{"title": s.get("title", ""), "html": s.get("html") if s.get("html") is not None else s.get("markdown", ""),
                 "markdown": s.get("html") is None} for s in secs]
@@ -125,7 +125,7 @@ def run_review(review_id: int, job):
     if r["mode"] == "check":
         text = r["quote"].strip() or "\n\n".join(f"## {secs[i]['title']}\n{plain_text(secs[i]['html'])}" for i in idxs)
         if not text.strip():
-            raise ValueError("There's nothing to check yet.")
+            raise errors.AppError("APO-GEN-401", "nothing to check", plain="There's nothing to check yet.")
         system = _system(CHECK_RULES, owner, text)
         where = f" (from “{secs[idxs[0]]['title']}”)" if r["quote"].strip() and len(secs) > 1 else ""
         task = (f"=== TEXT TO CHECK{where} ===\n{text[:40000]}\n=== END ===\n\n"
@@ -139,7 +139,7 @@ def run_review(review_id: int, job):
         result = res.model_dump()
     else:
         if not r["instruction"].strip():
-            raise ValueError("Say what Apollo should change.")
+            raise errors.AppError("APO-APP-400", "revise without an instruction", plain="Say what Apollo should change.")
         query = r["quote"] or r["instruction"] + "\n" + "\n".join(plain_text(secs[i]["html"])[:600] for i in idxs)
         system = _system(REVISE_RULES, owner, query)
         out, comments = [], []
@@ -174,12 +174,12 @@ def run_review(review_id: int, job):
             else:
                 new = {"index": i, "html": notehtml.scrub(re.sub(r"^```\w*\n|\n```$", "", body).strip())}
             if len((new.get("html") or new.get("markdown") or "").strip()) < 20:
-                raise ValueError("Apollo returned an empty revision. Try again, or word the instruction differently.")
+                raise errors.AppError("APO-GEN-403", "empty revision", plain="Apollo returned an empty revision. Try again, or word the instruction differently.")
             out.append(new)
             if comment:
                 comments.append(comment if len(idxs) == 1 else f"{s['title']}: {comment}")
         if not out:
-            raise ValueError("Apollo found nothing to change for that instruction.")
+            raise errors.AppError("APO-GEN-403", "nothing changed", plain="Apollo found nothing to change for that instruction.")
         result = {"comment": " ".join(comments) or "Revised as asked.", "sections": out}
     db.ex("UPDATE reviews SET status='ready', result=?, progress=1, message='Ready', updated_at=? WHERE id=?",
           (json.dumps(result), time.time(), review_id))

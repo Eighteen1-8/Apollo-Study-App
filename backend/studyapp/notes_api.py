@@ -192,6 +192,8 @@ def _swap_sections(r: dict, new: list[dict]) -> list[dict]:
     now = time.time()
     if r["target"] == "note":
         n = _note(r["target_id"])
+        if not new:
+            raise HTTPException(400, "Nothing to put back")
         db.ex("UPDATE user_notes SET html=?, updated_at=? WHERE id=?", (notehtml.scrub(new[0].get("html") or ""), now, n["id"]))
         return [{"index": 0, "html": n["html"]}]
     a = db.q1("SELECT * FROM artifacts WHERE id=?", (r["target_id"],))
@@ -303,7 +305,11 @@ def export_docx(body: DocxBody):
     data = docx_export.build(body.title, body.html)
     if body.path:
         out = grants.require(body.path, "write")
-        Path(out).write_bytes(data)
+        try:
+            Path(out).write_bytes(data)
+        except PermissionError as e:  # usually: the file is open in Word
+            raise HTTPException(409, f"Couldn't save {Path(out).name}: it's open in another program, or that folder "
+                                     "can't be written to.") from e
         return {"path": str(out)}
     name = re.sub(r'[<>:"/\\|?*]+', " ", body.title).strip()[:80] or "export"
     return Response(data, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

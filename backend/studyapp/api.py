@@ -9,7 +9,6 @@ import hmac
 import io
 import json
 import re
-import shutil
 import time
 
 import pymupdf
@@ -175,8 +174,56 @@ def get_settings():
 @app.put("/settings")
 def put_settings(values: dict):
     values = {k: v for k, v in values.items() if not (k in SECRET_KEYS and v == "••••••••") and k not in PAUSE_KEYS}
-    db.put_settings(values)
+    db.put_settings(_checked_settings(values))
     return get_settings()
+
+
+# Numbers the app divides by, sizes buffers with or sends to a model server: (lowest, highest) allowed.
+SETTING_RANGES = {"llm_context": (1024, 4_000_000), "openrouter_context": (1024, 4_000_000), "llm_concurrency": (1, 64),
+                  "openrouter_concurrency": (1, 64), "embed_batch": (1, 512), "chunk_target_tokens": (50, 8000),
+                  "chunk_max_slides": (1, 100), "chat_file_word_limit": (100, 500_000)}
+
+
+def _checked_settings(values: dict) -> dict:
+    """Each value in the type of its default (a number typed as text is converted), or a 400 naming the setting. A
+    wrong type saved here used to break every later model call, not this request."""
+    out = {}
+    for k, v in values.items():
+        if k not in config.DEFAULT_SETTINGS:
+            continue
+        default = config.DEFAULT_SETTINGS[k]
+        problem = None
+        if isinstance(default, bool):
+            if not isinstance(v, bool):
+                problem = "must be on or off"
+        elif isinstance(default, (int, float)):
+            try:
+                if isinstance(v, bool):
+                    raise ValueError
+                v = float(v)
+                if v != v or v in (float("inf"), float("-inf")):
+                    raise ValueError
+                if isinstance(default, int):
+                    v = int(v)
+            except (TypeError, ValueError, OverflowError):
+                problem = "must be a number"
+            else:
+                lo, hi = SETTING_RANGES.get(k, (0, None))
+                if v < lo or (hi is not None and v > hi):
+                    problem = f"must be between {lo:,} and {hi:,}" if hi is not None else f"must be at least {lo}"
+        elif isinstance(default, str):
+            if not isinstance(v, str):
+                problem = "must be text"
+            elif k.endswith("_base_url"):
+                v = v.strip()
+                if not v.lower().startswith(("http://", "https://")):
+                    raise errors.AppError("APO-SET-701", f"{k}={v!r}")
+        elif isinstance(default, (list, dict)) and not isinstance(v, type(default)):
+            problem = "has the wrong shape"
+        if problem:
+            raise HTTPException(400, f"The setting '{k.replace('_', ' ')}' {problem}.")
+        out[k] = v
+    return out
 
 
 @app.get("/status/models")
@@ -270,6 +317,8 @@ def create_subject(body: NameBody):
 @app.patch("/subjects/{sid}")
 def update_subject(sid: int, body: NameBody):
     _404(db.q1("SELECT id FROM subjects WHERE id=?", (sid,)))
+    if not body.name.strip():
+        raise HTTPException(400, "Name required")
     db.ex("UPDATE subjects SET name=?, color=COALESCE(?, color) WHERE id=?", (body.name.strip(), body.color, sid))
     return _subject_row(sid)
 
@@ -332,6 +381,8 @@ def get_topic(tid: int):
 @app.patch("/topics/{tid}")
 def update_topic(tid: int, body: NameBody):
     _404(db.q1("SELECT id FROM topics WHERE id=?", (tid,)))
+    if not body.name.strip():
+        raise HTTPException(400, "Name required")
     db.ex("UPDATE topics SET name=?, description=COALESCE(?, description) WHERE id=?", (body.name.strip(), body.description, tid))
     return db.q1("SELECT * FROM topics WHERE id=?", (tid,))
 
@@ -380,10 +431,16 @@ def upload_documents(body: UploadBody):
         if ext not in SUPPORTED:
             results.append({"filename": path.name, "status": "error", "message": f"Unsupported type {ext}"})
             continue
-        h = hashlib.sha256()
-        with open(path, "rb") as f:
-            for block in iter(lambda: f.read(1 << 20), b""):
-                h.update(block)
+        try:
+            h = hashlib.sha256()
+            with open(path, "rb") as f:
+                for block in iter(lambda: f.read(1 << 20), b""):
+                    h.update(block)
+        except OSError as e:  # open in another program, a cloud placeholder that isn't downloaded, no permission
+            log.warning("upload: couldn't read %s: %s", path, e)
+            results.append({"filename": path.name, "status": "error",
+                            "message": "Couldn't read this file. Close it in other programs and try again."})
+            continue
         digest = h.hexdigest()
         # File-level exact dedupe within the same scope.
         dup = db.q1(f"SELECT id, filename FROM documents WHERE {scope_sql} AND sha256=?", (scope_arg, digest))
@@ -391,8 +448,14 @@ def upload_documents(body: UploadBody):
             results.append({"filename": path.name, "status": "duplicate", "message": f"Identical to {dup['filename']}"})
             continue
         stored = config.files_dir() / f"{digest}{ext}"
-        if not stored.exists():
-            shutil.copyfile(path, stored)
+        try:
+            if not stored.exists() or stored.stat().st_size != path.stat().st_size:  # absent, or cut short before
+                config.copy_atomic(path, stored)
+        except OSError as e:
+            err = errors.classify(e)
+            log.warning("%s upload: couldn't copy %s: %s", err.code, path, e)
+            results.append({"filename": path.name, "status": "error", "message": str(err)})
+            continue
         now = time.time()
         did = db.ex("""INSERT INTO documents(subject_id, topic_id, kind, filename, ext, sha256, size, status, vision_mode, created_at, updated_at)
                        VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
@@ -487,14 +550,19 @@ def restore_document(did: int):
     later = [r["document_id"] for r in db.q(
         f"""SELECT DISTINCT document_id FROM units WHERE document_id IN (SELECT id FROM documents WHERE {scope_sql} AND id>?)
             AND content_hash IN (SELECT content_hash FROM units WHERE document_id=?)""", (scope_arg, did, did))]
-    if d["status"] not in ("ready", "failed", "cancelled"):  # deleted while being read: read it again
-        db.ex("UPDATE documents SET status='queued', updated_at=? WHERE id=?", (time.time(), did))
+    status = db.q1("SELECT status FROM documents WHERE id=?", (did,))["status"]
+    if status not in ("ready", "failed"):  # deleted while being read (its job was cancelled then): read it again
+        db.ex("UPDATE documents SET status='queued', error=NULL, updated_at=? WHERE id=?", (time.time(), did))
         jobs.enqueue("ingest", did, ref_id=pipeline.KEEP_VISION)
         affected = later
     else:
         affected = [did, *later]
     for doc_id in pipeline.relink(affected):
         jobs.enqueue("embed", doc_id)
+    # pages still waiting for vision when it was deleted (that job was cancelled too)
+    if status == "ready" and db.q1("SELECT 1 FROM units WHERE document_id=? AND vision_status='pending' AND duplicate_of IS NULL "
+                                   "LIMIT 1", (did,)):
+        jobs.enqueue("vision", did)
     return {**db.q1("SELECT * FROM documents WHERE id=?", (did,)), "note": note}
 
 
@@ -550,6 +618,8 @@ def move_document(did: int, body: MoveBody):
     (pipeline.relink): nothing is re-parsed, and only chunks whose text really changed are embedded again. A file still
     being ingested is simply re-ingested in its new place."""
     d = _404(db.q1("SELECT * FROM documents WHERE id=?", (did,)))
+    if d["kind"] == "trash":
+        raise HTTPException(400, "That file was deleted. Restore it first.")
     if body.topic_id is not None:
         t = _404(db.q1("SELECT * FROM topics WHERE id=?", (body.topic_id,)), "Topic not found")
         if t["subject_id"] != d["subject_id"]:
@@ -637,12 +707,13 @@ def page_thumb(did: int, page: int, w: int = 120):
     w = max(40, min(w, 240))
     cache = config.assets_dir() / str(did) / f"thumb_{page}_{w}.png"
     if not cache.exists():
-        pdf = pymupdf.open(pdf_path)
-        if not 1 <= page <= len(pdf):
-            raise HTTPException(404)
-        p = pdf[page - 1]
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        cache.write_bytes(p.get_pixmap(matrix=pymupdf.Matrix(w / p.rect.width, w / p.rect.width)).tobytes("png"))
+        with pymupdf.open(pdf_path) as pdf:
+            if not 1 <= page <= len(pdf):
+                raise HTTPException(404)
+            p = pdf[page - 1]
+            scale = w / max(p.rect.width, 1)
+            png = p.get_pixmap(matrix=pymupdf.Matrix(scale, scale)).tobytes("png")
+        config.write_atomic(cache, png)
     return FileResponse(cache, headers={"Cache-Control": "max-age=86400"})
 
 
@@ -654,16 +725,20 @@ def document_outline(did: int):
     pdf_path = render.viewer_pdf(d, convert=False)
     out = []
     if pdf_path:
-        pdf = pymupdf.open(pdf_path)
-        for lvl, title, page, dest in pdf.get_toc(simple=False):
-            if not 1 <= page <= len(pdf) or not title.strip():
-                continue
-            to = dest.get("to") if isinstance(dest, dict) else None
-            pg = pdf[page - 1]
-            # bookmark targets are in PDF space (origin bottom-left); map to the page as displayed (top-left)
-            y = (pymupdf.Point(to) * pg.transformation_matrix).y / pg.rect.height if to is not None else 0.0
-            out.append({"level": lvl, "title": re.sub(r"^Slide \d+:\s*", "", title.strip()), "unit": page,
-                        "y": round(min(max(y, 0.0), 1.0), 4)})
+        try:
+            with pymupdf.open(pdf_path) as pdf:
+                for lvl, title, page, dest in pdf.get_toc(simple=False):
+                    if not 1 <= page <= len(pdf) or not title.strip():
+                        continue
+                    to = dest.get("to") if isinstance(dest, dict) else None
+                    pg = pdf[page - 1]
+                    # bookmark targets are in PDF space (origin bottom-left); map to the page as displayed (top-left)
+                    y = (pymupdf.Point(to) * pg.transformation_matrix).y / pg.rect.height if to is not None else 0.0
+                    out.append({"level": lvl, "title": re.sub(r"^Slide \d+:\s*", "", title.strip()), "unit": page,
+                                "y": round(min(max(y, 0.0), 1.0), 4)})
+        except Exception:  # damaged bookmarks: the viewer still opens, with the headings below as its outline
+            log.warning("outline of document %s couldn't be read from its PDF", did, exc_info=True)
+            out = []
     if out:
         return out
     units = db.q("SELECT idx, label FROM units WHERE document_id=? ORDER BY idx", (did,))
@@ -688,19 +763,27 @@ class SnapBody(BaseModel):
 def snapshot(did: int, body: SnapBody):
     """A sharp image of part of a page (right-drag in the viewer), saved for sending to the chat."""
     d = _404(db.q1("SELECT * FROM documents WHERE id=?", (did,)))
+    if len(body.rect) != 4 or any(v != v for v in body.rect):
+        raise HTTPException(400, "Select an area of the page first")
     x, y, w, h = (max(0.0, min(1.0, v)) for v in body.rect)
+    w, h = min(w, 1.0 - x), min(h, 1.0 - y)
+    if w < 0.002 or h < 0.002:
+        raise HTTPException(400, "That area is too small for a screenshot")
     pdf_path = render.viewer_pdf(d, convert=False)
     if pdf_path:
-        page = pymupdf.open(pdf_path)[body.unit - 1]
-        W, H = page.rect.width, page.rect.height
-        clip = pymupdf.Rect(x * W, y * H, (x + w) * W, (y + h) * H)
-        zoom = min(200 / 72, 2400 / max(clip.width, clip.height, 1))  # ~200 dpi, at most 2400 px
-        png = page.get_pixmap(clip=clip, matrix=pymupdf.Matrix(zoom, zoom)).tobytes("png")
+        with pymupdf.open(pdf_path) as pdf:
+            if not 1 <= body.unit <= len(pdf):
+                raise HTTPException(404, "That page isn't in this file")
+            page = pdf[body.unit - 1]
+            W, H = page.rect.width, page.rect.height
+            clip = pymupdf.Rect(x * W, y * H, (x + w) * W, (y + h) * H)
+            zoom = min(200 / 72, 2400 / max(clip.width, clip.height, 1))  # ~200 dpi, at most 2400 px
+            png = page.get_pixmap(clip=clip, matrix=pymupdf.Matrix(zoom, zoom)).tobytes("png")
     elif d["ext"] in IMAGE_EXTS:
-        im = Image.open(pipeline.doc_path(d))
-        box = (int(x * im.width), int(y * im.height), int((x + w) * im.width), int((y + h) * im.height))
-        buf = io.BytesIO()
-        im.crop(box).convert("RGB").save(buf, "PNG")
+        with Image.open(pipeline.doc_path(d)) as im:
+            box = (int(x * im.width), int(y * im.height), int((x + w) * im.width), int((y + h) * im.height))
+            buf = io.BytesIO()
+            im.crop(box).convert("RGB").save(buf, "PNG")
         png = buf.getvalue()
     else:
         raise HTTPException(400, "Screenshots work on PDFs, slides, Word files and images")
@@ -708,8 +791,7 @@ def snapshot(did: int, body: SnapBody):
     name = f"{stem} p{body.unit} selection {hashlib.sha256(png).hexdigest()[:6]}.png"
     rel = f"chat/{name}"
     out = config.assets_dir() / rel
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_bytes(png)
+    config.write_atomic(out, png)
     db.ex("INSERT OR REPLACE INTO snapshots(path, document_id, unit, rect, created_at) VALUES (?,?,?,?,?)",
           (str(out.resolve()), did, body.unit, json.dumps([x, y, w, h]), time.time()))
     return {"path": str(out.resolve()), "asset": rel, "name": name}
@@ -750,10 +832,9 @@ def unit_preview(did: int, idx: int):
     if d["ext"] in (".pdf", ".pptx"):
         cache = config.assets_dir() / str(did) / f"preview_{idx}.png"
         if not cache.exists():
-            cache.parent.mkdir(parents=True, exist_ok=True)
-            cache.write_bytes(pipeline.unit_images(d, u)[0])
+            config.write_atomic(cache, pipeline.unit_images(d, u)[0])
         return FileResponse(cache)
-    if u["images"]:
+    if u["images"] and (config.assets_dir() / u["images"][0]).is_file():
         return FileResponse(config.assets_dir() / u["images"][0])
     return Response(status_code=204)
 
@@ -828,8 +909,12 @@ class SearchBody(BaseModel):
 @app.post("/search")
 def do_search(body: SearchBody):
     ids = search.scope_documents(body.topic_id, body.subject_id, body.include_reference)
+    problems: list[str] = []
     try:
-        return {"results": search.search(body.query, ids, body.k), "warning": None}
-    except Exception as e:  # e.g. embedding server offline
-        log.warning("search failed", exc_info=True)
-        return {"results": [], "warning": f"Search failed: {e}"}
+        results = search.search(body.query, ids, max(1, min(body.k, 50)), problems)
+    except Exception as e:
+        err = errors.classify(e, "embed")
+        log.warning("%s search failed: %s", err.code, err.technical or err.plain, exc_info=True)
+        return {"results": [], "warning": f"Search failed: {err}"}
+    # the search model couldn't be used: these are keyword matches only
+    return {"results": results, "warning": f"Showing keyword matches only. {problems[0]}" if problems else None}

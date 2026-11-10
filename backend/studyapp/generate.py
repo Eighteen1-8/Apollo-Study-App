@@ -10,7 +10,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from . import citations, context, db, figures, llm, notehtml
+from . import citations, context, db, errors, figures, llm, notehtml, pipeline
 from .parsers import IMAGE_EXTS, approx_tokens, parse, render_pdf_page, sha
 
 TOOLS = {
@@ -218,8 +218,9 @@ def _page(system, task, art, prog, label, max_tokens=16000, allow_empty=False) -
     if len(raw) < 200:
         if allow_empty:
             return None
-        raise ValueError(f"Apollo returned an empty page for {label.split(': ', 1)[-1]}. Try again, or lower "
-                         "'Generating flashcards, quizzes, exams, notes' reasoning in Settings.")
+        raise errors.AppError("APO-GEN-403", f"empty page for {label}", plain=(
+            f"Apollo returned an empty page for {label.split(': ', 1)[-1]}. Try again, or lower "
+            "'Generating flashcards, quizzes, exams, notes' reasoning in Settings."))
     content, is_html = notehtml.clean(raw)
     if not is_html:
         return {"markdown": content}
@@ -419,6 +420,13 @@ def _practice_exam_content(path: Path, subject_id: int):
     return pid, text, images
 
 
+def _key_ok(item) -> bool:
+    """Options come with an answer key that points at one of them (or the item has no options at all)."""
+    if not item.options:
+        return True
+    return item.answer_index is not None and 0 <= item.answer_index < len(item.options)
+
+
 def _similar(a: str, b: str, n=5) -> float:
     """Deterministic word n-gram overlap, used to reject questions that copy the practice exam."""
     def grams(s):
@@ -475,6 +483,11 @@ def gen_exam(art, params, groups, prog):
                 full = q.stimulus + " " + q.prompt + " " + " ".join(s.prompt for s in q.subquestions)
                 if _similar(full, text) > 0.5:
                     continue  # copies the practice exam: drop
+                # a multiple-choice item whose answer key names no option can't be marked: it is left out
+                had_subs = bool(q.subquestions)
+                q.subquestions = [s for s in q.subquestions if _key_ok(s)]
+                if not _key_ok(q) or (had_subs and not q.subquestions):
+                    continue
                 q.marks = part.marks_each if not q.subquestions else sum(s.marks for s in q.subquestions)
                 qs.append(q)
         parts_out.append({"name": part.name, "instructions": part.instructions, "type": part.question_type,
@@ -491,6 +504,8 @@ GENERATORS = {"flashcards": gen_flashcards, "quiz": gen_quiz, "notes": gen_notes
 
 def run_artifact(artifact_id: int, job):
     art = db.q1("SELECT * FROM artifacts WHERE id=?", (artifact_id,))
+    if art is None or art["deleted_at"]:  # deleted while its job waited: nothing to make
+        raise pipeline.Cancelled()
     params = json.loads(art["params"])
     art["scope"] = context.scope_label(art["subject_id"], art["topic_id"])
     if params.get("document_ids"):
@@ -506,8 +521,22 @@ def run_artifact(artifact_id: int, job):
     if not groups:
         raise ValueError(context.material_problem(art["subject_id"], art["topic_id"], doc_ids) or "No readable material in this scope.")
     content = GENERATORS[art["type"]](art, params, groups, prog)
+    if _is_empty(art["type"], content):  # never saved as "ready" with nothing in it
+        raise errors.AppError("APO-GEN-403", f"{art['type']} generation produced no items")
     db.ex("UPDATE artifacts SET status='ready', content=?, progress=1, message='Ready', updated_at=? WHERE id=?",
           (json.dumps(content), time.time(), artifact_id))
+
+
+def _is_empty(kind: str, content: dict) -> bool:
+    if kind == "flashcards":
+        return not content.get("cards")
+    if kind == "quiz":
+        return not content.get("questions")
+    if kind == "exam":
+        return not any(p.get("questions") for p in content.get("parts", []))
+    if kind == "mindmap":
+        return not (content.get("mindmap") or {}).get("children")
+    return not content.get("sections")
 
 
 # ---------------------------------------------------------------- marking
@@ -533,7 +562,9 @@ def exam_leaves(content: dict):
 
 def run_marking(attempt_id: int, job):
     att = db.q1("SELECT * FROM attempts WHERE id=?", (attempt_id,))
-    art = db.q1("SELECT * FROM artifacts WHERE id=?", (att["artifact_id"],))
+    art = db.q1("SELECT * FROM artifacts WHERE id=?", (att["artifact_id"],)) if att else None
+    if art is None or not art["content"]:  # the exam was deleted while this waited
+        raise pipeline.Cancelled()
     content, answers = json.loads(art["content"]), json.loads(att["answers"])
     leaves = list(exam_leaves(content))
     results, score, total = {}, 0.0, 0.0
@@ -545,7 +576,8 @@ def run_marking(attempt_id: int, job):
         ans = (answers.get(key) or "").strip()
         maxm = float(q.get("marks") or 0)
         total += maxm
-        if q.get("options") and q.get("answer_index") is not None:
+        key_ok = isinstance(q.get("answer_index"), int) and 0 <= q["answer_index"] < len(q.get("options") or [])
+        if q.get("options") and key_ok:
             # Multiple choice: checked exactly against the answer key.
             correct = ans != "" and ans.isdigit() and int(ans) == q["answer_index"]
             got = maxm if correct else 0.0

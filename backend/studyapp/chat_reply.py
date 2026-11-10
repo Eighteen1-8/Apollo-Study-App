@@ -81,8 +81,7 @@ def save_chat_image(body: ImageBody):
         raise HTTPException(400, "Not a PNG screenshot")
     stem = re.sub(r'[<>:"/\\|?*]+', " ", body.name).strip()[:60] or "screenshot"
     out = config.assets_dir() / "chat" / f"{stem} {hashlib.sha256(png).hexdigest()[:6]}.png"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_bytes(png)
+    config.write_atomic(out, png)
     return {"path": str(out.resolve()), "name": out.name}
 
 
@@ -254,6 +253,16 @@ def _respond(cid: int, user_msg: dict, reasoning: str, announce_user: bool):
                 if found:
                     m["figures"] = found
                 yield ev({"type": "assistant", "message": _add_message(cid, "assistant", final, m)})
+        except GeneratorExit:
+            # the window closed (or the connection dropped) mid-reply: nobody is listening, but what was written is
+            # kept, as for a stop, so it is there when the chat is opened again
+            partial = (st["prefix"] + st["content"]).strip()
+            if partial:
+                try:
+                    _add_message(cid, "assistant", partial, {**meta(), "stopped": True})
+                except Exception:
+                    log.warning("couldn't keep the unfinished reply of chat %s", cid, exc_info=True)
+            raise
         except (pipeline.Cancelled, llm.StreamCancelled):
             tracked.stop()
             # keep what was written before the stop

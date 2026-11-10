@@ -105,6 +105,8 @@ def ingest(doc_id, job, keep_vision=False):
     """Returns the number of units still waiting for vision. A document that was already parsed and chunked when the
     app stopped (status 'embedding', same parser) only finishes its embeddings: nothing is parsed again."""
     doc = db.q1("SELECT * FROM documents WHERE id=?", (doc_id,))
+    if doc is None:  # deleted while its job waited
+        raise Cancelled()
     if (doc["status"] == "embedding" and doc["parser_version"] == PARSER_VERSION
             and db.q1("SELECT 1 FROM chunks WHERE document_id=? LIMIT 1", (doc_id,))):
         job.update(0.1, "Resuming: embedding")
@@ -375,8 +377,15 @@ def clean_vision_output(text: str) -> str:
     return llm.strip_think(text)
 
 
+# Failures that every page would hit: the model can't be reached, the key is refused, the model is gone, the allowance
+# is used up. The job stops with that reason and the pages stay pending, instead of each being marked failed in turn.
+VISION_STOP = ("APO-LLM-101", "APO-LLM-103", "APO-LLM-104", "APO-LLM-105")
+
+
 def run_vision(doc_id, job):
     doc = db.q1("SELECT * FROM documents WHERE id=?", (doc_id,))
+    if doc is None:  # deleted while its job waited
+        raise Cancelled()
     reasoning = db.setting("vision_reasoning")
     path = doc_path(doc)
     pending = db.q("SELECT * FROM units WHERE document_id=? AND vision_status IN ('pending','failed') ORDER BY idx", (doc_id,))
@@ -394,7 +403,7 @@ def run_vision(doc_id, job):
             if doc["ext"] in (".pdf", ".pptx"):
                 asset = f"{doc_id}/vision_{u['idx']}.png"
                 (config.assets_dir() / str(doc_id)).mkdir(parents=True, exist_ok=True)
-                (config.assets_dir() / asset).write_bytes(images[0])
+                config.write_atomic(config.assets_dir() / asset, images[0])
             content = [{"type": "text", "text": f"Source: {doc['filename']}, {u['label']}\n\nExtracted text:\n{u['text'] or '(none)'}"}]
             content += [llm.image_part(img, "image/png" if img[:4] == b"\x89PNG" else "image/jpeg") for img in images]
             msgs = [{"role": "system", "content": VISION_SYSTEM}, {"role": "user", "content": content}]
@@ -418,6 +427,10 @@ def run_vision(doc_id, job):
         except Cancelled:
             raise
         except Exception as e:
+            err = errors.classify(e, "llm")
+            if err.code in VISION_STOP:
+                raise err
+            log.warning("%s vision failed for %s, %s: %s", err.code, doc["filename"], u["label"], err.technical or err.plain)
             db.ex("UPDATE units SET vision_status='failed', vision_notes=?, vision_audited=0 WHERE id=?", (f"[vision error] {e}", u["id"]))
         index_vision(doc_id, [u["idx"]])
         done = db.q1("SELECT COUNT(*) n FROM units WHERE document_id=? AND vision_status='done'", (doc_id,))["n"]

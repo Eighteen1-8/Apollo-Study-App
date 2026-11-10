@@ -91,8 +91,16 @@ def prioritize(job_id) -> bool:
 
 
 def cancel(job_id):
-    db.ex("UPDATE jobs SET cancel=1 WHERE id=?", (job_id,))
-    db.ex("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=? AND status='queued'", (time.time(), job_id))
+    """A running job stops at its next step (its worker then marks what it was working on). A waiting one is cancelled
+    here, and so is what it was for: otherwise a file would stay "queued", an exam attempt "marking", for good."""
+    with db.tx() as c:
+        row = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        c.execute("UPDATE jobs SET cancel=1 WHERE id=?", (job_id,))
+        waiting = row is not None and row["status"] == "queued"
+        if waiting:
+            c.execute("UPDATE jobs SET status='cancelled', message='Cancelled', updated_at=? WHERE id=?", (time.time(), job_id))
+    if waiting:
+        _mark_owner(dict(row), "cancelled", None)
 
 
 def cancel_for_document(doc_id):
@@ -113,54 +121,64 @@ def _waiter(job):
 
 
 def _run(lane):
+    """A lane's worker. Nothing may end this thread: an error outside a job (the database busy or the disk full while
+    picking one or recording its result) is logged and the lane carries on, instead of stopping for good."""
     while True:
-        if llm.paused(NEEDS[lane]):
-            time.sleep(1.0)
-            continue
-        types = LANES[lane]
-        row = db.q1(f"SELECT * FROM jobs WHERE type IN ({','.join('?' * len(types))}) AND status='queued' "
-                    "ORDER BY priority DESC, COALESCE(queued_at, created_at), id LIMIT 1", types)
-        if row is None:
-            _wake.wait(1.0)
-            _wake.clear()
-            continue
-        db.ex("UPDATE jobs SET status='running', updated_at=? WHERE id=?", (time.time(), row["id"]))
-        job = Job(row, lane)
-        llm.set_wait_hook(_waiter(job))
         try:
-            if row["type"] == "ingest":
-                if pipeline.ingest(row["document_id"], job, keep_vision=row["ref_id"] == pipeline.KEEP_VISION):
-                    enqueue("vision", row["document_id"])
-                _ask_questions(row["document_id"])
-            elif row["type"] == "vision":
-                pipeline.run_vision(row["document_id"], job)
-            elif row["type"] == "embed":
-                pipeline.reembed(row["document_id"], job)
-            elif row["type"] == "audit":
-                vision_audit.review_document(row["document_id"], job, recheck=row["ref_id"] == RECHECK)
-            elif row["type"] == "generate":
-                generate.run_artifact(row["ref_id"], job)
-            elif row["type"] == "mark":
-                generate.run_marking(row["ref_id"], job)
-            elif row["type"] == "review":
-                review.run_review(row["ref_id"], job)
-            elif row["type"] == "questions":
-                from . import questions  # imports jobs
-                questions.run(row["ref_id"], job)
-            db.ex("UPDATE jobs SET status='done', progress=1, message='Done', updated_at=? WHERE id=?", (time.time(), row["id"]))
-        except pipeline.Yield:
-            db.ex("UPDATE jobs SET status='queued', priority=0, queued_at=?, updated_at=?, message='Waiting: other files go first' "
-                  "WHERE id=?", (time.time(), time.time(), row["id"]))
-        except pipeline.Cancelled:
-            db.ex("UPDATE jobs SET status='cancelled', message='Cancelled', updated_at=? WHERE id=?", (time.time(), row["id"]))
-            _mark_owner(row, "cancelled", None)
-        except Exception as e:
-            # coded (errors.py): "plain message [APO-…]" for the student, the technical detail and traceback in the log
-            err = errors.classify(e, "embed" if row["type"] in ("ingest", "embed") else "llm")
-            log.exception("%s job %s (%s, ref %s) failed: %s", err.code, row["id"], row["type"], row["document_id"] or row["ref_id"],
-                          err.technical or err.plain)
-            db.ex("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?", (str(err)[:500], time.time(), row["id"]))
-            _mark_owner(row, "failed", str(err)[:500])
+            _step(lane)
+        except Exception:
+            log.exception("jobs: the %s lane hit an error outside a job; continuing", lane)
+            time.sleep(2.0)
+
+
+def _step(lane):
+    if llm.paused(NEEDS[lane]):
+        time.sleep(1.0)
+        return
+    types = LANES[lane]
+    row = db.q1(f"SELECT * FROM jobs WHERE type IN ({','.join('?' * len(types))}) AND status='queued' "
+                "ORDER BY priority DESC, COALESCE(queued_at, created_at), id LIMIT 1", types)
+    if row is None:
+        _wake.wait(1.0)
+        _wake.clear()
+        return
+    db.ex("UPDATE jobs SET status='running', updated_at=? WHERE id=?", (time.time(), row["id"]))
+    job = Job(row, lane)
+    llm.set_wait_hook(_waiter(job))
+    try:
+        if row["type"] == "ingest":
+            if pipeline.ingest(row["document_id"], job, keep_vision=row["ref_id"] == pipeline.KEEP_VISION):
+                enqueue("vision", row["document_id"])
+            _ask_questions(row["document_id"])
+        elif row["type"] == "vision":
+            pipeline.run_vision(row["document_id"], job)
+        elif row["type"] == "embed":
+            pipeline.reembed(row["document_id"], job)
+        elif row["type"] == "audit":
+            vision_audit.review_document(row["document_id"], job, recheck=row["ref_id"] == RECHECK)
+        elif row["type"] == "generate":
+            generate.run_artifact(row["ref_id"], job)
+        elif row["type"] == "mark":
+            generate.run_marking(row["ref_id"], job)
+        elif row["type"] == "review":
+            review.run_review(row["ref_id"], job)
+        elif row["type"] == "questions":
+            from . import questions  # imports jobs
+            questions.run(row["ref_id"], job)
+        db.ex("UPDATE jobs SET status='done', progress=1, message='Done', updated_at=? WHERE id=?", (time.time(), row["id"]))
+    except pipeline.Yield:
+        db.ex("UPDATE jobs SET status='queued', priority=0, queued_at=?, updated_at=?, message='Waiting: other files go first' "
+              "WHERE id=?", (time.time(), time.time(), row["id"]))
+    except pipeline.Cancelled:
+        db.ex("UPDATE jobs SET status='cancelled', message='Cancelled', updated_at=? WHERE id=?", (time.time(), row["id"]))
+        _mark_owner(row, "cancelled", None)
+    except Exception as e:
+        # coded (errors.py): "plain message [APO-…]" for the student, the technical detail and traceback in the log
+        err = errors.classify(e, "embed" if row["type"] in ("ingest", "embed") else "llm")
+        log.exception("%s job %s (%s, ref %s) failed: %s", err.code, row["id"], row["type"], row["document_id"] or row["ref_id"],
+                      err.technical or err.plain)
+        db.ex("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?", (str(err)[:500], time.time(), row["id"]))
+        _mark_owner(row, "failed", str(err)[:500])
 
 
 def _ask_questions(document_id):

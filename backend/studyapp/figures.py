@@ -32,7 +32,7 @@ _norm = lambda s: re.sub(r"[^a-z0-9]+", " ", re.sub(r"\.(pdf|pptx|docx|txt|md|pn
 
 
 def _doc_for(subject_id: int, file: str):
-    docs = db.q("SELECT * FROM documents WHERE subject_id=? AND unit_count > 0", (subject_id,))
+    docs = db.q("SELECT * FROM documents WHERE subject_id=? AND unit_count > 0 AND kind<>'trash'", (subject_id,))
     f = _norm(file)
     return next((d for d in docs if _norm(d["filename"]) == f), None) or next(
         (d for d in docs if _norm(d["filename"]).startswith(f) or f.startswith(_norm(d["filename"]))), None)
@@ -170,8 +170,7 @@ def _choose(page, boxes, hint: str):
 def _save(png: bytes) -> str:
     rel = f"figures/{hashlib.sha256(png).hexdigest()[:24]}.png"
     out = config.assets_dir() / rel
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_bytes(png)
+    config.write_atomic(out, png)
     return rel
 
 
@@ -191,15 +190,15 @@ def figure(subject_id: int, file: str, label: str, hint: str) -> dict | None:
         page_no = unit["idx"]
         if doc["ext"] == ".docx":
             page_no = render.unit_positions(doc).get(unit["idx"], [1, 0])[0]
-        pdf = pymupdf.open(pdf_path)
-        if not 1 <= page_no <= len(pdf):
-            return None
-        page = pdf[page_no - 1]
-        box = _choose(page, candidates(page), hint)
-        if box is None:
-            box, out["whole"] = page.rect, True
-        zoom = min(170 / 72, 1600 / max(box.width, box.height, 1))
-        out["asset"] = _save(page.get_pixmap(clip=box, matrix=pymupdf.Matrix(zoom, zoom)).tobytes("png"))
+        with pymupdf.open(pdf_path) as pdf:
+            if not 1 <= page_no <= len(pdf):
+                return None
+            page = pdf[page_no - 1]
+            box = _choose(page, candidates(page), hint)
+            if box is None:
+                box, out["whole"] = page.rect, True
+            zoom = min(170 / 72, 1600 / max(box.width, box.height, 1))
+            out["asset"] = _save(page.get_pixmap(clip=box, matrix=pymupdf.Matrix(zoom, zoom)).tobytes("png"))
         out["page"] = page_no
     else:
         from .pipeline import unit_images  # slides without an exact copy, images, Word pictures

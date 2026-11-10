@@ -1,5 +1,6 @@
 """Files sent straight to the chat for one message, without ingesting them: text files within the word limit, images kept
 as PNG under assets/chat/ so later turns can still show them to Qwen. Paths need the student's grant (grants.py)."""
+import io
 import json
 import tempfile
 from pathlib import Path
@@ -23,11 +24,12 @@ def _read_chat_file(path_str: str) -> dict:
         rel = f"chat/{sha(blob)[:24]}.png"
         out = config.assets_dir() / rel
         if not out.exists():
-            out.parent.mkdir(parents=True, exist_ok=True)
             try:
-                im = Image.open(path)
-                im.thumbnail((2048, 2048))
-                im.convert("RGB").save(out, "PNG")
+                buf = io.BytesIO()
+                with Image.open(path) as im:
+                    im.thumbnail((2048, 2048))
+                    im.convert("RGB").save(buf, "PNG")
+                config.write_atomic(out, buf.getvalue())  # never a half-written picture under the cached name
             except Exception:
                 raise HTTPException(400, f"[APO-FILE-304] {path.name}: couldn't read this image")
         out = {"name": path.name, "kind": "image", "asset": rel}

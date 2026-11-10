@@ -45,6 +45,30 @@ def db_path() -> Path:
     return DATA_DIR / "study.db"
 
 
+def write_atomic(path: Path, data: bytes):
+    """Write a file so it is either complete or absent: written beside itself, then renamed into place. Cached files
+    are reused whenever they exist, so one cut short (a crash, a full disk) must never be left under the real name."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def copy_atomic(src: Path, dest: Path):
+    """Copy a file the same way (see write_atomic)."""
+    import shutil
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(f"{dest.name}.{os.getpid()}.tmp")
+    try:
+        shutil.copyfile(src, tmp)
+        os.replace(tmp, dest)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 DEFAULT_SETTINGS = {
     "llm_base_url": os.environ.get("LLM_BASE_URL", "http://127.0.0.1:8080/v1"),
     "llm_api_key": os.environ.get("LLM_API_KEY", ""),

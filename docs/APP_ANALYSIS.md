@@ -87,6 +87,29 @@ fragility), **Low** (tidiness, polish).
 
 ---
 
+## 8. Robustness pass (2026-11-10)
+
+A read-through for what happens when something goes wrong mid-way. All *Fixed* the same day; tests are in
+`backend/tests/test_robustness.py`, `app/tests/unit/hooks.test.tsx` and the Electron smoke run.
+
+| # | Severity | Finding |
+|---|---|---|
+| 8.1 | High | **Two copies of the app could use one data folder.** The second backend requeued the first one's running jobs and both wrote to the database. *Fixed:* Electron's single-instance lock, and the backend holds `<data>/backend.lock` (APO-APP-004). |
+| 8.2 | High | **A backend that died after start-up was only logged.** *Fixed:* Electron starts it again on the same port with the same token (3 tries in 5 minutes, then a message); a crashed renderer is reloaded. |
+| 8.3 | High | **Uploading more than about 70 files at once failed** (HTTP 400): the grants header passed h11's 16 KB limit. *Fixed:* 1 MB limit; the header is also built in pieces (`btoa` overflowed on long lists). |
+| 8.4 | High | **The last edits to a note were lost when it was closed** within the save delay: the editor's ref is already cleared when an effect cleanup runs. *Fixed:* a layout-effect cleanup, plus a `keepalive` save when the window closes. |
+| 8.5 | Medium | **Cancelling a waiting job left its owner stuck** (a file "queued", an attempt "marking", a review "queued"). *Fixed:* `jobs.cancel` marks the owner. |
+| 8.6 | Medium | **A lane's worker thread could end for good** on a database error outside a job. *Fixed:* `jobs._run` logs and carries on. |
+| 8.7 | Medium | **With the embedding server off, chat replies and search failed outright.** *Fixed:* keyword matches only, as when it is paused; search says so. |
+| 8.8 | Medium | **Vision with the model server off marked every page failed**, one request each. *Fixed:* the job stops with the reason and the pages stay pending (`pipeline.VISION_STOP`). |
+| 8.9 | Medium | **Interrupted writes left partial files that were then reused** (stored uploads, thumbnails, figures, chat images), and a restore copied over the live database. *Fixed:* `config.write_atomic` / `copy_atomic`; a restore is copied aside, checked (`quick_check`) and swapped in with one rename. |
+| 8.10 | Medium | **PDF handles were never closed** (thumbnails, outline, screenshots, figures, Word positions, vision pages), keeping files locked on Windows. *Fixed.* |
+| 8.11 | Medium | **Settings were saved unchecked:** a context size typed as words broke every later model call. *Fixed:* types and ranges checked on save. |
+| 8.12 | Medium | **Exam answer keys weren't checked,** so marking could crash, and generators could save empty content as ready. *Fixed:* items with a key that names no option are left out; empty results fail with APO-GEN-403; review and empty-page failures keep their own wording instead of "something unexpected". |
+| 8.13 | Low | Undoing the delete of content still being made left it hidden; restoring a file deleted mid-read left it cancelled; a reply's text was dropped if the window closed mid-stream; one damaged stream chunk ended a reply; embedding replies weren't checked for count; `usePoll` could show an older answer over a newer one; a dropped chat stream showed a raw network error; blank names, moving a trashed file, bad screenshot areas and an empty review undo returned 500s; nested `db.tx()` raised. *Fixed.* |
+
+Still open from this pass: generation can't resume (one failed section loses the job, section 7).
+
 ### Suggested order
 
 1. ~~1.1 (token auth and the CORS fix)~~ done.

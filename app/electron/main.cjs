@@ -84,6 +84,10 @@ function backendCommand(port, dataDir) {
   };
 }
 
+// The backend is this app's own child process (not one reused in dev), so a crash is ours to recover from.
+let quitting = false;
+let restarts = [];
+
 async function startBackend() {
   // APOLLO_DATA_DIR (unpackaged only) runs against another data folder, e.g. a throwaway one for testing.
   const dataDir = (!app.isPackaged && process.env.APOLLO_DATA_DIR) || path.join(app.getPath('userData'), 'data');
@@ -93,16 +97,44 @@ async function startBackend() {
     if (await healthy(DEV_PORT, '/jobs/pause', { 'X-Apollo-Token': backendToken })) return DEV_PORT;
     throw new Error(`Another backend is already running on port ${DEV_PORT} with a different data folder or token. Close it and start again.`);
   }
-  const port = isDev ? DEV_PORT : await freePort();
+  return spawnBackend(isDev ? DEV_PORT : await freePort(), dataDir);
+}
+
+/** The backend stopped by itself while the app is open. It is started again on the same port with the same token,
+ * so the open window just carries on (its panels reload when the change stream reconnects; unfinished jobs go back
+ * in the queue, as after any restart). Three crashes within five minutes is not something a restart fixes: then the
+ * student is told, with the log's place. */
+async function backendDied(port, dataDir, code) {
+  if (quitting) return;
+  const now = Date.now();
+  restarts = restarts.filter((t) => now - t < 5 * 60 * 1000);
+  const log = path.join(dataDir, 'logs', 'backend.log');
+  if (restarts.length >= 3) {
+    dialog.showErrorBox('Apollo Study', `Apollo's background service keeps stopping (exit code ${code}), so the app can't carry on. `
+      + `Close the app and open it again. [APO-APP-001]\n\nThe log is at ${log}.`);
+    return;
+  }
+  restarts.push(now);
+  console.warn(`[backend] stopped unexpectedly (exit code ${code}); starting it again`);
+  try {
+    await spawnBackend(port, dataDir);
+  } catch (e) {
+    if (!quitting) dialog.showErrorBox('Apollo Study', `Apollo's background service stopped and couldn't be started again.\n\n${e.message}`);
+  }
+}
+
+async function spawnBackend(port, dataDir) {
   const { cmd, args, cwd } = backendCommand(port, dataDir);
   // The portable exe unpacks to a temp folder; a .env next to the exe itself can seed endpoints and keys.
   const exeDir = process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath);
   const env = { ...process.env, APOLLO_TOKEN: backendToken, APOLLO_GRANT_KEY: grantKey, ...(app.isPackaged ? { STUDY_ENV_FILE: path.join(exeDir, '.env') } : {}) };
-  backend = spawn(cmd, args, { cwd, windowsHide: true, env });
+  const child = spawn(cmd, args, { cwd, windowsHide: true, env });
+  backend = child;
   let startupError = '';
   let stderrTail = '';
   let exited = false;
   let exitCode = null;
+  let started = false;
   backend.stdout.on('data', (d) => process.stdout.write(`[backend] ${d}`));
   backend.stderr.on('data', (d) => {
     process.stderr.write(`[backend] ${d}`);
@@ -110,8 +142,16 @@ async function startBackend() {
     const m = /STUDYAPP_ERROR (.*)/.exec(String(d));
     if (m) startupError = m[1].trim();
   });
-  backend.on('exit', (code) => { console.log(`[backend] exited ${code}`); backend = null; exited = true; exitCode = code; });
+  child.on('error', (e) => { startupError = startupError || `The background service couldn't be started (${e.message}). [APO-APP-003]`; exited = true; });
+  child.on('exit', (code) => {
+    console.log(`[backend] exited ${code}`);
+    if (backend === child) backend = null;
+    exited = true;
+    exitCode = code;
+    if (started) backendDied(port, dataDir, code);
+  });
   if (!(await waitHealthy(port, 30000, () => exited))) {
+    if (!exited) child.kill(); // too slow: don't leave it running behind the error message
     // the backend's own explanation when it gave one; otherwise the end of what it printed, so the cause is visible
     const last = stderrTail.trim().split(/\r?\n/).filter(Boolean).slice(-3).join('\n');
     const log = path.join(dataDir, 'logs', 'backend.log');
@@ -120,6 +160,7 @@ async function startBackend() {
         : 'The background service took longer than 30 seconds to start. Your computer may be busy; try again. [APO-APP-003]')
       + `\n\nThe log is at ${log}. The code is explained in docs/ERRORS.md.`);
   }
+  started = true;
   return port;
 }
 
@@ -250,6 +291,21 @@ async function createWindow() {
       : [{ role: 'copy', enabled: f.canCopy }];
     Menu.buildFromTemplate(items).popup({ window: win });
   });
+  // The page's process died (out of memory, a GPU or driver fault): load it again instead of leaving a blank
+  // window. Everything is saved as it's made, so nothing but the open view is lost. At most 3 times a minute.
+  let reloads = [];
+  win.webContents.on('render-process-gone', (_e, details) => {
+    console.warn('[renderer] gone:', details.reason, details.exitCode);
+    if (quitting || details.reason === 'clean-exit' || win.isDestroyed()) return;
+    const now = Date.now();
+    reloads = reloads.filter((t) => now - t < 60000);
+    if (reloads.length >= 3) {
+      dialog.showErrorBox('Apollo Study', `The app's window keeps crashing (${details.reason}). Close the app and open it again.`);
+      return;
+    }
+    reloads.push(now);
+    win.webContents.reload();
+  });
   win.webContents.on('will-navigate', (e, url) => {
     if (!url.startsWith('http://localhost:5173') && !url.startsWith('file://')) e.preventDefault();
   });
@@ -322,7 +378,21 @@ ipcMain.on('window:chrome', (e, c) => {
   } catch (err) { console.warn('[chrome]', err.message); }
 });
 
+// One running copy per profile: a second launch (a double click on the icon while it's still starting) would start a
+// second backend on the same data. It hands over to the first, which comes to the front. The backend guards its data
+// folder too (APO-APP-004), for copies this lock can't see.
+const firstInstance = app.requestSingleInstanceLock();
+if (!firstInstance) app.quit();
+app.on('second-instance', () => {
+  const win = BrowserWindow.getAllWindows()[0];
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+});
+
 app.whenReady().then(async () => {
+  if (!firstInstance) return;
   app.setAppUserModelId('com.apollo.study'); // needed for Windows notifications later
   // The menu bar is hidden; this keeps its shortcuts. Select all and Find are left to the page, which limits them to
   // the document, notes or chat being read instead of the whole window.
@@ -343,4 +413,4 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => app.quit());
-app.on('before-quit', () => { if (backend) backend.kill(); });
+app.on('before-quit', () => { quitting = true; if (backend) backend.kill(); });

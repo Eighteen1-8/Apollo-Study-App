@@ -3,7 +3,7 @@
 // bundled spell-check dictionaries, and printing to PDF. `npm run build` first. Never touches the student's data.
 //   node tests/electron/smoke.mjs
 import { _electron as electron } from '@playwright/test';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -79,6 +79,24 @@ try {
   await win.locator('.mini-add').click(); // the new-subject dialog: overlays and prompts work
   check('dialogs open', await win.locator('.modal, .modal-backdrop').count() > 0);
   check('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
+  // The background service dies (killed here): the app starts it again on the same address with the same token,
+  // so the open window carries on without a restart.
+  const backendPids = () => execFileSync('powershell', ['-NoProfile', '-Command',
+    `Get-CimInstance Win32_Process | Where-Object { $_.Name -like 'python*' -and $_.CommandLine -like '*studyapp.main*' -and $_.CommandLine -like '*${join(tmp, 'data')}*' } | ForEach-Object { $_.ProcessId }`,
+  ]).toString().split(/\s+/).filter(Boolean);
+  const before = backendPids();
+  for (const pid of before) { try { execFileSync('taskkill', ['/F', '/T', '/PID', pid], { stdio: 'ignore' }); } catch { /* went with its parent */ } }
+  let back = false;
+  for (let i = 0; i < 60 && !back; i++) {
+    await win.waitForTimeout(500);
+    back = await win.evaluate(async () => {
+      try {
+        const r = await fetch(`${window.studyApp.backendUrl}/subjects`, { headers: { 'X-Apollo-Token': window.studyApp.backendToken } });
+        return r.ok;
+      } catch { return false; }
+    }) && backendPids().some((p) => !before.includes(p));
+  }
+  check('the background service is started again after a crash', before.length > 0 && back, `was pid ${before.join(', ')}`);
 } catch (e) {
   check('launch', false, String(e).split('\n')[0]);
 } finally {

@@ -285,9 +285,13 @@ def chat(messages, max_tokens=4096, reasoning="off", temperature=None, response_
     _wait_if_paused("llm")
     with _gate():
         data = _post(cfg, "/chat/completions", body)
-    msg = data["choices"][0]["message"]
-    return {"content": (msg.get("content") or "").strip(), "finish": data["choices"][0].get("finish_reason"),
-            "usage": data.get("usage", {})}
+    try:
+        choice = data["choices"][0]
+        msg = choice["message"]
+    except (KeyError, IndexError, TypeError) as e:  # a 200 without a reply in it (seen from overloaded upstreams)
+        raise errors.AppError("APO-LLM-108", f"no choices in the reply: {str(data)[:300]}") from e
+    return {"content": (msg.get("content") or "").strip(), "finish": choice.get("finish_reason"),
+            "usage": data.get("usage") or {}}
 
 
 def image_part(png: bytes, mime="image/png") -> dict:
@@ -335,11 +339,24 @@ def chat_stream(messages, tools=None, max_tokens=8000, reasoning="off", cancelle
             threading.Thread(target=_watch_cancel, args=(r, cancelled, done), daemon=True, name="stream-cancel").start()
         try:
             for line in r.iter_lines():
-                if not line.startswith("data: ") or line == "data: [DONE]":
-                    continue  # (also skips OpenRouter's ": OPENROUTER PROCESSING" keep-alive comments)
-                ev = json.loads(line[6:])
+                # "data:" with or without the space (both are valid SSE); anything else is a comment or keep-alive
+                # (OpenRouter's ": OPENROUTER PROCESSING")
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if not payload or payload == "[DONE]":
+                    continue
+                try:
+                    ev = json.loads(payload)
+                except json.JSONDecodeError:  # one damaged chunk must not lose the whole reply
+                    log.warning("chat stream: skipped a chunk that isn't JSON: %s", payload[:200])
+                    continue
+                if not isinstance(ev, dict):
+                    continue
                 if ev.get("error"):
-                    raise errors.http_error(502, str(ev["error"].get("message", ev["error"])), "llm", "OpenRouter (stream)")
+                    err = ev["error"]
+                    raise errors.http_error(502, str(err.get("message", err) if isinstance(err, dict) else err), "llm",
+                                            "OpenRouter (stream)")
                 if ev.get("usage"):
                     usage = ev["usage"]
                 if not ev.get("choices"):
@@ -430,9 +447,21 @@ def embed(texts: list[str], query=False) -> np.ndarray:
     cfg = embed_cfg()
     if query and "qwen3" in cfg["model"].lower():  # the instruction prefix is specific to Qwen3 embedding models
         texts = [QUERY_INSTRUCT + t for t in texts]
-    data = sorted(_post(cfg, "/embeddings", {"model": cfg["model"], "input": texts}, timeout=600)["data"], key=lambda d: d["index"])
-    v = np.array([d["embedding"] for d in data], dtype=np.float32)
-    return v / np.linalg.norm(v, axis=1, keepdims=True)
+    if not texts:
+        return np.zeros((0, 0), dtype=np.float32)
+    res = _post(cfg, "/embeddings", {"model": cfg["model"], "input": texts}, timeout=600)
+    try:
+        data = sorted(res["data"], key=lambda d: d.get("index", 0))
+        v = np.array([d["embedding"] for d in data], dtype=np.float32)
+    except (KeyError, TypeError, ValueError) as e:
+        raise errors.AppError("APO-EMB-206", f"embeddings reply has no usable vectors: {str(res)[:300]}") from e
+    # one vector per text, all the same size: anything else would silently leave chunks without a vector (zip stops
+    # at the shorter list) or store vectors search can't compare
+    if v.ndim != 2 or v.shape[0] != len(texts) or v.shape[1] == 0:
+        raise errors.AppError("APO-EMB-206", f"asked for {len(texts)} embeddings, got an array of shape {v.shape}")
+    norms = np.linalg.norm(v, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0  # an all-zero vector stays zero instead of becoming NaN
+    return v / norms
 
 
 def probe_server(cfg: dict | None = None) -> dict:

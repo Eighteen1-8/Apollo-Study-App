@@ -55,6 +55,15 @@ CATALOGUE: dict[str, Info] = {
                        "antivirus)", "the packaged build was made from source that was mid-change", "a bug in start-up code"],
                       ["rebuild the app (npm run dist) or reinstall it", "check that antivirus hasn't quarantined files in the "
                        "app's folder", "look for APO-APP-003 in <data>/logs/backend.log and fix the import or exception it shows"]),
+    "APO-APP-004": _i("Already running", "Apollo Study is already open and using this data. Use the window that's already "
+                      "open, or close it first.",
+                      "Another backend process holds the lock on this data folder (<data>/backend.lock). Two backends on one "
+                      "database would each run the other's background jobs and overwrite each other's work, so the second "
+                      "refuses to start.",
+                      ["the app was started twice", "an earlier backend process is still shutting down or was left running "
+                       "after the window closed", "a backend started by hand is using the same --data-dir"],
+                      ["switch to the window that's already open", "wait a few seconds and start the app again", "end leftover "
+                       "'studyapp-backend' / python processes in Task Manager", "start a hand-run backend with its own --data-dir"]),
     "APO-APP-400": _i("Request not accepted", "Apollo couldn't do that with what was given.",
                       "The backend refused the request as invalid (HTTP 400). The message says which input was wrong.",
                       ["a form value outside the allowed range", "the item changed or was deleted in the meantime"],

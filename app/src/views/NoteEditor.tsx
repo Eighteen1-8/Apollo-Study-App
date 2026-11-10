@@ -3,11 +3,11 @@
    when asked to check it or change it (right-click highlighted text, or the header), and its comments sit beside the
    page (Reviews). Spelling is checked in the language chosen in Settings (Australian English by default); right-click
    a misspelled word for suggestions. */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
 import { createPortal } from 'react-dom';
 import { cellOf, changedTable, placeCaret, replaceTable, tabInTable, tableHtml, TableOp } from '../components/noteTable';
-import { api, Note, Quote, ReviewIssue, Subject } from '../api';
+import { api, Note, Quote, ReviewIssue, saveNoteOnExit, Subject } from '../api';
 import { MenuItem, useOverlay } from '../components/overlay';
 import Reviews, { useReviews } from '../components/Reviews';
 import { useAreaShot } from '../components/areaShot';
@@ -97,8 +97,21 @@ export default function NoteEditor({ id, subject, onClose, onAsk, onAttach }: {
     clearTimeout(timer.current);
     timer.current = setTimeout(save, 700);
   };
-  // save what's left when the note closes
-  useEffect(() => () => { if (dirty.current && editor.current) api.saveNote(id, { html: editor.current.innerHTML }).catch((e) => logError('saving a note', e)); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Save what's left when the note closes. A layout effect: by the time an ordinary effect's cleanup runs on unmount,
+  // React has already cleared `editor.current`, and the last second of typing was silently dropped.
+  useLayoutEffect(() => () => {
+    clearTimeout(timer.current);
+    if (dirty.current && editor.current) {
+      dirty.current = false;
+      api.saveNote(id, { html: editor.current.innerHTML }).catch((e) => logError('saving a note', e));
+    }
+  }, [id]);
+  // ...and when the window itself closes or reloads
+  useEffect(() => {
+    const flush = () => { if (dirty.current && editor.current) { dirty.current = false; saveNoteOnExit(id, editor.current.innerHTML); } };
+    window.addEventListener('pagehide', flush);
+    return () => window.removeEventListener('pagehide', flush);
+  }, [id]);
 
   const saveTitle = async (t: string) => {
     const v = t.trim() || 'Untitled note';

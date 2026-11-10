@@ -126,22 +126,22 @@ def unit_positions(doc: dict, units: list[dict] | None = None) -> dict[int, list
     pdf_path = rendered_pdf(doc, convert=False)
     if not pdf_path or not units:
         return {}
-    pdf = pymupdf.open(pdf_path)
-    pages = [_norm(p.get_text()) for p in pdf]
     out, page_i = {}, 0
-    for u in units:
-        lines = [ln.strip() for ln in u["text"].splitlines() if len(ln.strip()) >= 4 and not ln.startswith("[table]")]
-        if not lines:
-            continue
-        probe = _norm(lines[0])[:60]
-        for pi in range(page_i, len(pages)):
-            if probe and probe in pages[pi]:
-                page = pdf[pi]
-                hits = page.search_for(lines[0][:40])
-                y = (hits[0].y0 / page.rect.height) if hits else 0.0
-                out[u["idx"]] = [pi + 1, round(y, 4)]
-                page_i = pi
-                break
+    with pymupdf.open(pdf_path) as pdf:
+        pages = [_norm(p.get_text()) for p in pdf]
+        for u in units:
+            lines = [ln.strip() for ln in u["text"].splitlines() if len(ln.strip()) >= 4 and not ln.startswith("[table]")]
+            if not lines:
+                continue
+            probe = _norm(lines[0])[:60]
+            for pi in range(page_i, len(pages)):
+                if probe and probe in pages[pi]:
+                    page = pdf[pi]
+                    hits = page.search_for(lines[0][:40])
+                    y = (hits[0].y0 / page.rect.height) if hits else 0.0
+                    out[u["idx"]] = [pi + 1, round(y, 4)]
+                    page_i = pi
+                    break
     db.ex("UPDATE documents SET render_map=? WHERE id=?", (json.dumps(out), doc["id"]))
     return out
 

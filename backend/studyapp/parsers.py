@@ -312,7 +312,11 @@ def parse_docx(path: Path, asset_dir: Path, s: dict):
 # ---------------------------------------------------------------- PDF
 
 def parse_pdf(path: Path, asset_dir: Path, s: dict):
-    pdf = pymupdf.open(path)
+    with pymupdf.open(path) as pdf:  # closed afterwards: an open handle keeps the file locked on Windows
+        return _parse_pdf(pdf, s)
+
+
+def _parse_pdf(pdf, s: dict):
     pages = []
     for p in pdf:
         text = p.get_text("text", sort=True)
@@ -354,7 +358,10 @@ def parse_pdf(path: Path, asset_dir: Path, s: dict):
 
 
 def render_pdf_page(path: Path, idx: int, dpi=150) -> bytes:
-    return pymupdf.open(path)[idx - 1].get_pixmap(dpi=dpi).tobytes("png")
+    with pymupdf.open(path) as pdf:
+        if not 1 <= idx <= len(pdf):
+            raise ValueError(f"{path.name} has no page {idx} (it has {len(pdf)})")
+        return pdf[idx - 1].get_pixmap(dpi=dpi).tobytes("png")
 
 
 # ---------------------------------------------------------------- plain text & images

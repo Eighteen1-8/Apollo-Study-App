@@ -8,6 +8,7 @@ one (that doubled the memory: measured faster too, 5 ms against 7 ms over 11k ch
 halve memory again but made each search 15-30 times slower, so it isn't used. An entry is reused while its signature
 (`_signatures`) is unchanged; SQLite triggers change it on every add, rebuild or re-embed. The least recently used are
 dropped past CACHE_BYTES."""
+import logging
 import re
 import threading
 from collections import OrderedDict
@@ -15,6 +16,8 @@ from collections import OrderedDict
 import numpy as np
 
 from . import db, llm
+
+log = logging.getLogger(__name__)
 
 RRF_K = 60
 CACHE_BYTES = 512 << 20
@@ -89,7 +92,9 @@ def _fts_query(q):
     return " OR ".join(f'"{t}"' for t in terms)
 
 
-def search(query: str, doc_ids: list[int], k=10):
+def search(query: str, doc_ids: list[int], k=10, problems: list | None = None):
+    """Top `k` passages. When the embedding model can't be used (server off, an error) the keyword matches are still
+    returned, so chat and generation carry on with what they find; the reason is appended to `problems` if given."""
     if not doc_ids or not query.strip():
         return []
     marks = ",".join("?" * len(doc_ids))
@@ -107,8 +112,16 @@ def search(query: str, doc_ids: list[int], k=10):
         model = llm.embed_model()
         if db.q1(f"SELECT 1 FROM chunks WHERE document_id IN ({marks}) AND embedding IS NOT NULL AND embed_model=? LIMIT 1",
                  (*doc_ids, model)):
-            qv = llm.embed([query], query=True)[0]
-            chunk_ids, sims = similarities(doc_ids, model, qv)
+            try:
+                qv = llm.embed([query], query=True)[0]
+                chunk_ids, sims = similarities(doc_ids, model, qv)
+            except Exception as e:  # keyword matches only, as when it is paused
+                from . import errors
+                err = errors.classify(e, "embed")
+                log.warning("%s search: keyword matches only (%s)", err.code, err.technical or err.plain)
+                if problems is not None:
+                    problems.append(str(err))
+                chunk_ids, sims = np.array([], dtype=int), np.zeros(0, dtype=np.float32)
             for r, i in enumerate(np.argsort(-sims)[:50]):
                 ranks.setdefault(int(chunk_ids[i]), {}).update(vector_rank=r + 1, similarity=float(sims[i]))
 
@@ -119,6 +132,8 @@ def search(query: str, doc_ids: list[int], k=10):
         if len(out) >= k:
             break
         c = db.q1("SELECT c.*, d.filename, d.kind AS doc_kind FROM chunks c JOIN documents d ON d.id=c.document_id WHERE c.id=?", (cid,))
+        if c is None:  # rebuilt or deleted since it was ranked (a file being read again)
+            continue
         vision = c["source"] == "vision"
         if vision and (c["document_id"], c["unit_start"]) in shown:
             continue  # an earlier result already carries this unit's notes
