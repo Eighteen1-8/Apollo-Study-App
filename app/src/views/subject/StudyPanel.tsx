@@ -10,6 +10,7 @@ import { MAKE_TYPES } from './MakeContent';
 import { DOC_DRAG, DraggedDoc, draggedDocs } from '../../components/FileList';
 import { runsAtOnce, SlashMenu, useSlashMenu } from '../../components/slashCommands';
 import { formatToday, useStudyToday } from '../../timer';
+import { TourButton, useFirstTime } from '../../components/Tour';
 
 const ago = (t: number) => {
   const d = Math.floor((Date.now() / 1000 - t) / 86400);
@@ -49,6 +50,10 @@ export default function StudyPanel({ subject, open, onAsk, onOpenChat, onOpenArt
   }, [open, asks.join('|')]); // eslint-disable-line react-hooks/exhaustive-deps
   const lib = usePoll(() => api.library(subject.id), 5000, [subject.id], ['library']);
   const chats = usePoll(() => api.chats(subject.id), 5000, [subject.id], ['chats']);
+  // this panel's tour the first time it slides up; the left sidebar's once there's study material in it (and the map,
+  // not this panel, is showing beside it)
+  useFirstTime('studysheet', open);
+  useFirstTime('library', !open && (lib.data?.length ?? 0) > 0);
   useEffect(() => {
     if (!open) return;
     const t = setTimeout(() => input.current?.focus({ preventScroll: true }), 420);
@@ -105,6 +110,7 @@ export default function StudyPanel({ subject, open, onAsk, onOpenChat, onOpenArt
         <div className="study-ask-head">
           <span className="study-ask-orb"><Icon name="ask" size={16} /></span>
           <b>Ask Apollo anything about {subject.name}</b>
+          <TourButton id="studysheet" />
         </div>
         {attached.length > 0 && (
           <div className="attach-row">
@@ -139,7 +145,7 @@ export default function StudyPanel({ subject, open, onAsk, onOpenChat, onOpenArt
       </div>
 
       <div className="study-row">
-        <section className="study-card" aria-labelledby="study-continue">
+        <section className="study-card study-continue" aria-labelledby="study-continue">
           <h3 id="study-continue"><Icon name="history" size={16} /> Continue where you left off</h3>
           {!recent.length && !recentChat && (
             <p className="study-empty">Nothing yet. Ask Apollo something above, or make some flashcards below.</p>

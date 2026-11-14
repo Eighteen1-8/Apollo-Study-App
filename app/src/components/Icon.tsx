@@ -21,6 +21,8 @@ import { ArrowDownToLine, Calculator, ChartSpline, Delete, RotateCcw, Table2, Ti
 import { Cat } from 'lucide-react';
 // the viewer's simplified-layout note, a marking's score change against the previous version
 import { Info as InfoCircle, TrendingDown, TrendingUp } from 'lucide-react';
+// groups (folders) in the chat history
+import { Folder } from 'lucide-react';
 
 export const ICONS = {
   add: Plus,
@@ -39,6 +41,7 @@ export const ICONS = {
   file: FileText,
   fit: Maximize2,
   folderNew: FolderPlus,
+  chatGroup: Folder,
   help: CircleHelp,
   image: FileImage,
   minus: Minus,

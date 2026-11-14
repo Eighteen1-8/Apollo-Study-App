@@ -454,11 +454,11 @@ export default function NoteEditor({ id, subject, onClose, onAsk, onAttach }: {
           {subject.topics.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
         </select>
         <span className={`ne-state ${state}`}>{{ saved: 'Saved', saving: 'Saving…', unsaved: 'Editing…', error: 'Not saved' }[state]}</span>
-        <button className="btn btn-sm" data-tip="Have Apollo check this note against your material" onClick={() => { save().then(() => check()); }}>Check with Apollo</button>
-        <button className={`btn btn-sm${showReviews ? ' on' : ''}`} onClick={() => setShowReviews(!showReviews)}>
+        <button className="btn btn-sm ne-check" data-tip="Have Apollo check this note against your material" onClick={() => { save().then(() => check()); }}>Check with Apollo</button>
+        <button className={`btn btn-sm ne-comments${showReviews ? ' on' : ''}`} onClick={() => setShowReviews(!showReviews)}>
           Comments{active ? ` (${active})` : ''}
         </button>
-        <button className="btn btn-sm" onClick={exportMenu}>Export <Icon name="chevronDown" size={14} /></button>
+        <button className="btn btn-sm ne-export" onClick={exportMenu}>Export <Icon name="chevronDown" size={14} /></button>
         <TourButton id="notes" />
         <button className="close-x" title="Close" onClick={onClose}><Icon name="close" size={18} /></button>
       </header>

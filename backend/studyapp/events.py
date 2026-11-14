@@ -7,7 +7,7 @@ fallback poll in case the stream drops. A comment line every 15 s keeps the conn
 
 Topics: jobs, documents (incl. chunk changes via vec_version), subjects (subjects and topics), library (generated
 content), todos, flags (vision flags), pause (paused models), notes (the student's notes), reviews (Apollo checking or
-revising them), chats (the chat list)."""
+revising them), chats (the chat list and its groups)."""
 import hashlib
 import json
 import threading
@@ -36,7 +36,9 @@ _SQL = {
     "pause": "SELECT group_concat(value, '|') FROM settings WHERE key IN ('pause_llm', 'pause_embed')",
     "notes": "SELECT COUNT(*), MAX(updated_at), SUM(LENGTH(title)), COUNT(deleted_at), SUM(deleted_at) FROM user_notes",
     "reviews": "SELECT COUNT(*), MAX(updated_at), SUM(dismissed) FROM reviews",
-    "chats": "SELECT COUNT(*), MAX(updated_at), SUM(LENGTH(title)), COUNT(deleted_at), SUM(deleted_at) FROM chats",
+    "chats": "SELECT COUNT(*), MAX(updated_at), SUM(LENGTH(title)), COUNT(deleted_at), SUM(deleted_at), "
+             "SUM(COALESCE(group_id, 0) * (id % 9973 + 1)), COUNT(group_id), "
+             "(SELECT group_concat(id || name || COALESCE(position, '') || COALESCE(deleted_at, ''), '|') FROM chat_groups) FROM chats",
 }
 
 _cond = threading.Condition()

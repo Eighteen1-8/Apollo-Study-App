@@ -256,6 +256,13 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     # documents.render_error: why Office/LibreOffice couldn't make the exact PDF copy ("plain message [APO-FILE-3xx]")
     (14, ["ALTER TABLE artifacts ADD COLUMN partial TEXT",
           "ALTER TABLE documents ADD COLUMN render_error TEXT"]),
+    # groups (folders) the student sorts a subject's chats into (chats.py). Deleting a group is soft and moves its chats
+    # out to ungrouped; `deleted_chats` (JSON ids) lets its restore put them back. Soft-deleted chats keep group_id.
+    (15, ["CREATE TABLE IF NOT EXISTS chat_groups (id INTEGER PRIMARY KEY, "
+          "subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE, name TEXT NOT NULL, position INTEGER, "
+          "created_at REAL NOT NULL, deleted_at REAL, deleted_chats TEXT)",
+          "CREATE INDEX IF NOT EXISTS chat_groups_subject ON chat_groups(subject_id)",
+          "ALTER TABLE chats ADD COLUMN group_id INTEGER REFERENCES chat_groups(id) ON DELETE SET NULL"]),
 ]
 # Rows in `jobs` that only show interactive model work in the jobs list (jobs.track); no worker runs them.
 INTERACTIVE_JOBS = ("chat", "define", "quiz_review")

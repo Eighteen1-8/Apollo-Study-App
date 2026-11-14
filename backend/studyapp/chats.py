@@ -1,5 +1,5 @@
-"""Chats: list, create (one blank chat at most), rename, delete (soft, undoable) and restore, usage stats, the
-context meter, and the background title. Messages and replies are in chat_reply.py."""
+"""Chats: list, create (one blank chat at most), rename, delete (soft, undoable) and restore, groups (folders the
+student sorts them into), usage stats, the context meter, and the background title. Messages and replies are in chat_reply.py."""
 import json
 import logging
 import re
@@ -103,7 +103,117 @@ def restore_chats(body: ChatIds):
 
 
 def purge_deleted_chats(days: float = 7):
-    db.ex("DELETE FROM chats WHERE deleted_at IS NOT NULL AND deleted_at < ?", (time.time() - days * 86400,))
+    cutoff = time.time() - days * 86400
+    db.ex("DELETE FROM chats WHERE deleted_at IS NOT NULL AND deleted_at < ?", (cutoff,))
+    db.ex("DELETE FROM chat_groups WHERE deleted_at IS NOT NULL AND deleted_at < ?", (cutoff,))
+
+
+# ------------------------------------------------------------------ groups: folders the student sorts chats into
+
+class GroupBody(BaseModel):
+    name: str
+    chat_ids: list[int] = []  # chats to move into the new group at once
+
+
+class GroupPatch(BaseModel):
+    name: str
+
+
+class GroupMove(BaseModel):
+    ids: list[int]
+    group_id: int | None = None  # None: out of any group
+
+
+class GroupOrder(BaseModel):
+    ids: list[int]
+
+
+def _group(gid):
+    g = db.q1("SELECT id, subject_id, name, position, created_at FROM chat_groups WHERE id=? AND deleted_at IS NULL", (gid,))
+    if g is None:
+        raise HTTPException(404, "Chat group not found")
+    return g
+
+
+def _name(raw: str) -> str:
+    name = raw.strip()[:80]
+    if not name:
+        raise HTTPException(400, "A group needs a name")
+    return name
+
+
+@router.get("/subjects/{sid}/chat-groups")
+def list_chat_groups(sid: int):
+    """The subject's chat groups in the order the student dragged them into (new ones last)."""
+    return db.q("""SELECT id, subject_id, name, position, created_at FROM chat_groups
+                   WHERE subject_id=? AND deleted_at IS NULL
+                   ORDER BY position IS NULL, position, id""", (sid,))
+
+
+@router.post("/subjects/{sid}/chat-groups")
+def create_chat_group(sid: int, body: GroupBody):
+    if not db.q1("SELECT id FROM subjects WHERE id=?", (sid,)):
+        raise HTTPException(404, "Subject not found")
+    name = _name(body.name)
+    with db.tx() as c:
+        gid = c.execute("INSERT INTO chat_groups(subject_id, name, created_at) VALUES (?,?,?)",
+                        (sid, name, time.time())).lastrowid
+        for cid in body.chat_ids:
+            c.execute("UPDATE chats SET group_id=? WHERE id=? AND subject_id=?", (gid, cid, sid))
+    return _group(gid)
+
+
+@router.patch("/chat-groups/{gid}")
+def rename_chat_group(gid: int, body: GroupPatch):
+    _group(gid)
+    db.ex("UPDATE chat_groups SET name=? WHERE id=?", (_name(body.name), gid))
+    return _group(gid)
+
+
+@router.delete("/chat-groups/{gid}")
+def delete_chat_group(gid: int):
+    """Soft: its chats (never deleted with it) move out to ungrouped, and /restore puts them back in."""
+    _group(gid)
+    with db.tx() as c:
+        ids = [r[0] for r in c.execute("SELECT id FROM chats WHERE group_id=?", (gid,)).fetchall()]
+        c.execute("UPDATE chats SET group_id=NULL WHERE group_id=?", (gid,))
+        c.execute("UPDATE chat_groups SET deleted_at=?, deleted_chats=? WHERE id=?", (time.time(), json.dumps(ids), gid))
+    return {"ok": True, "chat_ids": ids}
+
+
+@router.post("/chat-groups/{gid}/restore")
+def restore_chat_group(gid: int):
+    """Bring a deleted group back with the chats it had, unless they've been put in another group since."""
+    g = db.q1("SELECT deleted_chats FROM chat_groups WHERE id=?", (gid,))
+    if g is None:
+        raise HTTPException(404, "Chat group not found")
+    with db.tx() as c:
+        c.execute("UPDATE chat_groups SET deleted_at=NULL, deleted_chats=NULL WHERE id=?", (gid,))
+        for cid in json.loads(g["deleted_chats"] or "[]"):
+            c.execute("UPDATE chats SET group_id=? WHERE id=? AND group_id IS NULL", (gid, cid))
+    return _group(gid)
+
+
+@router.put("/subjects/{sid}/chat-groups/order")
+def order_chat_groups(sid: int, body: GroupOrder):
+    with db.tx() as c:
+        for i, gid in enumerate(body.ids):
+            c.execute("UPDATE chat_groups SET position=? WHERE id=? AND subject_id=?", (i, gid, sid))
+    return {"ok": True}
+
+
+@router.post("/chats/group")
+def move_chats_to_group(body: GroupMove):
+    """Put chats into a group (of their own subject), or out of any (`group_id` null). Doesn't touch updated_at, so
+    the chats keep their place in time."""
+    g = _group(body.group_id) if body.group_id is not None else None
+    with db.tx() as c:
+        for cid in body.ids:
+            if g:
+                c.execute("UPDATE chats SET group_id=? WHERE id=? AND subject_id=?", (g["id"], cid, g["subject_id"]))
+            else:
+                c.execute("UPDATE chats SET group_id=NULL WHERE id=?", (cid,))
+    return {"ok": True}
 
 
 @router.post("/chats/{cid}/stop")

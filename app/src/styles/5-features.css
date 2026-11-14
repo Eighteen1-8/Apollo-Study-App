@@ -250,6 +250,25 @@ body.col-resizing iframe, body.col-resizing canvas { pointer-events: none; }
 .ch-spin { border: 1.5px solid var(--accent); border-right-color: transparent; animation: spin 0.8s linear infinite; top: 11px; width: 8px; height: 8px; left: 4px; }
 .ch-selbar { display: flex; align-items: center; gap: 10px; margin: 0 10px 4px; padding: 5px 10px; border-radius: 8px; background: var(--accent-soft); font-size: 13px; }
 .link-btn.danger { color: var(--bad); }
+
+/* chat groups: the student's folders above the other chats; drag chats onto a header, drag headers to reorder */
+.ch-head-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
+.chat-group { border-radius: 9px; margin-bottom: 2px; transition: background 0.2s, box-shadow 0.2s; }
+.chat-group-head { display: flex; align-items: center; gap: 7px; width: 100%; padding: 6px 8px; border: none; border-radius: 8px; background: none;
+  color: var(--text-dim); font: inherit; font-size: 13px; text-align: left; cursor: pointer; user-select: none; transition: background 0.2s, color 0.15s; }
+.chat-group-head:hover { background: var(--bg-hover); color: var(--text); }
+.chat-group-head:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--accent); }
+.chat-group-caret { display: inline-flex; color: var(--text-faint); transition: transform 0.3s var(--ease-spring), color 0.15s; }
+.chat-group.open .chat-group-caret { transform: rotate(90deg); }
+.chat-group-head:hover .chat-group-caret { color: var(--text-dim); }
+.chat-group-icon { display: inline-flex; color: var(--accent); opacity: 0.85; }
+.chat-group-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.chat-group-count { font-size: 11.5px; color: var(--text-faint); background: var(--bg-hover); border-radius: 99px; padding: 0 7px; line-height: 18px; }
+.chat-group-list { padding-left: 10px; margin-left: 13px; border-left: 1px solid var(--border); animation: fade-in 0.25s var(--ease-out) backwards; }
+.chat-group-empty { font-size: 12px; color: var(--text-faint); padding: 4px 8px 6px; }
+.chat-group.drop-into { background: var(--accent-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent); }
+.ch-scroll.ch-drop-out .chat-ungroup-drop { border-color: var(--accent); color: var(--text); background: var(--accent-soft); }
+.chat-ungroup-drop { margin: 6px 2px 0; padding: 8px; border: 1px dashed var(--border); border-radius: 8px; font-size: 12px; color: var(--text-faint); text-align: center; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .mini-dot { position: absolute; top: -2px; right: -2px; width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--bg); background: var(--accent); pointer-events: none; }
@@ -1367,6 +1386,9 @@ kbd { display: inline-block; min-width: 18px; padding: 0 5px; margin: 0 2px; bor
 /* Tours (Tour.tsx): the ? that replays a feature's tour, the help window's list */
 .tour-btn { display: inline-grid; place-items: center; width: 26px; height: 26px; flex: none; }
 .chat-head .tour-btn.head-tour { margin-right: 2px; }
+/* the ? of the sidebars' tours (files, My notes), the study panel's and Make content's: pushed right, beside the + */
+.my-notes .side-section-head .tour-btn, .study-ask-head .tour-btn, .make-head .tour-btn { margin-left: auto; }
+.my-notes .side-section-head .tour-btn, .side-right > .side-head .tour-btn { width: 24px; height: 24px; color: var(--text-faint); }
 .tour-tip .tour-away { margin-top: 10px; font-size: 13px; color: var(--accent-strong); }
 .help-tours-title { margin: 14px 0 4px; font-size: 14px; }
 .tour-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 16px; }
@@ -1374,6 +1396,9 @@ kbd { display: inline-block; min-width: 18px; padding: 0 5px; margin: 0 2px; bor
   background: var(--bg-elev-2); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }
 .tour-list-item:hover { border-color: var(--accent); background: var(--accent-soft); }
 .tour-list-item .icon { color: var(--accent); }
+.tour-groups { display: grid; gap: 10px; margin: 8px 0 16px; }
+.tour-group .tour-list { margin: 4px 0 0; }
+.tour-group-title { font-size: 12px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-dim); }
 
 /* The left bar's tools group (Minibar .mini-tools): the study timer, and the pet's button beside it. Tool icons
    don't spin on hover like the bar's other icons. */

@@ -50,6 +50,9 @@ Why Apollo:
   Stop (or Esc) keeps what was written so far. You can edit a question, regenerate a reply, or undo the chat back to
   an earlier message.
 - The ring beside the chat box shows how full Apollo's memory of the conversation is; start a new chat when it fills.
+- Sort a subject's chats into groups (folders) in the chat list on the left: the folder button makes one, drag a
+  chat onto a group (or right-click it → Move to group), and drag it back among the other chats to take it out.
+  Right-click a group to rename or delete it; deleting a group keeps its chats. Drag groups to reorder them.
 - The chat floats in a corner when a file is open: drag its header to move it, drag its corner to resize, or use the
   header buttons to put it side by side with what's open or full screen.
 - Apollo can make flashcards, quizzes and the like, add to-dos, read your notes (and its marking of your work), and
@@ -154,9 +157,10 @@ Why Apollo:
   focus-and-break rounds: when a focus round ends its break starts by itself, and when the break ends the next focus
   round waits for Start (Custom is a single timer of any length). The timer and the study panel show today's focus
   sessions and minutes (back to zero at midnight).
-- Tutorials: each part of Apollo (the subject page, notes, the file viewer, the chat, each kind of study material,
-  marking, mind maps, drawings, the calculator) shows a few tips the first time you open it. The ? button on that
-  part shows them again, and the help window (? on the left bar) lists them all.
+- Tutorials: each part of Apollo (the subject page, your files, My notes, chats and study material, the study panel,
+  Make content, the file viewer, the chat, writing notes, each kind of study material, marking, mind maps, drawings,
+  the calculator, the left bar) walks you through its parts the first time you open it. The ? button on that part
+  shows them again, and the help window (? on the left bar) lists them all, grouped by area.
 - The pet: an optional small cat that shows what Apollo is doing (reading files, writing, marking, replying, waiting,
   paused, or that something went wrong). Turn it on or off with its button on the left bar or in Settings →
   Appearance."""),
@@ -190,6 +194,7 @@ Files and folders:
 - Right-click or the ⋯ button: more options for any subject, topic, folder, file, chat or generated item
 - Shift / Ctrl + click: select several files or chats, then move or delete them together
 - Drag a file onto a topic or folder to move it, or onto the chat to ask about it
+- Drag a chat onto a chat group to file it there, or below the groups to take it out
 - Drag files from Explorer into the window to add them to a topic, the textbooks, or one chat message
 - Delete: delete the selected files
 Reading and studying:

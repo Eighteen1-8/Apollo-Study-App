@@ -17,7 +17,7 @@ import { redo, undo, useUndo } from '../undo';
 import { openPalette } from './CommandPalette';
 import ShortcutsList from './Shortcuts';
 import { openSetup } from './SetupWizard';
-import { startTour, TourId, TourList } from './Tour';
+import { startTour, TourId, TourList, TOURS } from './Tour';
 import Icon from './Icon';
 import { usePoll } from '../hooks';
 import { useAdvanced } from '../theme';
@@ -40,8 +40,8 @@ export default function Minibar({ subjects, route, go, onChange, online }: {
 
   const showTour = (id: TourId) => {
     setHelp(false);
-    // the app tour points at a subject's page: open one first if none is showing
-    if (id === 'app' && route.name !== 'subject' && subjects.length) { go({ name: 'subject', id: subjects[0].id }); setTimeout(() => startTour('app'), 900); } else startTour(id);
+    // the subject page's tours point at a subject: open one first if none is showing
+    if (TOURS[id].onSubject && route.name !== 'subject' && subjects.length) { go({ name: 'subject', id: subjects[0].id }); setTimeout(() => startTour(id), 900); } else startTour(id);
   };
 
   const menu = (e: React.MouseEvent, s: Subject) => ov.menu(e, [
@@ -108,7 +108,7 @@ export default function Minibar({ subjects, route, go, onChange, online }: {
         <ModelLight onOpen={() => go({ name: 'settings' })} />
         <JobsPanel />
         <button className="mini-icon mini-help" data-tip="Shortcuts and help" onClick={() => setHelp(true)}><Icon name="help" size={19} strokeWidth={1.9} /></button>
-        <button className={`mini-icon${route.name === 'settings' ? ' active' : ''}`} data-tip="Settings" onClick={() => go({ name: 'settings' })}>
+        <button className={`mini-icon mini-settings${route.name === 'settings' ? ' active' : ''}`} data-tip="Settings" onClick={() => go({ name: 'settings' })}>
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="3" />
             <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
@@ -130,7 +130,7 @@ export default function Minibar({ subjects, route, go, onChange, online }: {
             and mind maps, or have it mark your own work. Everything Apollo makes is saved in the left sidebar; your files, and your own
             notes, mind maps and drawings, are on the right.</p>
           <h4 className="help-tours-title">Tours</h4>
-          <p className="muted small">A few tips about each part of Apollo. Each one also starts the first time you open that part, and the ? next to it shows it again.</p>
+          <p className="muted small">Tips about each part of Apollo, lighting up each thing as they explain it. Each one also starts the first time you use that part, and the ? next to it shows it again.</p>
           <TourList onPick={showTour} />
           <ShortcutsList />
         </Modal>

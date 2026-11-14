@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api, ArtifactType, DocRef, inElectron, Subject } from '../../api';
 import PagePicker, { UnitChoice } from '../../components/PagePicker';
 import { topicColor } from '../../theme';
+import { TourButton, useFirstTime } from '../../components/Tour';
 import Icon from '../../components/Icon';
 import ErrorText from '../../components/ErrorText';
 import Info from '../../components/Info';
@@ -103,6 +104,7 @@ export default function MakeContent({ subject, start, onClose }: { subject: Subj
   };
   const next = () => (step === 2 ? submit() : setStep(step + 1));
 
+  useFirstTime('make');
   const choice = (on: boolean) => `make-choice${on ? ' on' : ''}`;
   return (
     <div className="make" role="dialog" aria-labelledby="make-title">
@@ -118,6 +120,7 @@ export default function MakeContent({ subject, start, onClose }: { subject: Subj
             ))}
           </ol>
         )}
+        <TourButton id="make" />
       </div>
 
       <div className="make-body" key={step}>

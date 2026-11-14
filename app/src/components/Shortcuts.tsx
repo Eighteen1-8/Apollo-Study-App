@@ -17,6 +17,7 @@ const GROUPS: { title: string; rows: [string, string][] }[] = [
       ['Right-click or ⋯', 'More options for any subject, topic, folder, file, chat or generated item'],
       ['Shift / Ctrl + click', 'Select several files or chats, then move or delete them together'],
       ['Drag a file', 'Onto a topic or folder to move it, or onto the chat to ask about it'],
+      ['Drag a chat', 'Onto a chat group to file it there, or below the groups to take it out'],
       ['Drag a file, note or generated notes into the middle', 'Open it there, or on the left or right half to see it side by side'],
       ['Drag selected text into a note', 'From a file beside the note: quoted with its file and page'],
       ['Drag files from Explorer', 'Into the window to add them to a topic, the textbooks, or one chat message'],

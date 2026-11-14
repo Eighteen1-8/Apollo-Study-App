@@ -11,6 +11,7 @@ import { savePng } from '../../components/ink';
 import { rememberKind } from '../notes/NotePane';
 import { notePicture, pictureHtml } from '../notes/notePicture';
 import { setPaneDrag } from '../subject/PaneDrop';
+import { TourButton, useFirstTime } from '../../components/Tour';
 
 const KIND_ICON: Record<NoteKind, IconName> = { note: 'note', map: 'noteMap', drawing: 'drawing' };
 const KIND_WORD: Record<NoteKind, string> = { note: 'note', map: 'mind map', drawing: 'drawing' };
@@ -57,6 +58,8 @@ export function MyNotes({ subject, openId, onOpen, onOpenSplit, style }: {
     }
     onOpen(n.id);
   };
+  // the My notes tour, once there's a note to show it on and the student isn't writing in one
+  useFirstTime('mynotes', list.length > 0 && openId === null);
   const menu = (e: React.MouseEvent, n: NoteSummary) => ov.menu(e, [
     { label: 'Open', onClick: () => onOpen(n.id) },
     { label: 'Open side by side', onClick: () => onOpenSplit(n.id) },
@@ -84,6 +87,7 @@ export function MyNotes({ subject, openId, onOpen, onOpenSplit, style }: {
         <button className="my-notes-title" onClick={() => { setFolded(!folded); setPref('notesFolded', folded ? '0' : '1'); }}>
           <span className="lib-caret"><Icon name="chevronDown" size={13} /></span> My notes {list.length > 0 && <span className="count-badge">{list.length}</span>}
         </button>
+        <TourButton id="mynotes" />
         <button className="icon-btn my-notes-new" title="New note, mind map or drawing" aria-label="New note, mind map or drawing" onClick={createMenu}><Icon name="add" /></button>
       </div>
       {!folded && (

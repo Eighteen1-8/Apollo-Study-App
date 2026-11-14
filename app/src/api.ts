@@ -374,6 +374,17 @@ export const api = {
   restoreChats: (ids: number[]) => req('POST', '/chats/restore', { ids }),
   /** Stop the reply being written in this chat; what was written so far is kept. */
   stopChat: (id: number) => req('POST', `/chats/${id}/stop`),
+  chatGroups: (subjectId: number) => req<ChatGroup[]>('GET', `/subjects/${subjectId}/chat-groups`),
+  /** `chat_ids`: chats moved into the new group at once. */
+  createChatGroup: (subjectId: number, name: string, chat_ids: number[] = []) =>
+    req<ChatGroup>('POST', `/subjects/${subjectId}/chat-groups`, { name, chat_ids }),
+  renameChatGroup: (id: number, name: string) => req<ChatGroup>('PATCH', `/chat-groups/${id}`, { name }),
+  /** Soft: its chats move out to ungrouped; restoreChatGroup puts them back in (purged a week later). */
+  deleteChatGroup: (id: number) => req<{ ok: boolean; chat_ids: number[] }>('DELETE', `/chat-groups/${id}`),
+  restoreChatGroup: (id: number) => req<ChatGroup>('POST', `/chat-groups/${id}/restore`),
+  orderChatGroups: (subjectId: number, ids: number[]) => req('PUT', `/subjects/${subjectId}/chat-groups/order`, { ids }),
+  /** Into a group (of the chats' own subject), or out of any with null. */
+  moveChatsToGroup: (ids: number[], group_id: number | null) => req('POST', '/chats/group', { ids, group_id }),
   chatStats: (id: number, scope: 'chat' | 'subject' | 'all' = 'chat') => req<ChatStats>('GET', `/chats/${id}/stats?scope=${scope}`),
   chatContext: (id: number) => req<ChatContext>('GET', `/chats/${id}/context`),
   orderTodos: (subjectId: number, ids: number[]) => req('PUT', `/subjects/${subjectId}/todos/order`, { ids }),
@@ -530,7 +541,10 @@ export interface Review {
 export interface Mark { id: number; artifact_id: number; section: number; start: number; end: number; text: string; color: string }
 export interface MindNode { label: string; note: string; source: string; children: MindNode[] }
 
-export interface Chat { id: number; subject_id: number; topic_id: number | null; title: string; updated_at: number }
+/** `group_id`: the chat group (folder) it's sorted into, or null. */
+export interface Chat { id: number; subject_id: number; topic_id: number | null; title: string; updated_at: number; group_id: number | null }
+/** A folder the student sorts a subject's chats into (deleting one moves its chats out, never deletes them). */
+export interface ChatGroup { id: number; subject_id: number; name: string; position: number | null; created_at: number }
 export interface ArtifactSummary { id: number; type: ArtifactType; title: string; status: string; progress: number; message: string; error: string | null }
 export interface Message {
   id: number; chat_id: number; role: 'user' | 'assistant' | 'tool'; content: string; created_at: number;

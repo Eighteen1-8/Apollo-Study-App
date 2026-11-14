@@ -25,6 +25,7 @@ import { useTerms } from '../terms';
 import { getPref, setPref } from '../prefs';
 import Icon from '../components/Icon';
 import Info from '../components/Info';
+import { TourButton, useFirstTime } from '../components/Tour';
 
 type UploadTarget = { title: string; target: { topic_id?: number; subject_id?: number }; mode: 'auto' | 'all'; paths?: string[] };
 
@@ -268,6 +269,9 @@ export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCrea
     onOpenSide: (d) => onOpenSplit('doc', d.id),
     menu: (d) => (advanced ? [{ label: tr('checkVision'), onClick: () => act.checkVision({ document_id: d.id }, d.filename, subject.id) }] : []) };
 
+  // the files tour, once the subject has a file to show it on
+  useFirstTime('files', subject.reference_count > 0 || subject.topics.some((t) => t.doc_count));
+
   return (
     <aside ref={asideRef} className="side side-right" onClick={(e) => {
       const t = e.target as Element;
@@ -279,6 +283,7 @@ export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCrea
       <div className="side-head" onContextMenu={(e) => ov.menu(e, subjectMenu)}>
         <SubjectIcon s={subject} size={30} />
         <div className="side-title" data-tip={subject.name}>{subject.name}</div>
+        <TourButton id="files" />
         <button className="icon-btn" title="Subject options" onClick={(e) => ov.menu(e, subjectMenu)}><Icon name="more" /></button>
       </div>
 
@@ -327,7 +332,7 @@ export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCrea
           )}
         </section>
 
-        <section className="side-section">
+        <section className="side-section topics-section">
           <div className="side-section-head">
             <span>Topics <Info text="A topic holds the material for one part of the subject, like a chapter or a week. Textbooks are for the whole subject: Apollo looks things up in them for every question." /></span>
             <button className="icon-btn" title="New topic" onClick={() => act.newTopic(subject)}><Icon name="add" /></button>

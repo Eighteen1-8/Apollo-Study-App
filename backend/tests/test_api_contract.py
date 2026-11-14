@@ -184,6 +184,11 @@ def test_chat_endpoints_match_their_types(library, monkeypatch):
     monkeypatch.setattr(chats, "_system_prompt", lambda chat: ("rules", False))
     chat = client.post(f"/subjects/{sid}/chats", json={"topic_id": None}).json()
     check(chat, "Chat")
+    group = client.post(f"/subjects/{sid}/chat-groups", json={"name": "Group", "chat_ids": [chat["id"]]}).json()
+    check(group, "ChatGroup")
+    for g in client.get(f"/subjects/{sid}/chat-groups").json():
+        check(g, "ChatGroup")
+    check(client.get(f"/subjects/{sid}/chats").json()[0], "Chat")
     check(client.get(f"/chats/{chat['id']}/stats?scope=subject").json(), "ChatStats")
     check(client.get(f"/chats/{chat['id']}/context").json(), "ChatContext")
     pal = client.get("/palette").json()
