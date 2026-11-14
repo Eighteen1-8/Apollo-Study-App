@@ -6,6 +6,7 @@ import { artifactHtml, exportAs, ExportFormat } from '../components/exportDoc';
 import { getPref, setPref } from '../prefs';
 import SplitHandle, { useSplit } from '../components/SplitHandle';
 import { useReorder } from '../components/reorder';
+import { setPaneDrag } from './subject/PaneDrop';
 import { useChatStreams } from '../chatStreams';
 import { confirmDeleteChats, deleteUndoably, renameChatUndoable } from './chatActions';
 import { undoable } from '../undo';
@@ -16,10 +17,10 @@ import Info from '../components/Info';
 
 /** Each kind of generated content's icon (components/Icon.tsx names them after the types). */
 export const TYPE_ICON = (t: ArtifactType, size = 15) => <Icon name={t} size={size} />;
-const EXPORTABLE: ArtifactType[] = ['notes', 'cheatsheet', 'exam'];
-const PANE_TYPES: ArtifactType[] = ['notes', 'cheatsheet', 'mindmap']; // open in the centre, so also in split view
-const KIND_ORDER: ArtifactType[] = ['flashcards', 'quiz', 'exam', 'notes', 'cheatsheet', 'mindmap'];
-const KIND_LABEL: Record<ArtifactType, string> = { flashcards: 'Flashcards', quiz: 'Quizzes', exam: 'Practice exams', notes: 'Study notes', cheatsheet: 'Cheat sheets', mindmap: 'Mind maps' };
+const EXPORTABLE: ArtifactType[] = ['notes', 'cheatsheet', 'exam', 'marking'];
+export const PANE_TYPES: ArtifactType[] = ['notes', 'cheatsheet', 'mindmap', 'marking']; // open in the centre, so also in split view
+const KIND_ORDER: ArtifactType[] = ['flashcards', 'quiz', 'exam', 'notes', 'cheatsheet', 'mindmap', 'marking'];
+const KIND_LABEL: Record<ArtifactType, string> = { flashcards: 'Flashcards', quiz: 'Quizzes', exam: 'Practice exams', notes: 'Study notes', cheatsheet: 'Cheat sheets', mindmap: 'Mind maps', marking: 'Marking' };
 
 /** The chat the centre shows, and how the sidebar opens or starts one. */
 export interface ChatNav { activeId: number | null; onOpen: (id: number) => void; onNew: () => void }
@@ -34,10 +35,13 @@ export const CREATE_BLURB: Record<string, string> = {
   create_notes: 'Complete study notes covering every file',
   create_cheatsheet: 'The key facts and formulas on one page',
   create_mindmap: 'How the ideas connect, as a map you can expand',
+  create_marking: 'Apollo marks your own work, like an essay or assignment, with feedback',
 };
 
 export default function LibraryPanel({ subject, onOpen, onOpenSplit, chats, onCreate }: {
-  subject: Subject; onOpen: (id: number) => void; onOpenSplit: (id: number) => void; chats: ChatNav;
+  subject: Subject; chats: ChatNav;
+  /** `type` lets the workspace open it without fetching it first. */
+  onOpen: (id: number, type?: ArtifactType) => void; onOpenSplit: (id: number, type?: ArtifactType) => void;
   /** Open a create form in the chat (null: every topic). */
   onCreate: (tool: ToolName, topicId: number | null) => void;
 }) {
@@ -85,8 +89,8 @@ export default function LibraryPanel({ subject, onOpen, onOpenSplit, chats, onCr
     lib.reload();
   };
   const menu = (e: React.MouseEvent, it: LibraryItem) => ov.menu(e, [
-    { label: 'Open', disabled: it.status !== 'ready', onClick: () => onOpen(it.id) },
-    ...(PANE_TYPES.includes(it.type) ? [{ label: 'Open side by side', disabled: it.status !== 'ready', onClick: () => onOpenSplit(it.id) }] : []),
+    { label: 'Open', disabled: it.status !== 'ready', onClick: () => onOpen(it.id, it.type) },
+    ...(PANE_TYPES.includes(it.type) ? [{ label: 'Open side by side', disabled: it.status !== 'ready', onClick: () => onOpenSplit(it.id, it.type) }] : []),
     ...(EXPORTABLE.includes(it.type) && it.status === 'ready' ? [
       { label: 'Export to Word…', separatorBefore: true, onClick: () => exportItem(it, 'docx') },
       { label: 'Export to PDF…', onClick: () => exportItem(it, 'pdf') },
@@ -113,7 +117,7 @@ export default function LibraryPanel({ subject, onOpen, onOpenSplit, chats, onCr
       <SplitHandle split={chatSplit} label="chats" edge="below" section={() => document.querySelector<HTMLElement>('.side-left > .chat-history:not(.folded)')} />
       <div className="side-head side-head-sub">
         <div className="side-title">Study material</div>
-        <button className="btn btn-sm lib-create" data-tip="Make flashcards, a quiz, an exam, notes, a cheat sheet or a mind map" onClick={createMenu}>
+        <button className="btn btn-sm lib-create" data-tip="Make flashcards, a quiz, an exam, notes, a cheat sheet or a mind map, or mark your work" onClick={createMenu}>
           <Icon name="create" size={14} /> Make
         </button>
       </div>
@@ -167,9 +171,14 @@ export default function LibraryPanel({ subject, onOpen, onOpenSplit, chats, onCr
                     const date = new Date(it.created_at * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
                     return (
                       <div key={it.id} className="lib-item-wrap">
-                        <button className={`lib-item status-${it.status}`} onClick={() => it.status === 'ready' && onOpen(it.id)}
+                        <button className={`lib-item status-${it.status}`} onClick={() => it.status === 'ready' && onOpen(it.id, it.type)}
                           draggable data-drop={drag['data-drop']}
-                          onDragStart={(e) => { dragDay.current = `${type}|${dayOf(it.created_at)}`; drag.onDragStart(e); }}
+                          onDragStart={(e) => {
+                            dragDay.current = `${type}|${dayOf(it.created_at)}`;
+                            // notes / cheat sheets / mind maps can also be dropped in the centre (subject/PaneDrop.tsx)
+                            if (it.status === 'ready' && PANE_TYPES.includes(it.type)) setPaneDrag(e.dataTransfer, { kind: 'artifact', id: it.id, type: it.type, name: it.title });
+                            drag.onDragStart(e);
+                          }}
                           onDragEnd={() => { dragDay.current = null; drag.onDragEnd(); }}
                           onDragOver={(e) => { if (sameDay(e)) drag.onDragOver(e); }}
                           onDragLeave={(e) => { drag.onDragLeave(e); }}

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { api, Subject, VisionMode } from '../api';
 import { Modal } from './overlay';
-import { addedNotice, droppedPaths, VisionSelect } from './UploadDialog';
+import { addedNotice, DEFAULT_VISION, droppedPaths, VisionSelect } from './UploadDialog';
 import { useTerms } from '../terms';
 import { toast } from './toast';
 import Icon from './Icon';
@@ -48,7 +48,7 @@ export function TopicAssignDialog({ subject, paths, defaultTopic, onClose, onDon
   subject: Subject; paths: string[]; defaultTopic: number; onClose: () => void; onDone: () => void;
 }) {
   const [assign, setAssign] = useState<Record<string, number>>(() => Object.fromEntries(paths.map((p) => [p, defaultTopic])));
-  const [mode, setMode] = useState<VisionMode>('auto');
+  const [mode, setMode] = useState<VisionMode>(DEFAULT_VISION);
   const [busy, setBusy] = useState(false);
   const [problems, setProblems] = useState<{ filename: string; status: string; message?: string }[]>([]);
 

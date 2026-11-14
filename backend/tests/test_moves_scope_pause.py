@@ -302,6 +302,38 @@ def test_content_from_one_file_and_extra_instructions(subject, embeds):
     db.ex("DELETE FROM artifacts WHERE subject_id=?", (sid,))
 
 
+def test_a_trashed_file_is_never_material(subject, embeds):
+    """Files in the trash: not a scope for new content, and a Regenerate of content made from them finds nothing."""
+    sid = subject["sid"]
+    one = _doc(sid, subject["a"], "binned.pdf", [("Binned lecture: waves.", "h-binned")])
+    assert client.delete(f"/documents/{one}").json()["ok"]
+    assert context.topic_documents(sid, None, [one]) == []
+    assert context.material_problem(sid, None, [one])
+    r = client.post(f"/subjects/{sid}/artifacts", json={"type": "flashcards", "document_ids": [one], "args": {"count": 5}})
+    assert r.status_code == 404
+    client.post(f"/documents/{one}/restore")
+
+
+def test_regenerate_checks_deleted_and_running(subject):
+    import time as _t
+    sid, now = subject["sid"], _t.time()
+    aid = db.ex("INSERT INTO artifacts(subject_id, type, title, status, created_at, updated_at) VALUES (?, 'quiz', 'Q', 'failed', ?, ?)",
+                (sid, now, now))
+    try:
+        first = client.post(f"/artifacts/{aid}/retry").json()["job_id"]
+        assert client.post(f"/artifacts/{aid}/retry").json()["job_id"] == first  # still waiting: no second job
+        assert len(db.q("SELECT id FROM jobs WHERE type='generate' AND ref_id=?", (aid,))) == 1
+        assert client.get(f"/artifacts/{aid}/summary").json()["status"] == "queued"
+        db.ex("DELETE FROM jobs WHERE ref_id=? AND type='generate'", (aid,))
+        db.ex("UPDATE artifacts SET deleted_at=? WHERE id=?", (now, aid))
+        assert client.post(f"/artifacts/{aid}/retry").status_code == 404
+        assert client.get(f"/artifacts/{aid}/summary").status_code == 404
+        assert not db.q("SELECT id FROM jobs WHERE type='generate' AND ref_id=?", (aid,))
+    finally:
+        db.ex("DELETE FROM jobs WHERE ref_id=? AND type='generate'", (aid,))
+        db.ex("DELETE FROM artifacts WHERE id=?", (aid,))
+
+
 def test_deleted_files_wait_in_the_trash_and_come_back_unchanged(subject, embeds):
     """A delete goes to the trash: out of every scope (duplicates get their pages back), restorable with its units and
     vectors intact, and purged for good after a week."""
@@ -334,3 +366,44 @@ def test_a_restored_file_whose_topic_is_gone_goes_to_the_textbooks(subject, embe
     db.ex("DELETE FROM topics WHERE id=?", (subject["b"],))
     r = client.post(f"/documents/{d}/restore").json()
     assert r["kind"] == "reference" and r["topic_id"] is None and "textbooks" in r["note"]
+
+
+def test_content_from_chosen_pages(subject, embeds):
+    """Choose pages: only those units are material; a chosen exact duplicate is used unless its original is chosen too;
+    an empty or stale choice says so; the choice is kept in the params and the title."""
+    import json
+    sid, a, b = subject["sid"], subject["a"], subject["b"]
+    one = _doc(sid, a, "slides.pdf", [("Slide one: vectors.", "h-p1"), ("Slide two: forces.", "h-p2"), ("Slide three: energy.", "h-p3")])
+    copy = _doc(sid, a, "copy.pdf", [("Slide two: forces.", "h-p2"), ("New: power.", "h-new")])
+    elsewhere = _doc(sid, b, "other.pdf", [("Topic B: waves.", "h-b1")])
+    assert db.q1("SELECT duplicate_of FROM units WHERE document_id=? AND idx=0", (copy,))["duplicate_of"]
+
+    text = lambda units, topic=None: "\n".join(g["text"] for g in context.material_groups(sid, topic, 10000, None, units))  # noqa: E731
+    picked = text({one: [1, 2]})
+    assert "forces" in picked and "energy" in picked and "vectors" not in picked and "power" not in picked
+    assert "forces" in text({copy: [0]})  # the duplicate alone: its own stored text
+    both = text({one: [1], copy: [0, 1]})
+    assert both.count("Slide two: forces.") == 1 and "power" in both  # with its original: once
+    assert "waves" in text({elsewhere: [0]})  # whole subject: any of its files
+    assert text({elsewhere: [0]}, a) == ""  # a topic scope: only that topic's files
+    assert context.material_problem(sid, None, None, {one: [1]}) is None
+    assert "Page 2" in picked  # the units keep their names, so citations still resolve
+
+    r = client.get(f"/documents/{one}/units").json()
+    assert [u["idx"] for u in r["units"]] == [0, 1, 2] and r["pdf"] is False and r["units"][0]["page"] is None
+    assert client.get(f"/documents/{copy}/units").json()["units"][0]["duplicate_label"] == "slides.pdf · Page 2"
+
+    r = client.post(f"/subjects/{sid}/artifacts", json={"type": "quiz", "topic_id": a, "args": {"count": 5}, "units": {str(one): [2, 1]}})
+    assert r.status_code == 200, r.text
+    art = db.q1("SELECT * FROM artifacts WHERE id=?", (r.json()["id"],))
+    assert json.loads(art["params"])["units"] == {str(one): [1, 2]} and art["title"] == "Quiz: slides (pages 1–2)"
+    assert context.norm_units(json.loads(art["params"])["units"]) == {one: [1, 2]}
+    bad = lambda units, topic=None: client.post(f"/subjects/{sid}/artifacts", json={  # noqa: E731
+        "type": "quiz", "topic_id": topic, "args": {"count": 5}, "units": units})
+    assert bad({str(one): []}).status_code == 400
+    assert "aren't in slides.pdf" in bad({str(one): [1, 9]}).json()["detail"]
+    assert bad({str(elsewhere): [0]}, a).status_code == 400  # a file outside the topic
+    assert bad({"999999": [0]}).status_code == 404
+    db.ex("UPDATE units SET text='' WHERE document_id=? AND idx=0", (one,))
+    assert "no readable text" in bad({str(one): [0]}).json()["detail"]
+    db.ex("DELETE FROM artifacts WHERE subject_id=?", (sid,))

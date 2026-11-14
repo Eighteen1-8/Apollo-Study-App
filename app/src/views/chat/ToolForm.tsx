@@ -1,12 +1,48 @@
-/* Forms the model (or a quick action) opens in the chat to create content, and the progress cards they turn into. */
-import { useEffect, useState } from 'react';
+/* Forms the model (or a quick action) opens in the chat to create content, and the progress cards they turn into.
+   A form the model narrowed to one file's pages ("a quiz on slides 10-20 of Lecture 3": meta.args.units) shows that
+   choice as an editable range; submitting sends it as `units`. */
+import { useEffect, useMemo, useState } from 'react';
 import ErrorText from '../../components/ErrorText';
 import { api, ArtifactSummary, inElectron, Message, Subject } from '../../api';
 import { Progress } from '../../components/ui';
 import { TYPE_ICON } from '../LibraryPanel';
 import { onChange } from '../../events';
+import { ApiError } from '../../errors';
+import { formatRanges, parseRanges } from '../../components/PagePicker';
+import Icon from '../../components/Icon';
 
-import { TERMINAL } from './types';
+/** The pages chosen for the form: one file's range box, checked against its units. */
+function PagesField({ docId, file, idxs, onChange, onClear }: {
+  docId: number; file: string; idxs: number[]; onChange: (idxs: number[]) => void; onClear: () => void;
+}) {
+  const [valid, setValid] = useState<Set<number> | null>(null);
+  const [kind, setKind] = useState('page');
+  const [text, setText] = useState(() => formatRanges(idxs));
+  useEffect(() => {
+    let alive = true;
+    api.documentUnits(docId).then((u) => {
+      if (!alive) return;
+      setValid(new Set(u.units.map((x) => x.idx)));
+      setKind(u.units[0]?.kind ?? 'page');
+    }).catch(() => alive && setValid(null));
+    return () => { alive = false; };
+  }, [docId]);
+  const typed = useMemo(() => (valid ? parseRanges(text, valid) : null), [text, valid]);
+  const noun = kind === 'slide' ? 'Slides' : kind === 'section' ? 'Sections' : 'Pages';
+  return (
+    <div className="field field-wide tool-pages">
+      <span className="field-label">{noun} of {file}</span>
+      <div className="tool-pages-row">
+        <input className="input" value={text} aria-label={`Which ${noun.toLowerCase()} of ${file}`} placeholder="e.g. 10-20"
+          onChange={(e) => { setText(e.target.value); if (valid) onChange(parseRanges(e.target.value, valid).picked); }}
+          onBlur={() => setText(formatRanges(idxs))} />
+        <button className="link-btn" onClick={onClear} title="Use all the material instead"><Icon name="close" size={12} /> All material</button>
+      </div>
+      {typed && typed.unknown.length > 0 && <span className="field-help">{file} has no {noun.toLowerCase()} {formatRanges(typed.unknown)}.</span>}
+      {typed && !typed.picked.length && <span className="field-help">Type which {noun.toLowerCase()} to use.</span>}
+    </div>
+  );
+}
 
 const FORM_TITLES: Record<string, string> = {
   flashcards: 'Create flashcards', quiz: 'Create a quiz', exam: 'Create an exam', notes: 'Compile full notes', cheatsheet: 'Create a cheat sheet',
@@ -21,16 +57,23 @@ export function ToolForm({ m, subject, chatTopic, onReplace }: { m: Message; sub
   const [focus, setFocus] = useState<string>(String(args.focus ?? ''));
   const [difficulty, setDifficulty] = useState<string>(String(args.difficulty ?? ''));
   const [exam, setExam] = useState<string>('');
+  // pages the model chose ({doc id: [idx]}); one file in practice
+  const initialUnits = (args.units ?? null) as Record<string, number[]> | null;
+  const [units, setUnits] = useState<Record<string, number[]> | null>(initialUnits && Object.keys(initialUnits).length ? initialUnits : null);
+  const unitDoc = units ? Number(Object.keys(units)[0]) : null;
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const ready = type !== 'exam' || (exam && difficulty);
+  const pagesOk = !units || Object.values(units).every((xs) => xs.length > 0);
+  const ready = (type !== 'exam' || (exam && difficulty)) && pagesOk;
   const submit = async () => {
     setBusy(true);
     setErr(null);
     try {
       const a: Record<string, unknown> = type === 'exam' ? { difficulty, practice_exam_path: exam }
-        : type === 'flashcards' || type === 'quiz' ? { count, focus } : { focus };
+        : type === 'quiz' ? { count, focus, ...(difficulty ? { difficulty } : {}) }
+        : type === 'flashcards' ? { count, focus } : { focus };
+      if (units) a.units = units;
       onReplace(await api.submitTool(m.id, a, topic));
     } catch (e) {
       setErr(String(e));
@@ -42,19 +85,35 @@ export function ToolForm({ m, subject, chatTopic, onReplace }: { m: Message; sub
   return (
     <div className="msg tool-card">
       <div className="tool-title">{FORM_TITLES[type]}</div>
+      {m.meta.notice && <div className="field-help tool-notice">{m.meta.notice}</div>}
       <div className="tool-grid">
-        <label className="field">
-          <span className="field-label">Material from</span>
-          <select value={topic ?? ''} onChange={(e) => setTopic(e.target.value ? Number(e.target.value) : null)}>
-            <option value="">All topics in {subject.name}</option>
-            {subject.topics.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-          </select>
-        </label>
+        {units && unitDoc !== null ? (
+          <PagesField docId={unitDoc} file={m.meta.file ?? 'the file'} idxs={units[String(unitDoc)] ?? []}
+            onChange={(idxs) => setUnits({ [String(unitDoc)]: idxs })} onClear={() => setUnits(null)} />
+        ) : (
+          <label className="field">
+            <span className="field-label">Material from</span>
+            <select value={topic ?? ''} onChange={(e) => setTopic(e.target.value ? Number(e.target.value) : null)}>
+              <option value="">All topics in {subject.name}</option>
+              {subject.topics.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+          </label>
+        )}
         {(type === 'flashcards' || type === 'quiz') && (
           <label className="field">
             <span className="field-label">{type === 'quiz' ? 'Questions' : 'Cards'}</span>
             <input className="input" type="number" min={1} max={type === 'quiz' ? 60 : 200} value={count} onChange={(e) => setCount(Number(e.target.value))} />
           </label>
+        )}
+        {type === 'quiz' && (
+          <div className="field">
+            <span className="field-label">Difficulty</span>
+            <div className="seg">
+              {[['easy', 'Easy'], ['normal', 'Normal'], ['hard', 'Hard']].map(([k, l]) => (
+                <button key={k} className={(difficulty || 'normal') === k ? 'active' : ''} onClick={() => setDifficulty(k)}>{l}</button>
+              ))}
+            </div>
+          </div>
         )}
         {type !== 'exam' && (
           <label className="field field-wide">
@@ -102,23 +161,20 @@ export function ToolForm({ m, subject, chatTopic, onReplace }: { m: Message; sub
 
 export function ArtifactCard({ id, initial, onOpen }: { id: number; initial: ArtifactSummary | null; onOpen: (id: number) => void }) {
   const [a, setA] = useState<ArtifactSummary | null>(initial);
-  const [gen, setGen] = useState(0); // bump to restart polling after a retry
   useEffect(() => {
     let alive = true;
-    let done = false;
+    // Progress arrives as library changes, not by polling. A finished card keeps listening (just its state, no
+    // content), so a Regenerate started elsewhere (the library, the viewer) shows here too.
     const tick = async () => {
-      if (done) return;
       try {
-        const r = await api.artifact(id);
-        if (!alive) return;
-        setA(r);
-        done = TERMINAL.includes(r.status);
-      } catch { if (alive) setA(null); }
+        const r = await api.artifactSummary(id);
+        if (alive) setA(r);
+      } catch (e) { if (alive && e instanceof ApiError && e.status === 404) setA(null); }
     };
     tick();
-    const off = onChange(['library'], tick);  // progress arrives as library changes, not by polling
+    const off = onChange(['library'], tick);
     return () => { alive = false; off(); };
-  }, [id, gen]);
+  }, [id]);
   if (!a) return <div className="msg msg-note muted small">This content was deleted.</div>;
   return (
     <div className={`msg artifact-card status-${a.status}`}>
@@ -139,7 +195,10 @@ export function ArtifactCard({ id, initial, onOpen }: { id: number; initial: Art
         {a.status === 'ready' && <button className="btn btn-sm btn-primary" onClick={() => onOpen(a.id)}>Open</button>}
         {(a.status === 'queued' || a.status === 'running') && <button className="link-btn" onClick={() => api.cancelArtifact(a.id)}>Cancel</button>}
         {(a.status === 'failed' || a.status === 'cancelled') && (
-          <button className="btn btn-sm" onClick={async () => { await api.retryArtifact(a.id); setGen((g) => g + 1); }}>Retry</button>
+          <button className="btn btn-sm" onClick={async () => {
+            await api.retryArtifact(a.id);
+            setA(await api.artifactSummary(a.id).catch(() => a));
+          }}>Retry</button>
         )}
       </div>
     </div>

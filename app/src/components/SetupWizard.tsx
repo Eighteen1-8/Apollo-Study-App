@@ -4,7 +4,7 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { api, Settings } from '../api';
-import { ONLINE_WARNING, OpenRouterModelField, PersonalityDials } from '../views/SettingsView';
+import { DIALS, ONLINE_WARNING, OpenRouterModelField, PersonalityDials } from '../views/SettingsView';
 import { MotionSeg, ThemeGrid } from './AppearancePickers';
 import { setPref } from '../prefs';
 import { logError } from '../log';
@@ -127,7 +127,7 @@ export default function SetupWizard({ subjectsCount, onFinished }: {
   const dots: Step[] = ['where', online ? 'online' : 'local', 'check', 'look', 'tutor', ...(subjectsCount ? [] : ['subject' as Step])];
   const at = step === 'online' || step === 'local' ? 1 : dots.indexOf(step);
   /** The tutor's dials are saved when leaving their page (onward or back). */
-  const saveTutor = () => api.saveSettings({ chat_assistive: s.chat_assistive ?? 1, chat_concise: s.chat_concise ?? 1, chat_interactive: s.chat_interactive ?? 1 })
+  const saveTutor = () => api.saveSettings(Object.fromEntries(DIALS.map((d) => [d.key, s[d.key] ?? d.def])))
     .catch((e) => logError('setup', e));
 
   return createPortal(

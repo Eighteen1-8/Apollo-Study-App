@@ -1,5 +1,5 @@
-/* Where annotations sit: text anchors (character offsets into a unit's text) to and from DOM ranges and boxes, note placement, and hit-testing ink strokes. */
-import { Stroke, TextAnchor } from '../api';
+/* Where annotations sit: text anchors (character offsets into a unit's text) to and from DOM ranges and boxes, note placement. */
+import { TextAnchor } from '../api';
 
 export const NOTE_W = 240; // px; note boxes stay readable at any zoom
 export const squash = (s: string) => s.replace(/\s+/g, ' ').trim();
@@ -113,15 +113,5 @@ export function notePlacement(anchor: TextAnchor, unitEl: Element) {
   };
 }
 
-// ---------------------------------------------------------------- per-unit overlay
+// (hit-testing ink strokes: components/ink.tsx nearStroke)
 
-export function nearStroke(s: Stroke, x: number, y: number, w: number, h: number, tol: number) {
-  const p = s.points;
-  for (let i = 0; i + 3 < p.length; i += 2) {
-    const ax = p[i] * w, ay = p[i + 1] * h, bx = p[i + 2] * w, by = p[i + 3] * h;
-    const dx = bx - ax, dy = by - ay;
-    const t = dx || dy ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy))) : 0;
-    if (Math.hypot(ax + t * dx - x, ay + t * dy - y) <= tol) return true;
-  }
-  return p.length === 2 && Math.hypot(p[0] * w - x, p[1] * h - y) <= tol;
-}

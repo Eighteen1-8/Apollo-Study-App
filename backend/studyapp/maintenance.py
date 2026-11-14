@@ -82,6 +82,10 @@ def _orphans() -> dict:
                 out["cache"] += [p for p in d.iterdir() if p.is_file() and f"{folder}/{p.name}" not in refs
                                  and (folder == "figures" or p.stat().st_mtime < old)]
         out["cache"] += [p for p in config.assets_dir().iterdir() if p.is_dir() and p.name.startswith("practice_")]
+        marking = config.assets_dir() / "marking"  # copies kept for a marking whose content is gone (e.g. its subject)
+        if marking.is_dir():
+            kept = {str(r["id"]) for r in db.q("SELECT id FROM artifacts WHERE type='marking'")}
+            out["cache"] += [p for p in marking.iterdir() if p.is_dir() and p.name not in kept]
     return out
 
 
@@ -100,7 +104,7 @@ def _stale_rows() -> dict:
 def overview():
     model = llm.embed_model()
     docs = db.q("""SELECT d.id, d.subject_id, d.topic_id, d.kind, d.filename, d.ext, d.sha256, d.size, d.status, d.error,
-                          d.unit_count, d.vision_total, d.vision_done, d.embed_model, d.parser_version, d.updated_at FROM documents d WHERE d.kind<>'trash' ORDER BY d.filename COLLATE NOCASE""")
+                          d.unit_count, d.vision_total, d.vision_done, d.embed_model, d.parser_version, d.render_error, d.updated_at FROM documents d WHERE d.kind<>'trash' ORDER BY d.filename COLLATE NOCASE""")
     per = lambda sql: {r["document_id"]: r for r in db.q(sql, (model,) if "?" in sql else ())}
     chunks = per("""SELECT document_id, SUM(source='text') text_chunks, SUM(source='vision') vision_chunks,
                     SUM(embedding IS NULL OR embed_model IS NOT ?) unembedded,
@@ -130,6 +134,8 @@ def overview():
             "vision_total": d["vision_total"], "vision_done": d["vision_done"], "vision_failed": u.get("vision_failed") or 0,
             "flags": (flags.get(d["id"]) or {}).get("flags", 0), "reviewing": d["id"] in reviewing,
             "old_parser": d["status"] in ("ready", "vision") and d["parser_version"] != PARSER_VERSION,
+            # why the viewer shows the simplified layout (render.py), only while no exact copy exists
+            "render_error": d["render_error"] if d["ext"] in render.OFFICE_EXTS and not rendered.exists() else None,
         })
 
     db_size = sum(p.stat().st_size for p in config.DATA_DIR.glob("study.db*") if p.is_file())

@@ -173,7 +173,7 @@ def review_document(doc_id: int, job, recheck=False):
             notes = u["vision_notes"] if u["vision_relevant"] else "IRRELEVANT (the vision model judged every visual decorative)"
             content = [{"type": "text", "text": f"Source: {doc['filename']}, {u['label']}\n\nExtracted text:\n{u['text'] or '(none)'}"
                                                 f"\n\nDescription to check:\n<<<\n{notes}\n>>>"}]
-            content += [llm.image_part(img, "image/png" if img[:4] == b"\x89PNG" else "image/jpeg") for img in images]
+            content += [llm.image_part(img) for img in images]  # type read from the bytes (llm.model_image)
             v = llm.chat_json([{"role": "system", "content": AUDIT_SYSTEM}, {"role": "user", "content": content}], Verdict,
                               max_tokens=6000, reasoning=reasoning, temperature=0)
         except Cancelled:

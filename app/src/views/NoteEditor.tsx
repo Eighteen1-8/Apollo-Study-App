@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
 import { createPortal } from 'react-dom';
-import { cellOf, changedTable, placeCaret, replaceTable, tabInTable, tableHtml, TableOp } from '../components/noteTable';
+import { arrowInTable, cellOf, changedTable, placeCaret, replaceTable, tabInTable, tableHtml, TableOp } from '../components/noteTable';
 import { api, Note, Quote, ReviewIssue, saveNoteOnExit, Subject } from '../api';
 import { MenuItem, useOverlay } from '../components/overlay';
 import Reviews, { useReviews } from '../components/Reviews';
@@ -17,6 +17,10 @@ import { quoteParts, replaceText, selectionIn } from '../components/textRange';
 import { logError } from '../log';
 import { getPref, setPref } from '../prefs';
 import Icon from '../components/Icon';
+import { toggleCalculator, useCalculatorOpen } from '../components/Calculator';
+import { AREA_DRAG, AreaDrag, imageHtml, QUOTE_DRAG, registerNoteInsert, takeQueued } from '../noteInsert';
+import { snapshotDataUrl } from '../components/addToNotes';
+import { TourButton, useFirstTime } from '../components/Tour';
 
 const FONTS: [string, string][] = [
   ['', 'Default font'], ['Segoe UI, sans-serif', 'Segoe UI'], ['Calibri, sans-serif', 'Calibri'], ['Arial, sans-serif', 'Arial'],
@@ -67,13 +71,20 @@ export default function NoteEditor({ id, subject, onClose, onAsk, onAttach }: {
   }, [reviews.data]);
   const shot = useAreaShot(title || 'note', onAttach, (msg) => ov.confirm({ title: "Couldn't take a screenshot", body: msg, confirmText: 'OK' }));
 
+  const loads = useRef(0);
+  const insertRef = useRef<(html: string) => void>(() => {});
   const load = useCallback(async () => {
+    const mine = ++loads.current;
     const n = await api.note(id);
+    if (mine !== loads.current) return; // a newer load is on its way (StrictMode runs the effect twice): it sets the page
     setNote(n);
     setTitle(n.title);
     if (editor.current) editor.current.innerHTML = clean(n.html);
     dirty.current = false;
     setState('saved');
+    // content sent here before the note was open ("Add to notes" → a note picked or made): only now, after the page
+    // is filled, so a load can never wipe it
+    takeQueued(id).forEach((html) => insertRef.current(clean(html)));
   }, [id]);
   useEffect(() => { load().catch((e) => logError('opening a note', e)); }, [load]);
 
@@ -112,6 +123,63 @@ export default function NoteEditor({ id, subject, onClose, onAsk, onAttach }: {
     window.addEventListener('pagehide', flush);
     return () => window.removeEventListener('pagehide', flush);
   }, [id]);
+
+  // ---- "Insert into the open note" (noteInsert.ts: the calculator, Add to notes from a file or the chat): where the
+  // cursor last was in the page (the other panel has the focus by then), or the end, through insertHTML so Ctrl+Z
+  // takes it out again
+  const lastRange = useRef<Range | null>(null);
+  const insertAt = (html: string, at?: Range | null) => {
+    const root = editor.current;
+    if (!root) return;
+    root.focus();
+    const sel = window.getSelection()!;
+    let r = at ?? lastRange.current;
+    if (!r || !root.contains(r.startContainer)) { r = document.createRange(); r.selectNodeContents(root); r.collapse(false); }
+    sel.removeAllRanges();
+    sel.addRange(r);
+    document.execCommand('insertHTML', false, html);
+    changed();
+  };
+  const titleRef = useRef(title);
+  titleRef.current = title;
+  useEffect(() => {
+    const keep = () => {
+      const sel = window.getSelection();
+      if (sel?.rangeCount && editor.current?.contains(sel.anchorNode)) lastRange.current = sel.getRangeAt(0).cloneRange();
+    };
+    document.addEventListener('selectionchange', keep);
+    const off = registerNoteInsert((html) => insertAt(html), { noteId: id, title: () => titleRef.current || 'Untitled note' });
+    return () => { document.removeEventListener('selectionchange', keep); off(); };
+  }, [save]); // eslint-disable-line react-hooks/exhaustive-deps
+  insertRef.current = insertAt;
+
+  // ---- drops: a quote dragged from a file or the chat (QUOTE_DRAG, with its source line) goes in at the drop point;
+  // a screenshot area of a file (AREA_DRAG) is taken first, then put where it was dropped. Anything else (moving text
+  // within the note) is left to the browser.
+  const rangeAt = (x: number, y: number): Range | null => {
+    const r = document.caretRangeFromPoint?.(x, y) ?? null;
+    return r && editor.current?.contains(r.startContainer) ? r : null;
+  };
+  const onDragOver = (e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes(AREA_DRAG) && !e.dataTransfer.types.includes(QUOTE_DRAG)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  };
+  const onDrop = (e: React.DragEvent) => {
+    const dt = e.dataTransfer;
+    if (dt.types.includes(AREA_DRAG)) {
+      e.preventDefault();
+      const a = JSON.parse(dt.getData(AREA_DRAG)) as AreaDrag;
+      const at = rangeAt(e.clientX, e.clientY);
+      snapshotDataUrl(a).then((src) => insertAt(imageHtml(src, a.source), at))
+        .catch((err) => ov.confirm({ title: "Couldn't take a screenshot", body: String(err).replace(/^Error: /, ''), confirmText: 'OK' }));
+    } else if (dt.types.includes(QUOTE_DRAG) && dt.getData('text/html')) {
+      e.preventDefault();
+      insertAt(clean(dt.getData('text/html')), rangeAt(e.clientX, e.clientY));
+    }
+  };
+  const calcOpen = useCalculatorOpen();
+  useFirstTime('notes', !!note);
 
   const saveTitle = async (t: string) => {
     const v = t.trim() || 'Untitled note';
@@ -191,9 +259,33 @@ export default function NoteEditor({ id, subject, onClose, onAsk, onAttach }: {
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(); }
-    // Tab moves between table cells (Tab in the last cell adds a row)
-    if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && editor.current && tabInTable(editor.current, e.shiftKey)) { e.preventDefault(); changed(); }
+    // Tab moves between table cells (Tab in the last cell adds a row); Up/Down keep the column. Only a real change saves.
+    const plain = !e.ctrlKey && !e.altKey && !e.metaKey;
+    const done = !editor.current || !plain ? false
+      : e.key === 'Tab' ? tabInTable(editor.current, e.shiftKey)
+      : (e.key === 'ArrowDown' || e.key === 'ArrowUp') && !e.shiftKey ? arrowInTable(editor.current, e.key === 'ArrowDown')
+      : false;
+    if (done) { e.preventDefault(); if (done === 'changed') changed(); placeRing(); }
   };
+
+  // ---- the ring around the table cell holding the cursor (the page has the focus, so `td:focus-within` never matches,
+  // and a class on the cell would be saved with the note)
+  const scroller = useRef<HTMLDivElement>(null);
+  const [ring, setRing] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
+  const placeRing = useCallback(() => {
+    const sel = window.getSelection();
+    const cell = sel?.rangeCount && document.activeElement === editor.current ? cellOf(sel.anchorNode, editor.current) : null;
+    const box = scroller.current;
+    if (!cell || !box) { setRing((r) => (r ? null : r)); return; }
+    const c = cell.getBoundingClientRect(), b = box.getBoundingClientRect();
+    const next = { top: c.top - b.top + box.scrollTop, left: c.left - b.left + box.scrollLeft, width: c.width, height: c.height };
+    setRing((r) => (r && r.top === next.top && r.left === next.left && r.width === next.width && r.height === next.height ? r : next));
+  }, []);
+  useEffect(() => {
+    document.addEventListener('selectionchange', placeRing);
+    window.addEventListener('resize', placeRing);
+    return () => { document.removeEventListener('selectionchange', placeRing); window.removeEventListener('resize', placeRing); };
+  }, [placeRing]);
 
   // ---- tables
   const [tablePick, setTablePick] = useState<DOMRect | null>(null);
@@ -367,6 +459,7 @@ export default function NoteEditor({ id, subject, onClose, onAsk, onAttach }: {
           Comments{active ? ` (${active})` : ''}
         </button>
         <button className="btn btn-sm" onClick={exportMenu}>Export <Icon name="chevronDown" size={14} /></button>
+        <TourButton id="notes" />
         <button className="close-x" title="Close" onClick={onClose}><Icon name="close" size={18} /></button>
       </header>
       <div className="ne-toolbar" role="toolbar" aria-label="Formatting">
@@ -398,13 +491,13 @@ export default function NoteEditor({ id, subject, onClose, onAsk, onAttach }: {
             <button className="ne-btn ne-color" data-tip="Text colour" aria-label="Text colour" onMouseDown={(e) => e.preventDefault()} onClick={() => foreColor(textColor)}>
               <span className="ne-a">A</span><span className="ne-swatch" style={{ background: textColor }} />
             </button>
-            <button className="ne-btn ne-caret" data-tip="More text colours" aria-label="More text colours" onMouseDown={(e) => colourPopover(e, 'text')}><Icon name="chevronDown" size={12} /></button>
+            <button className="ne-btn ne-caret" data-tip="More text colours" aria-label="More text colours" onMouseDown={(e) => e.preventDefault()} onClick={(e) => colourPopover(e, 'text')}><Icon name="chevronDown" size={12} /></button>
           </span>
           <span className="ne-split">
             <button className="ne-btn ne-hl" data-tip="Highlight" aria-label="Highlight" onMouseDown={(e) => e.preventDefault()} onClick={() => highlight(hlColor)}>
               <HighlighterIcon /><span className="ne-swatch" style={{ background: highlightCss(hlColor) }} />
             </button>
-            <button className="ne-btn ne-caret" data-tip="Highlight colours" aria-label="Highlight colours" onMouseDown={(e) => colourPopover(e, 'hilite')}><Icon name="chevronDown" size={12} /></button>
+            <button className="ne-btn ne-caret" data-tip="Highlight colours" aria-label="Highlight colours" onMouseDown={(e) => e.preventDefault()} onClick={(e) => colourPopover(e, 'hilite')}><Icon name="chevronDown" size={12} /></button>
           </span>
         </div>
         <div className="ne-group">
@@ -426,6 +519,12 @@ export default function NoteEditor({ id, subject, onClose, onAsk, onAttach }: {
           {tb(<RuleIcon />, 'Horizontal line', () => exec('insertHorizontalRule'))}
           {tb(<ClearIcon />, 'Clear formatting', () => { exec('removeFormat'); exec('formatBlock', 'P'); })}
         </div>
+        <div className="ne-group">
+          <button className={`ne-btn tool-calc${calcOpen ? ' on' : ''}`} data-tip={calcOpen ? 'Close the calculator' : 'Calculator and graphs (it can insert results into this note)'}
+            aria-label="Calculator" aria-pressed={calcOpen} onMouseDown={(e) => e.preventDefault()} onClick={toggleCalculator}>
+            <Icon name="calculator" size={16} />
+          </button>
+        </div>
         <span className="ne-fill" />
         <div className="ne-group">
           {tb(<UndoIcon />, 'Undo (Ctrl+Z)', () => exec('undo'))}
@@ -433,10 +532,11 @@ export default function NoteEditor({ id, subject, onClose, onAsk, onAttach }: {
         </div>
       </div>
       <div className="ne-body">
-        <div className="ne-scroll" onPointerDown={shot.onPointerDown} onContextMenu={contextMenu}>
+        <div ref={scroller} className="ne-scroll" onPointerDown={shot.onPointerDown} onContextMenu={contextMenu}>
           <div ref={editor} className="ne-page" contentEditable suppressContentEditableWarning spellCheck data-find="this note"
             data-placeholder="Start writing… (these notes are yours: they're never added to the material Apollo learns from)"
-            onInput={changed} onPaste={onPaste} onKeyDown={onKeyDown} onBlur={save} />
+            onInput={() => { changed(); placeRing(); }} onPaste={onPaste} onKeyDown={onKeyDown} onDragOver={onDragOver} onDrop={onDrop} onBlur={() => { save(); placeRing(); }} onFocus={placeRing} />
+          {ring && <div className="ne-cell-ring" style={ring} aria-hidden />}
         </div>
         {showReviews && (
           <Reviews target="note" id={id} list={reviews.data ?? []} onApplied={() => { reviews.reload(); load(); }}
@@ -460,9 +560,15 @@ function TablePicker({ at, onPick, onClose }: { at: DOMRect; onPick: (rows: numb
     window.addEventListener('keydown', esc);
     return () => { window.removeEventListener('mousedown', away, true); window.removeEventListener('keydown', esc); };
   }, [onClose]);
+  // below the button, or above it when there's no room below
+  const [top, setTop] = useState(at.bottom + 6);
+  useLayoutEffect(() => {
+    const h = box.current?.offsetHeight ?? 0;
+    if (at.bottom + 6 + h > window.innerHeight - 8 && at.top - 6 - h >= 8) setTop(at.top - 6 - h);
+  }, [at]);
   const ROWS = 10, COLS = 8;
   return createPortal(
-    <div ref={box} className="table-pick" style={{ top: at.bottom + 6, left: Math.min(at.left, window.innerWidth - 230) }}
+    <div ref={box} className="table-pick" style={{ top, left: Math.max(8, Math.min(at.left, window.innerWidth - 230)) }}
       onMouseDown={(e) => e.preventDefault()}>
       <div className="table-pick-grid" style={{ gridTemplateColumns: `repeat(${COLS}, 18px)` }}>
         {Array.from({ length: ROWS * COLS }, (_, i) => {

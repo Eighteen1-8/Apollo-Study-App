@@ -6,7 +6,7 @@
 /* ################################################################ App shell */
 
 /* ================================================================ tooltips */
-.tooltip { position: fixed; z-index: 300; pointer-events: none; width: max-content; max-width: 300px; padding: 5px 10px; border-radius: 8px;
+.tooltip { position: fixed; z-index: var(--z-tooltip); pointer-events: none; width: max-content; max-width: 300px; padding: 5px 10px; border-radius: 8px;
   background: var(--tip-bg); color: #f1f3f9; border: 1px solid color-mix(in srgb, white 10%, transparent); box-shadow: var(--shadow-lg);
   font-size: 13px; font-weight: 500; line-height: 1.4; white-space: pre-line; overflow-wrap: anywhere; }
 .tooltip-top { transform: translate(-50%, -100%); animation: tt-top 0.18s var(--ease-out); }
@@ -23,7 +23,7 @@
 :root.own-titlebar { --titlebar-h: 34px; }
 .app { grid-template-rows: var(--titlebar-h) minmax(0, 1fr); }
 .minibar, .main { grid-row: 2; }
-.titlebar { grid-column: 1 / -1; grid-row: 1; position: relative; z-index: 35; display: flex; align-items: center; gap: 8px;
+.titlebar { grid-column: 1 / -1; grid-row: 1; position: relative; z-index: var(--z-titlebar); display: flex; align-items: center; gap: 8px;
   padding: 0 150px 0 18px; background: var(--minibar-bg); color: var(--text-faint); font-size: 13px; user-select: none;
   -webkit-app-region: drag; app-region: drag; }
 .titlebar::after { content: ''; position: absolute; left: 68px; right: 0; bottom: 0; height: 1px; background: var(--border); }
@@ -90,7 +90,7 @@
 /* ================================================================ toasts */
 /* The stack spans the window and centres each toast; the older stand-alone .toast rule (fixed, left 50%, translate)
    in 3-layout/4-themes is undone here, or each toast is laid out against the stack and squeezed to a sliver. */
-.toasts { position: fixed; left: 16px; right: 16px; bottom: 22px; z-index: 300; display: grid; gap: 8px; justify-items: center; pointer-events: none; }
+.toasts { position: fixed; left: 16px; right: 16px; bottom: 22px; z-index: var(--z-toast); display: grid; gap: 8px; justify-items: center; pointer-events: none; }
 .toast { position: relative; left: auto; bottom: auto; transform: none; max-width: min(560px, 100%); pointer-events: auto; display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 14px; border-radius: 12px; font-size: 13px;
   background: var(--glass-strong, var(--bg-elev)); backdrop-filter: blur(18px); border: 1px solid var(--border-strong); box-shadow: var(--shadow-lg); animation: rise 0.25s var(--ease-out); }
 .toast-action { border: none; background: var(--accent-soft); color: var(--accent-strong); font: inherit; font-weight: 600; padding: 4px 10px; border-radius: 8px; cursor: pointer; }
@@ -152,6 +152,9 @@
 /* ================================================================ menus: scroll when tall, colour dots */
 .ctx-menu { overflow-y: auto; overscroll-behavior: contain; }
 .ctx-menu.ctx-sub { position: fixed; }
+/* keyboard use (overlay.menuKey) moves the focus through the items */
+.ctx-item:focus-visible { outline: none; background: var(--accent-soft); color: var(--accent-strong); box-shadow: inset 0 0 0 1px var(--accent); }
+.ctx-dot:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .ctx-swatch-row { display: flex; align-items: center; gap: 10px; padding: 5px 8px 5px 11px; font-size: 13.5px; }
 .ctx-swatch-row .ctx-label { flex: none; color: var(--text); }
 .ctx-dots { display: flex; gap: 5px; margin-left: auto; }
@@ -193,7 +196,7 @@
 .workspace > .side { min-width: 0; overflow: hidden; transition: opacity 0.25s; }
 .workspace.left-folded > .side-left, .workspace.right-folded > .side-right { opacity: 0; pointer-events: none; border-width: 0; }
 
-.side-resizer { position: absolute; top: 0; bottom: 0; z-index: 12; width: 10px; cursor: col-resize; touch-action: none; outline: none; }
+.side-resizer { position: absolute; top: 0; bottom: 0; z-index: var(--z-resizer); width: 10px; cursor: col-resize; touch-action: none; outline: none; }
 .side-resizer-left { left: calc(var(--lw) - 5px); }
 .side-resizer-right { right: calc(var(--rw) - 5px); }
 .side-grip { position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; margin-left: -1px; border-radius: 2px; background: transparent;
@@ -310,7 +313,7 @@ body.row-resizing, body.row-resizing * { cursor: row-resize !important; user-sel
 .chat-shell.halves { border-radius: 0; border-color: transparent; box-shadow: none; backdrop-filter: none; background: var(--bg-elev); }
 .chat-shell.halves.dock-right { border-left-color: var(--border); }
 .chat-shell.halves.dock-left { border-right-color: var(--border); }
-.chat-split-divider { position: absolute; top: 0; bottom: 0; width: 10px; z-index: 21; cursor: col-resize; }
+.chat-split-divider { position: absolute; top: 0; bottom: 0; width: 10px; z-index: var(--z-chat-divider); cursor: col-resize; }
 .chat-split-divider::before { content: ''; position: absolute; left: 4.5px; top: 0; bottom: 0; width: 1px; background: transparent; transition: background 0.15s, width 0.15s; }
 .chat-split-divider:hover::before, .center.chat-sizing .chat-split-divider::before { background: var(--accent); width: 2px; left: 4px; }
 .center.chat-sizing .center-panes, .center.chat-sizing .cloud-pane { pointer-events: none; user-select: none; }
@@ -359,7 +362,7 @@ button.ctx-meter { cursor: pointer; }
 /* ################################################################ Find and highlights */
 
 /* ================================================================ find (Ctrl+F) and highlights painted with CSS Custom Highlights */
-.find-bar { position: fixed; z-index: 95; display: flex; align-items: center; gap: 4px; padding: 5px 6px 5px 10px; border-radius: 10px;
+.find-bar { position: fixed; z-index: var(--z-find); /* over the full-screen viewer (80), under dialogs (90) and menus (100) */ display: flex; align-items: center; gap: 4px; padding: 5px 6px 5px 10px; border-radius: 10px;
   background: var(--bg-elev); border: 1px solid var(--border-strong); box-shadow: var(--shadow); animation: rise 0.18s var(--ease-out); }
 .find-input { width: 220px; background: none; border: none; outline: none; color: var(--text); font: inherit; font-size: 13.5px; }
 .find-count { font-size: 13px; color: var(--text-faint); min-width: 64px; text-align: right; font-variant-numeric: tabular-nums; }
@@ -371,7 +374,7 @@ button.ctx-meter { cursor: pointer; }
 ::highlight(mark-pink) { background-color: rgba(244, 114, 182, 0.38); }
 
 /* right-drag screenshot box (areaShot.tsx) */
-.shot-box { position: fixed; z-index: 90; pointer-events: none; border: 1.5px dashed var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent);
+.shot-box { position: fixed; z-index: var(--z-dialog); pointer-events: none; border: 1.5px dashed var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent);
   border-radius: 3px; }
 .shot-box:not(.dragging) { border-style: solid; box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.12); }
 
@@ -417,9 +420,11 @@ button.ctx-meter { cursor: pointer; }
 .ne-page hr { border: none; border-top: 1px solid var(--border-strong); margin: 14px 0; }
 .ne-page img { max-width: 100%; }
 .ne-page table { border-collapse: collapse; margin: 8px 0 10px; min-width: 40%; max-width: 100%; }
-.ne-page td, .ne-page th { border: 1px solid var(--border-strong); padding: 5px 9px; min-width: 48px; vertical-align: top; text-align: left; }
+.ne-page td, .ne-page th { border: 1px solid var(--border-strong); padding: 5px 9px; min-width: 4em; vertical-align: top; text-align: left; overflow-wrap: break-word; }
 .ne-page th { background: var(--bg-elev-2); font-weight: 650; }
-.ne-page td:focus-within, .ne-page th:focus-within { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: -2px; }
+/* the cell holding the cursor (NoteEditor.placeRing: the page has the focus, never the cell) */
+.ne-scroll { position: relative; }
+.ne-cell-ring { position: absolute; pointer-events: none; border-radius: 2px; box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent); }
 
 /* ================================================================ note toolbar: grouped, icons, pressed states */
 .ne-toolbar { gap: 6px; padding: 6px 12px; row-gap: 6px; }
@@ -476,7 +481,6 @@ button.ctx-meter { cursor: pointer; }
 /* ################################################################ Generated content */
 
 /* ================================================================ mind maps */
-.t-mindmap { background: rgba(67, 211, 158, 0.14); color: #6ee7b7; }
 .artifact-scroll.is-map { padding: 0; overflow: hidden; position: relative; }
 .mindmap { position: absolute; inset: 0; cursor: grab; user-select: none; touch-action: none; }
 .mindmap:active { cursor: grabbing; }
@@ -575,14 +579,14 @@ button.ctx-meter { cursor: pointer; }
 .chat-head .head-tool.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
 
 /* the note toolbar's table size picker */
-.table-pick { position: fixed; z-index: 1000; padding: 10px; border-radius: 10px; background: var(--bg-elev); border: 1px solid var(--border-strong); box-shadow: var(--shadow-lg, 0 12px 32px rgba(0,0,0,0.35)); }
+.table-pick { position: fixed; z-index: var(--z-menu); padding: 10px; border-radius: 10px; background: var(--bg-elev); border: 1px solid var(--border-strong); box-shadow: var(--shadow-lg, 0 12px 32px rgba(0,0,0,0.35)); }
 .table-pick-grid { display: grid; gap: 3px; }
 .table-pick-cell { width: 18px; height: 18px; padding: 0; border-radius: 3px; border: 1px solid var(--border-strong); background: var(--bg); cursor: pointer; }
 .table-pick-cell.on { background: color-mix(in srgb, var(--accent) 45%, transparent); border-color: var(--accent); }
 .table-pick-size { margin-top: 8px; font-size: 13px; text-align: center; }
 
 /* the find bar's drag grip */
-.find-bar .find-grip { cursor: grab; color: var(--text-faint); font-size: 12px; letter-spacing: -2px; padding: 4px 6px 4px 0; user-select: none; touch-action: none; }
+.find-bar .find-grip { display: inline-flex; cursor: grab; color: var(--text-faint); padding: 4px 4px 4px 0; user-select: none; touch-action: none; }
 .find-bar .find-grip:active { cursor: grabbing; }
 .find-bar .find-grip:hover { color: var(--text-dim); }
 
@@ -706,7 +710,10 @@ details.expert-section > summary .muted { display: block; margin-top: 4px; }
 [data-mode="standard"] .file-more:hover, [data-mode="standard"] .lib-more:hover, [data-mode="standard"] .subj-more:hover,
 [data-mode="standard"] .ch-del:hover, [data-mode="standard"] .todo-x:hover { opacity: 1; }
 [data-mode="standard"] .home-card-arrow { opacity: 0.6; transform: none; }
-.text-size-seg button { min-width: 96px; }
+/* Settings → Appearance → UI size (AppearancePickers.UiScaleControl) */
+.ui-scale { display: flex; align-items: center; gap: 8px; max-width: 520px; }
+.ui-scale input[type="range"] { flex: 1; min-width: 120px; }
+.ui-scale-val { min-width: 48px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
 /* the chat's bottom bar keeps one line at the floating chat's default width with the larger text */
 .composer-bar .pill-btn { padding: 5px 9px; gap: 4px; }
 
@@ -721,6 +728,8 @@ details.expert-section > summary .muted { display: block; margin-top: 4px; }
 .kind-cheatsheet { --tc: #c4b5fd; }
 .kind-mindmap { --tc: #f9a8d4; }
 .t-mindmap { background: rgba(244, 114, 182, 0.14); color: #f9a8d4; }
+.kind-marking { --tc: #67e8f9; }
+.t-marking { background: rgba(34, 211, 238, 0.14); color: #67e8f9; }
 .t-chat { background: color-mix(in srgb, var(--busy) 16%, transparent); color: var(--busy); }
 
 /* ---- Start studying: a glowing pill in front of the darkened, still map; "explore" fades it away and unlocks the map */
@@ -763,7 +772,7 @@ details.expert-section > summary .muted { display: block; margin-top: 4px; }
 /* ---- the map dims while studying; a line in the middle first ("Let's get started.") */
 .center > .cloud-pane { transition: opacity 0.7s var(--ease-out), filter 0.7s var(--ease-out); }
 .center.cloud-dim > .cloud-pane { opacity: 0.28; filter: blur(2px) saturate(0.8); }
-.study-intro { position: absolute; inset: 0; z-index: 14; display: grid; place-items: center; pointer-events: none; }
+.study-intro { position: absolute; inset: 0; z-index: var(--z-study-intro); display: grid; place-items: center; pointer-events: none; }
 .study-intro span { font-size: clamp(26px, 3vw, 44px); font-weight: 700; letter-spacing: -0.01em; text-align: center; padding: 0 24px;
   color: var(--text); text-shadow: 0 2px 24px var(--bg), 0 0 60px var(--bg), 0 0 36px var(--accent-glow); animation: intro-in 0.6s 0.25s var(--ease-out) both; }
 .study-intro:not(.on) span { animation: intro-out 0.4s var(--ease-out) both; }
@@ -771,7 +780,7 @@ details.expert-section > summary .muted { display: block; margin-top: 4px; }
 @keyframes intro-out { to { opacity: 0; transform: translateY(-8px); filter: blur(4px); } }
 
 /* ---- the sheet over the centre: fades in, and lets the map show through */
-.study-sheet { position: absolute; left: 0; right: 0; top: 70px; bottom: 0; z-index: 15; display: flex; flex-direction: column;
+.study-sheet { position: absolute; left: 0; right: 0; top: 70px; bottom: 0; z-index: var(--z-study-sheet); display: flex; flex-direction: column;
   background: linear-gradient(180deg, color-mix(in srgb, var(--bg-elev-2) 52%, transparent), color-mix(in srgb, var(--bg) 58%, transparent) 45%);
   backdrop-filter: blur(14px) saturate(1.2); border-radius: 28px 28px 0 0; border: 1px solid color-mix(in srgb, var(--border) 80%, transparent); border-bottom: 0;
   box-shadow: 0 -30px 80px -30px rgba(0, 0, 0, 0.5), 0 1px 0 var(--hairline) inset;
@@ -787,14 +796,15 @@ details.expert-section > summary .muted { display: block; margin-top: 4px; }
 .chat-shell.tucked { opacity: 0; pointer-events: none; transform: translateY(16px) scale(0.96); }
 
 /* ---- the study panel */
-.study { max-width: 1000px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+.study { max-width: 1240px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
 .study-ask, .study-card { border-radius: 20px; border: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
   background: color-mix(in srgb, var(--bg-elev) 48%, transparent); backdrop-filter: blur(10px);
   box-shadow: 0 0 0 1px var(--hairline) inset, 0 24px 60px -40px rgba(0, 0, 0, 0.7); }
 .study-sheet.open .study > * { animation: rise 0.6s calc(0.12s + var(--i, 0) * 80ms) var(--ease-out) both; }
 .study-row { --i: 1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .study > .study-card { --i: 2; }
-.study-ask { position: relative; padding: 18px 20px 16px; display: flex; flex-direction: column; gap: 12px; overflow: hidden;
+/* not overflow: hidden (it clipped the slash menu); z-index keeps that menu over the cards below */
+.study-ask { position: relative; z-index: 2; padding: 18px 20px 16px; display: flex; flex-direction: column; gap: 12px;
   border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
   background: radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 55%), color-mix(in srgb, var(--bg-elev) 48%, transparent); }
 .study-ask-head { display: flex; align-items: center; gap: 10px; font-size: 16px; }
@@ -802,14 +812,23 @@ details.expert-section > summary .muted { display: block; margin-top: 4px; }
   background: radial-gradient(circle at 35% 30%, color-mix(in srgb, var(--accent), white 35%), var(--accent) 60%); box-shadow: 0 0 18px -2px var(--accent-glow);
   animation: orb-float 4s ease-in-out infinite; }
 @keyframes orb-float { 50% { transform: translateY(-2px); box-shadow: 0 0 26px 0 var(--accent-glow); } }
-.study-ask-row { display: flex; gap: 10px; align-items: flex-end; }
+/* the send button sits inside the box's bottom-right corner, like the chat's composer */
+.study-ask-row { position: relative; display: flex; }
 .study-ask-row textarea { flex: 1; min-width: 0; min-height: 104px; resize: none; font: inherit; font-size: 16.5px; line-height: 1.45; color: var(--text);
-  padding: 16px 20px; border-radius: 18px; outline: none;
+  padding: 16px 82px 16px 20px; border-radius: 18px; outline: none;
   background: color-mix(in srgb, var(--bg) 55%, transparent); border: 1px solid var(--border-strong); transition: border-color 0.2s, box-shadow 0.2s; }
 .study-ask-row textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft), 0 0 30px -10px var(--accent-glow); }
 .study-ask-row textarea::placeholder { color: var(--text-faint); transition: opacity 0.4s; }
 .study-ask-row textarea.swap::placeholder { opacity: 0; }
-.study-ask-row .send-btn { width: 48px; height: 48px; flex-shrink: 0; border: none; cursor: pointer; }
+/* centred in the box's height (top + bottom + auto margins, so the hover transform stays free) */
+.study-ask-row .send-btn { position: absolute; right: 14px; top: 0; bottom: 0; margin: auto 0; width: 52px; height: 52px; border-radius: 16px; }
+.study-ask-row .slash-menu { top: calc(100% + 6px); bottom: auto; z-index: 6; }
+.study-ask-row.dropping textarea { border-color: var(--accent); border-style: dashed; background: var(--accent-soft); }
+.study-ask .attach-row { margin: 0; }
+/* the chat's "Reply" button over a selection in one of Apollo's answers (portalled to the body, fixed to the window),
+   and the quoted part lit up when a sent reply's quote is clicked */
+.ask-pop.reply-pop { position: fixed; z-index: var(--z-reply-pop); min-width: 0; }
+::highlight(reply-quote) { background-color: color-mix(in srgb, var(--accent) 35%, transparent); }
 .study-ideas { display: flex; flex-wrap: wrap; gap: 8px; }
 .study-idea { font: inherit; font-size: 13px; color: var(--text-dim); padding: 6px 13px; border-radius: 999px; cursor: pointer; border: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg-elev-2) 70%, transparent); transition: color 0.2s, border-color 0.2s, background 0.2s, transform 0.3s var(--ease-spring); }
@@ -1013,7 +1032,7 @@ details.expert-section > summary .muted { display: block; margin-top: 4px; }
 .tool-btn.rail-toggle { width: auto; height: 30px; font-size: 13px; }
 .tools-sep { width: 1px; height: 22px; background: var(--border); margin: 0 6px; flex-shrink: 0; }
 .source-tools .zoom { flex-shrink: 0; }
-[data-mode="advanced"] .tool-btn.labelled > span:not(.rail-dot):not(.reingest-dot) { display: none; }
+[data-mode="advanced"] .tool-btn.labelled > span:not(.rail-dot) { display: none; }
 [data-mode="advanced"] .tool-btn.labelled { padding: 0 8px; }
 /* topic cards: their Add / Create buttons are icons (named in their tips), so the topic name keeps the room */
 .side .topic .icon-btn.topic-label-btn { font-size: 0; width: 30px; gap: 0; }
@@ -1023,7 +1042,6 @@ details.expert-section > summary .muted { display: block; margin-top: 4px; }
 [data-mode="advanced"] .side .topic-row:not(:hover):not(:focus-within) .topic-actions { display: none; }
 [data-mode="standard"] .side .topic-name { white-space: normal; overflow-wrap: anywhere; line-height: 1.2;
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-.study-ask-row .send-btn { position: static; margin: 0; }
 /* daylight: the content colours, dark enough to read on white */
 :root[data-tone="light"] .kind-flashcards, :root[data-tone="light"] .t-flashcards { --tc: #059669; color: #059669; }
 :root[data-tone="light"] .kind-quiz, :root[data-tone="light"] .t-quiz { --tc: #b45309; color: #b45309; }
@@ -1031,12 +1049,13 @@ details.expert-section > summary .muted { display: block; margin-top: 4px; }
 :root[data-tone="light"] .kind-notes, :root[data-tone="light"] .t-notes { --tc: #2563eb; color: #2563eb; }
 :root[data-tone="light"] .kind-cheatsheet, :root[data-tone="light"] .t-cheatsheet { --tc: #7c3aed; color: #7c3aed; }
 :root[data-tone="light"] .kind-mindmap, :root[data-tone="light"] .t-mindmap { --tc: #db2777; color: #db2777; }
+:root[data-tone="light"] .kind-marking, :root[data-tone="light"] .t-marking { --tc: #0e7490; color: #0e7490; }
 :root[data-tone="light"] .lib-kind, :root[data-tone="light"] .study-maker, :root[data-tone="light"] .make-choice:not(.on) { color: var(--text); }
 :root[data-tone="light"] .res-books { --tint: #d97706; }
 
 /* ================================================================ first-run setup, tour, help markers (Phase 4) */
 /* ---- setup (components/SetupWizard.tsx): a full-window starfield with one glass card */
-.setup { position: fixed; inset: 0; z-index: 200; display: flex; padding: 24px; overflow-y: auto;
+.setup { position: fixed; inset: 0; z-index: var(--z-setup); display: flex; padding: 24px; overflow-y: auto;
   background: radial-gradient(900px 600px at 50% 18%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 70%),
     radial-gradient(700px 500px at 85% 90%, var(--glow-b, transparent), transparent 70%), var(--bg); animation: fade-in 0.5s var(--ease-out); }
 .setup-stars { position: absolute; inset: 0; pointer-events: none; opacity: 0.7;
@@ -1121,7 +1140,7 @@ details.expert-section > summary .muted { display: block; margin-top: 4px; }
 .motion-seg button { min-width: 74px; }
 
 /* ---- the tour (components/Tour.tsx): everything dims except the area a tip is about */
-.tour { position: fixed; inset: 0; z-index: 180; }
+.tour { position: fixed; inset: 0; z-index: var(--z-tour); }
 .tour-dim { position: absolute; inset: 0; background: rgba(4, 6, 12, 0.62); }
 .tour-hole { position: absolute; border-radius: 18px; box-shadow: 0 0 0 9999px rgba(4, 6, 12, 0.62), 0 0 0 2px var(--accent), 0 0 40px 4px var(--accent-glow);
   transition: left 0.45s var(--ease-out), top 0.45s var(--ease-out), width 0.45s var(--ease-out), height 0.45s var(--ease-out); pointer-events: none; }
@@ -1133,14 +1152,14 @@ details.expert-section > summary .muted { display: block; margin-top: 4px; }
 .tour-foot { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
 
 /* ---- a model can't be reached (App.tsx ModelCheck) */
-.model-check { position: relative; z-index: 30; display: flex; align-items: center; gap: 12px; margin: 10px 14px 0; padding: 10px 12px 10px 16px; border-radius: 16px;
+.model-check { position: relative; z-index: var(--z-banner); display: flex; align-items: center; gap: 12px; margin: 10px 14px 0; padding: 10px 12px 10px 16px; border-radius: 16px;
   border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent); background: color-mix(in srgb, var(--bad) 9%, var(--glass-strong)); backdrop-filter: blur(16px);
   box-shadow: 0 12px 30px -18px color-mix(in srgb, var(--bad) 80%, transparent); animation: rise 0.45s var(--ease-out) both; }
 .model-check-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; background: var(--bad); box-shadow: 0 0 0 0 var(--bad); animation: mc-pulse 1.8s ease-out infinite; }
 @keyframes mc-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--bad) 60%, transparent); } 100% { box-shadow: 0 0 0 10px transparent; } }
 .model-check-text { flex: 1; min-width: 0; display: flex; flex-direction: column; font-size: 13px; color: var(--text-dim); }
 .model-check-text b { color: var(--text); font-size: 13.5px; }
-.main-subject .model-check { position: absolute; left: 50%; bottom: 128px; translate: -50% 0; width: min(640px, calc(100% - 40px)); margin: 0; z-index: 40; }
+.main-subject .model-check { position: absolute; left: 50%; bottom: 128px; translate: -50% 0; width: min(640px, calc(100% - 40px)); margin: 0; z-index: var(--z-banner-raised); }
 
 /* ---- ⓘ "What's this?" markers (components/Info.tsx) */
 .info-mark { display: inline-grid; place-items: center; width: 18px; height: 18px; margin-left: 2px; border-radius: 50%; vertical-align: -3px; cursor: help;
@@ -1230,6 +1249,20 @@ kbd { display: inline-block; min-width: 18px; padding: 0 5px; margin: 0 2px; bor
 .icon-pick-btn:hover { transform: translateY(-2px) scale(1.08); background: color-mix(in srgb, var(--tile) 38%, transparent); }
 .icon-pick-btn.on { border-color: var(--text); background: color-mix(in srgb, var(--tile) 45%, transparent); }
 @media (max-width: 640px) { .look { grid-template-columns: 1fr; } }
+/* an exam attempt that couldn't be marked (Exam.tsx) */
+.exam-unmarked { display: flex; flex-direction: column; gap: 8px; }
+.exam-unmarked-actions { display: flex; gap: 8px; }
+/* cropping an uploaded icon (ImageCrop.tsx) */
+.crop { display: flex; gap: 18px; flex-wrap: wrap; }
+.crop-frame { position: relative; overflow: hidden; border-radius: 12px; background: var(--bg-elev-2); cursor: grab; touch-action: none; flex-shrink: 0;
+  box-shadow: 0 0 0 1px var(--border); }
+.crop-frame:active { cursor: grabbing; }
+.crop-frame:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.crop-frame img, .crop-preview img { position: absolute; left: 0; top: 0; max-width: none; transform-origin: 0 0; pointer-events: none; user-select: none; }
+.crop-side { display: flex; flex-direction: column; gap: 14px; min-width: 160px; flex: 1; }
+.crop-zoom { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text-dim); }
+.crop-previews { display: flex; align-items: flex-end; gap: 12px; }
+.crop-preview { position: relative; overflow: hidden; border-radius: 13px; background: var(--bg-elev-2); flex-shrink: 0; }
 
 /* ---- the chat is see-through (the blur keeps it readable); opened from the study panel it fills the centre over it */
 .chat-shell.floating { background: color-mix(in srgb, var(--bg-elev-2) 72%, transparent); backdrop-filter: blur(24px) saturate(1.3); }
@@ -1238,7 +1271,390 @@ kbd { display: inline-block; min-width: 18px; padding: 0 5px; margin: 0 2px; bor
 
 /* ---- the background effect (Ambient.tsx): over the app, under dialogs (.modal-backdrop is 90), never takes a click;
    nearly gone (10%) while content is open (SubjectView sets data-studying) */
-.ambient { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 80; pointer-events: none; opacity: 1; transition: opacity 0.9s var(--ease-out); }
+.ambient { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: var(--z-ambient); pointer-events: none; opacity: 1; transition: opacity 0.9s var(--ease-out); }
 :root[data-studying] .ambient { opacity: 0.1; }
 @media print { .ambient { display: none; } }
 .effect-amount { margin-top: 8px; }
+
+/* ================================================================ Make content: Advanced (choose pages) and Marking
+   MakeContent.tsx (.make-advanced, .make-marking), components/PagePicker.tsx (.page-picker), and the marking result
+   (views/artifacts/Marking.tsx, .marking). The kind colour is .kind-marking / .t-marking beside the other kinds. */
+.make-advanced { margin-top: 4px; border: 1px solid var(--border); border-radius: 14px; padding: 0 14px; background: color-mix(in srgb, var(--bg-elev) 50%, transparent); }
+.make-advanced > summary { display: flex; align-items: center; gap: 8px; padding: 11px 0; cursor: pointer; font-weight: 600; font-size: 14px; color: var(--text-dim); list-style: none; }
+.make-advanced > summary::-webkit-details-marker { display: none; }
+.make-advanced > summary:hover, .make-advanced[open] > summary { color: var(--text); }
+.make-advanced[open] { padding-bottom: 14px; }
+.make-advanced-note { color: var(--accent-strong); font-weight: 600; }
+.make-idea.on { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
+.make-marking { display: flex; flex-direction: column; gap: 14px; }
+.make-marking h3 { margin: 4px 0 0; }
+.make-mark-rubric .file-pick { font-weight: 400; }
+.make-mark-outof { max-width: 140px; }
+
+.page-picker { display: flex; flex-direction: column; gap: 10px; font-weight: 400; }
+.page-picker-file { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.page-picker-file select { flex: 1; min-width: 0; }
+.page-picker-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.page-picker-range { flex: 1; min-width: 160px; }
+.page-picker-count { font-size: 13px; color: var(--text-dim); white-space: nowrap; }
+.page-picker-chapters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--text-faint); }
+.page-picker-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; max-height: 300px; overflow-y: auto; padding: 2px; }
+.page-picker-grid.labels { grid-template-columns: 1fr; gap: 4px; }
+.page-picker-unit { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 5px; font: inherit; font-size: 12px;
+  color: var(--text-dim); background: var(--bg-elev-2); border: 1.5px solid var(--border); border-radius: 9px; cursor: pointer; user-select: none; }
+.page-picker-unit:hover { border-color: var(--border-strong); color: var(--text); }
+.page-picker-unit.on { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.page-picker-unit.empty { opacity: 0.55; }
+.page-picker-unit img, .page-picker-blank { width: 100%; aspect-ratio: 3 / 4; object-fit: contain; object-position: top; border-radius: 5px; background: #fff; pointer-events: none; }
+.page-picker-blank { background: var(--bg-hover); }
+.labels .page-picker-unit { flex-direction: row; justify-content: flex-start; text-align: left; padding: 6px 30px 6px 10px; }
+.page-picker-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.page-picker-check { position: absolute; top: 4px; right: 4px; width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--accent); color: #fff; }
+.labels .page-picker-check { top: 50%; transform: translateY(-50%); right: 8px; }
+.page-picker-others { color: var(--text-dim); display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+
+.marking { max-width: 1180px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
+.marking .g-good { --g: var(--ok); }
+.marking .g-ok { --g: var(--warn); }
+.marking .g-low { --g: var(--bad); }
+.marking-head { display: flex; gap: 22px; align-items: center; flex-wrap: wrap; padding: 16px 20px; border-radius: 16px; border: 1px solid var(--border); background: var(--bg-elev); }
+.marking-score { min-width: 150px; }
+.marking-score b { font-size: 42px; line-height: 1; color: var(--g); font-variant-numeric: tabular-nums; }
+.marking-score > span { font-size: 18px; color: var(--text-dim); margin-left: 6px; }
+.marking-bar { height: 6px; border-radius: 6px; background: var(--bg-elev-2); overflow: hidden; margin-top: 8px; }
+.marking-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--g, var(--accent)); transition: width 0.6s var(--ease-out); }
+.marking-meta { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-dim); min-width: 0; flex: 1; }
+.marking-meta > div { display: flex; align-items: center; gap: 7px; overflow-wrap: anywhere; }
+.marking-summary { display: flex; flex-direction: column; gap: 12px; font-size: 15px; }
+.marking-lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.marking-list { padding: 12px 16px; border-radius: 14px; border: 1px solid var(--border); background: var(--bg-elev); }
+.marking-list h4 { display: flex; align-items: center; gap: 7px; margin: 0 0 6px; font-size: 14px; }
+.marking-list.good h4 { color: var(--ok); }
+.marking-list.improve h4 { color: var(--accent-strong); }
+.marking-list ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.marking-list .md p, .marking-quote .md p, .marking-corrections .md p { margin: 0; }
+.marking-body { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 18px; align-items: start; }
+.marking-criteria { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.marking-crit { padding: 14px 16px; border-radius: 14px; border: 1px solid var(--border); border-left: 4px solid var(--g); background: var(--bg-elev); cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s; }
+.marking-crit:hover { border-color: var(--border-strong); border-left-color: var(--g); }
+.marking-crit.on { box-shadow: 0 0 0 2px color-mix(in srgb, var(--g) 45%, transparent); }
+.marking-crit-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.marking-crit-label { font-size: 15px; }
+.marking-crit-mark { font-weight: 700; color: var(--g); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.marking-quote { margin: 10px 0 0; padding: 6px 12px; border-left: 3px solid var(--border-strong); color: var(--text-dim); font-style: italic;
+  display: flex; gap: 8px; align-items: baseline; justify-content: space-between; }
+.marking-page-link { font-style: normal; white-space: nowrap; font-size: 12px; }
+.marking-feedback { margin-top: 8px; }
+.marking-corrections { margin-top: 8px; padding: 8px 12px; border-radius: 10px; background: var(--ok-soft); }
+.marking-corrections h5 { margin: 0 0 4px; font-size: 12.5px; color: var(--ok); text-transform: uppercase; letter-spacing: 0.04em; }
+.marking-corrections ul { margin: 0; padding-left: 18px; }
+.marking-crit-foot { display: flex; justify-content: flex-end; margin-top: 10px; }
+.marking-pages { position: sticky; top: 0; max-height: calc(100vh - 150px); overflow-y: auto; display: flex; flex-direction: column; gap: 12px; min-width: 0;
+  padding: 2px 4px 2px 2px; }
+.marking-page { margin: 0; border-radius: 12px; border: 2px solid var(--border); overflow: hidden; background: var(--bg-elev); transition: border-color 0.2s; }
+.marking-page.on { border-color: var(--accent); }
+.marking-page figcaption { font-size: 12.5px; color: var(--text-dim); padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.marking-page img { display: block; width: 100%; height: auto; background: #fff; }
+.marking-page-text { margin: 0; padding: 12px 14px; max-height: 480px; overflow: auto; white-space: pre-wrap; font-family: var(--font); font-size: 13px; color: var(--text); }
+:root[data-tone="light"] .marking-corrections { background: color-mix(in srgb, var(--ok) 10%, transparent); }
+@media print { .marking-pages, .marking-crit-foot { display: none; } }
+
+/* ---- Tools (Phase 4): draggable floating things, tours, the study timer and the calculator ---------------------- */
+.find-grip, .calc-grip { touch-action: none; }
+
+/* Tours (Tour.tsx): the ? that replays a feature's tour, the help window's list */
+.tour-btn { display: inline-grid; place-items: center; width: 26px; height: 26px; flex: none; }
+.chat-head .tour-btn.head-tour { margin-right: 2px; }
+.tour-tip .tour-away { margin-top: 10px; font-size: 13px; color: var(--accent-strong); }
+.help-tours-title { margin: 14px 0 4px; font-size: 14px; }
+.tour-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 16px; }
+.tour-list-item { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--border);
+  background: var(--bg-elev-2); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }
+.tour-list-item:hover { border-color: var(--accent); background: var(--accent-soft); }
+.tour-list-item .icon { color: var(--accent); }
+
+/* The left bar's tools group (Minibar .mini-tools): the study timer, and the pet's button beside it. Tool icons
+   don't spin on hover like the bar's other icons. */
+.mini-tools { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.mini-tools .mini-icon:hover svg, .mini-tool:hover svg { transform: none; }
+.mini-timer .timer-short { font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.mini-timer.running { color: var(--accent-strong); background: var(--accent-soft); }
+.mini-timer.paused { color: var(--warn); }
+.mini-timer.open { background: var(--accent-soft); color: var(--accent-strong); }
+/* the pill grows out of the button to the right (and shrinks back into it) */
+.timer-pill { position: fixed; z-index: var(--z-timer); transform: translateY(-50%); display: flex; align-items: center; gap: 2px; padding: 4px 6px;
+  height: 44px; border-radius: 22px; background: var(--bg-elev); border: 1px solid var(--border-strong); box-shadow: var(--shadow);
+  animation: timer-grow 0.22s var(--ease-out, ease-out) both; }
+.timer-pill.closing { animation: timer-shrink 0.16s ease-in both; }
+@keyframes timer-grow { from { clip-path: inset(0 calc(100% - 44px) 0 0 round 22px); opacity: 0.4; } to { clip-path: inset(0 0 0 0 round 22px); opacity: 1; } }
+@keyframes timer-shrink { from { clip-path: inset(0 0 0 0 round 22px); opacity: 1; } to { clip-path: inset(0 calc(100% - 44px) 0 0 round 22px); opacity: 0; } }
+.timer-pill button { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; border: none; background: none; color: var(--text-dim); cursor: pointer; }
+.timer-pill button:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
+.timer-pill button:disabled { opacity: 0.35; cursor: default; }
+.timer-pill .timer-go { background: var(--accent); color: #fff; }
+.timer-pill .timer-go:hover:not(:disabled) { background: var(--accent-strong); color: #fff; }
+.timer-clock { min-width: 62px; text-align: center; font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text); }
+.timer-pill.running .timer-clock { color: var(--accent-strong); }
+.timer-sep { width: 1px; height: 22px; margin: 0 4px; background: var(--border); }
+
+/* The calculator (Calculator.tsx): over the full-screen viewer (80), under the find bar (85), dialogs and menus */
+.calc { position: fixed; z-index: var(--z-calc); width: 340px; max-height: calc(100vh - 24px); display: flex; flex-direction: column; border-radius: 14px;
+  background: var(--bg-elev); border: 1px solid var(--border-strong); box-shadow: var(--shadow), 0 18px 48px rgba(0, 0, 0, 0.35); overflow: hidden;
+  animation: fs-in 0.18s var(--ease-out, ease-out); }
+.calc.calc-graph { width: 560px; max-width: calc(100vw - 16px); }
+.calc.dragging { user-select: none; }
+.calc .icon-btn { display: inline-grid; place-items: center; width: 26px; height: 26px; }
+.calc .icon-btn.on { background: var(--accent-soft); color: var(--accent-strong); }
+.calc .icon-btn:disabled { opacity: 0.35; cursor: default; background: none; }
+.calc-head { display: flex; align-items: center; gap: 8px; padding: 7px 8px 7px 12px; border-bottom: 1px solid var(--border); cursor: grab; color: var(--text-dim); }
+.calc.dragging .calc-head { cursor: grabbing; }
+.calc-seg { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--bg-elev-2); border: 1px solid var(--border); }
+.calc-seg button { border: none; background: none; color: var(--text-dim); font: inherit; font-size: 12.5px; padding: 3px 10px; border-radius: 6px; cursor: pointer; }
+.calc-seg button.on { background: var(--accent-soft); color: var(--accent-strong); font-weight: 600; }
+.calc-body { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 12px; min-height: 0; overflow: auto; }
+.calc-bar { display: flex; align-items: center; gap: 8px; }
+.calc-bar .link-btn { display: inline-flex; align-items: center; gap: 3px; }
+.calc-history { max-height: 150px; min-height: 48px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; padding: 4px; border-radius: 8px; background: var(--bg-elev-2); }
+.calc-empty { padding: 12px 6px; text-align: center; }
+.calc-entry { display: flex; align-items: center; gap: 2px; }
+.calc-entry-main { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-end; padding: 3px 8px; border: none; border-radius: 6px;
+  background: none; color: var(--text); font: inherit; cursor: pointer; text-align: right; }
+.calc-entry-main:hover { background: var(--bg-hover); }
+.calc-entry-expr { font-size: 12px; color: var(--text-dim); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.calc-entry-val { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.calc-screen { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); }
+.calc-screen:focus-within { border-color: var(--accent); }
+.calc-screen.bad { border-color: var(--bad); }
+.calc-input { width: 100%; border: none; outline: none; background: none; color: var(--text); font-family: var(--mono); font-size: 17px; text-align: right; padding: 2px 0; }
+.calc-result { display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-height: 22px; font-variant-numeric: tabular-nums; }
+.calc-preview { font-size: 15px; color: var(--text-dim); overflow-wrap: anywhere; }
+.calc-error { font-size: 12.5px; color: var(--bad); text-align: right; }
+.calc-insert-now { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; order: -1; margin-right: auto; }
+.calc-keys { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.calc-key { height: 34px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-elev-2); color: var(--text); font: inherit; font-size: 13px;
+  cursor: pointer; display: grid; place-items: center; padding: 0; }
+.calc-key sup { font-size: 0.7em; line-height: 0; }
+.calc-key:hover { border-color: var(--border-strong); background: var(--bg-hover); }
+.calc-key:active { transform: scale(0.95); }
+.calc-key.k-num { font-size: 15px; font-weight: 600; background: var(--bg); }
+.calc-key.k-op { font-size: 16px; color: var(--accent-strong); }
+.calc-key.k-fn { color: var(--text-dim); }
+.calc-key.k-eq { grid-column: span 2; background: var(--accent); border-color: var(--accent); color: #fff; font-size: 17px; font-weight: 700; }
+.calc-key.k-eq:hover { background: var(--accent-strong); }
+.calc-fns { display: flex; flex-direction: column; gap: 4px; }
+.calc-fn { display: grid; grid-template-columns: 12px auto 1fr auto; align-items: center; gap: 6px; }
+.calc-fn-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid; }
+.calc-fn-label { font-size: 13px; color: var(--text-dim); font-family: var(--mono); }
+.calc-fn-input { min-width: 0; padding: 5px 8px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-family: var(--mono); font-size: 13.5px; }
+.calc-fn-input:focus { outline: none; border-color: var(--accent); }
+.calc-fn-input[aria-invalid="true"] { border-color: var(--bad); }
+.calc-fn-error { grid-column: 3 / 5; font-size: 12px; color: var(--bad); }
+.calc-add { display: inline-flex; align-items: center; gap: 4px; align-self: flex-start; font-size: 12.5px; }
+.calc-plot { position: relative; flex: none; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); cursor: grab; user-select: none; touch-action: none; }
+.calc-plot.panning { cursor: grabbing; }
+.calc-plot.panning .plot-tip, .calc-plot.panning .plot-hover { display: none; }
+.calc-plot .plot { position: relative; margin: 0; padding: 4px; }
+.calc-table-wrap { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow: auto; flex: none; }
+.calc-table-opts { display: flex; gap: 14px; font-size: 12.5px; color: var(--text-dim); }
+.calc-table-opts input { width: 64px; margin-left: 4px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-family: var(--mono); font-size: 12.5px; }
+.calc-table { width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.calc-table th, .calc-table td { padding: 3px 8px; text-align: right; border-bottom: 1px solid var(--border); }
+.calc-table th { position: sticky; top: 0; background: var(--bg-elev); font-family: var(--mono); font-weight: 600; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.calc-table td:first-child, .calc-table th:first-child { color: var(--text-dim); }
+.tool-btn.tool-calc.on, .ne-btn.tool-calc.on { background: var(--accent-soft); color: var(--accent-strong); }
+
+/* ################################################################ The student's mind maps and drawings (views/notes) */
+/* Both editors reuse the rich-text editor's header and toolbar classes (.note-editor, .source-head, .ne-toolbar,
+   .ne-group, .ne-btn); these are their canvases. */
+.note-opening { padding: 24px; }
+.note-icon.kind-map { color: var(--accent-strong); }
+.note-icon.kind-drawing { color: var(--warn); }
+.ne-btn:disabled { opacity: 0.4; cursor: default; background: none; }
+.map-zoom { min-width: 38px; text-align: center; font-variant-numeric: tabular-nums; }
+.map-empty { position: absolute; left: 50%; top: 45%; transform: translate(-50%, -50%); pointer-events: none; text-align: center; max-width: 340px; font-size: 14px; }
+.review-issue-link { cursor: pointer; border-radius: 6px; }
+.review-issue-link:hover { background: var(--bg-hover); }
+
+/* ================================================================ mind map / flowchart (MapEditor.tsx) */
+.map-editor { --map-node-bg: var(--bg-elev-2); --map-node-line: var(--border-strong); --map-edge: var(--text-faint); }
+:root[data-tone="light"] .map-editor { --map-node-bg: #ffffff; --map-node-line: #94a3b8; --map-edge: #64748b; }
+.map-canvas { position: relative; flex: 1; min-width: 0; overflow: hidden; outline: none; cursor: grab; background: var(--bg); touch-action: none; user-select: none; }
+.map-canvas:active { cursor: grabbing; }
+.map-canvas:focus-visible { box-shadow: inset 0 0 0 2px var(--accent-soft); }
+.map-svg { display: block; }
+.map-dot { fill: var(--border-strong); }
+.map-shape { fill: var(--map-node-bg); stroke: var(--map-node-line); stroke-width: 1.4; transition: stroke 0.12s; }
+.map-node { cursor: move; }
+.map-node:hover .map-shape { stroke: var(--accent); }
+.map-node.selected .map-shape { stroke: var(--accent); stroke-width: 2.4; }
+.map-node[style] .map-shape, .map-shape[style] { stroke: color-mix(in srgb, var(--map-node-line) 70%, #000); }
+.map-node-text { font-size: 14px; fill: var(--text); pointer-events: none; }
+.map-shape[style] ~ .map-node-text { fill: #111827; }
+.map-node-text.empty { fill: var(--text-faint); font-style: italic; font-size: 12.5px; }
+.map-handle { fill: var(--accent); stroke: var(--bg); stroke-width: 2; opacity: 0; cursor: crosshair; transition: opacity 0.12s; }
+.map-node:hover .map-handle, .map-node.selected .map-handle { opacity: 1; }
+.map-edge { cursor: pointer; }
+.map-edge-hit { stroke: transparent; stroke-width: 14; }
+.map-edge-line { stroke: var(--map-edge); stroke-width: 1.6; fill: none; }
+.map-edge:hover .map-edge-line { stroke: var(--text-dim); }
+.map-edge.selected .map-edge-line { stroke: var(--accent); stroke-width: 2.4; }
+.map-arrowhead { fill: var(--map-edge); }
+.map-linking { stroke: var(--accent); stroke-dasharray: 5 4; pointer-events: none; }
+.map-edge-label-bg { fill: var(--bg); stroke: var(--border); }
+.map-edge-label { font-size: 12px; fill: var(--text-dim); pointer-events: none; }
+.map-marquee, .dr-marquee { fill: var(--accent-soft); stroke: var(--accent); stroke-dasharray: 4 3; pointer-events: none; }
+.map-node.flash .map-shape, .map-edge.flash .map-edge-line { stroke: var(--bad); stroke-width: 3; animation: map-flash 0.5s ease-in-out 3; }
+@keyframes map-flash { 50% { stroke-opacity: 0.25; } }
+.map-label-edit { position: absolute; z-index: 2; box-sizing: border-box; resize: none; border: 2px solid var(--accent); border-radius: 8px; background: var(--bg-elev);
+  color: var(--text); font: inherit; text-align: center; padding: 6px; outline: none; overflow: hidden; line-height: 1.35; }
+.map-label-edit.single { padding: 3px 6px; white-space: nowrap; }
+.map-colour { position: relative; padding: 0 4px 0 8px; }
+.map-swatch { position: static; display: inline-block; width: 14px; height: 14px; border-radius: 4px; border: 1px solid var(--border-strong); }
+
+/* ================================================================ drawings (DrawingEditor.tsx) */
+.dr-canvas { position: relative; flex: 1; min-width: 0; overflow: hidden; outline: none; background: #ffffff; touch-action: none; user-select: none; cursor: crosshair; }
+.dr-canvas.tool-select { cursor: default; }
+.dr-canvas.tool-pan { cursor: grab; }
+.dr-canvas.tool-pan:active { cursor: grabbing; }
+.dr-canvas.tool-text { cursor: text; }
+.dr-canvas.tool-eraser { cursor: cell; }
+.dr-canvas:focus-visible { box-shadow: inset 0 0 0 2px var(--accent-soft); }
+.dr-svg { display: block; }
+.dr-canvas .map-empty { color: #6b7280; }
+.dr-selection rect { fill: none; stroke: var(--accent); stroke-dasharray: 4 3; pointer-events: none; }
+.dr-selection .dr-resize { fill: #ffffff; stroke-dasharray: none; pointer-events: all; cursor: nwse-resize; }
+.dr-swatch { width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--border-strong); margin: 0 2px; cursor: pointer; padding: 0; }
+.dr-swatch.on { box-shadow: 0 0 0 2px var(--bg-elev), 0 0 0 4px var(--accent); }
+.dr-width .dr-dot { display: block; border-radius: 50%; background: currentColor; }
+.dr-describe { padding: 6px 14px; border-bottom: 1px solid var(--border); background: var(--bg-elev); flex-shrink: 0; }
+.dr-desc { width: 100%; box-sizing: border-box; font-size: 13px; padding: 5px 9px; }
+.dr-text-edit { position: absolute; z-index: 2; resize: none; border: 1px dashed var(--accent); background: rgba(255, 255, 255, 0.85); outline: none;
+  font-family: "Segoe UI", Arial, sans-serif; line-height: 1.25; padding: 0; margin: 0; overflow: hidden; }
+.dr-clear { margin-left: 4px; }
+
+/* ################################################################ The app pet (Pet.tsx) */
+/* A small cat over the bottom-left corner, just right of the left bar. z 83: over the full-screen viewer (80), under
+   the calculator (84), find bar (85), dialogs (90) and menus (100). Only the sprite takes the pointer. */
+.pet { position: fixed; z-index: var(--z-pet); pointer-events: none; }
+.pet-sprite { display: block; padding: 0; border: none; border-radius: 12px; background-color: transparent; background-repeat: no-repeat;
+  pointer-events: auto; cursor: grab; touch-action: none; user-select: none; -webkit-user-drag: none; image-rendering: auto; }
+.pet.dragging .pet-sprite { cursor: grabbing; }
+.pet-sprite:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pet-bubble { position: absolute; left: 0; bottom: calc(100% + 6px); width: max-content; max-width: 220px; padding: 5px 10px; border-radius: 12px 12px 12px 4px;
+  background: var(--bg-elev); color: var(--text); border: 1px solid var(--border-strong); box-shadow: var(--shadow); font-size: 12.5px; line-height: 1.35;
+  overflow-wrap: anywhere; opacity: 0; transform: translateY(4px); transition: opacity 0.25s ease, transform 0.25s ease; pointer-events: none; }
+.pet-bubble.show { opacity: 1; transform: none; }
+.pet-bubble.below { bottom: auto; top: calc(100% + 6px); border-radius: 4px 12px 12px 12px; }
+.pet-bubble.right { left: auto; right: 0; border-bottom-right-radius: 4px; border-bottom-left-radius: 12px; }
+.pet-error .pet-bubble, .pet-offline .pet-bubble { border-color: color-mix(in srgb, var(--bad) 60%, var(--border-strong)); }
+.mini-pet { color: var(--text-faint); }
+.mini-pet.on { color: var(--accent-strong); background: var(--accent-soft); }
+@media print { .pet { display: none; } }
+
+/* ################################################################ Selection in content files (SourceView / PdfView) */
+/* Pages are always white paper, whatever the theme, so the global 35%-accent selection was faint (and nearly invisible
+   with Carbon's pale accent). The tint below mixes the theme accent with a fixed blue, so it always has colour.
+   pdf.js text is transparent over the page canvas: the text layer multiplies with the canvas, so an opaque tint
+   colours the paper while the printed text underneath stays fully dark. Highlight annotations (.anno-hl) sit above
+   in their own colours at 55% and keep their look; a live selection is the stronger accent-blue tint. */
+:root {
+  --select-tint: color-mix(in srgb, var(--accent) 50%, #3b82f6);
+  --select-paper: color-mix(in srgb, var(--select-tint) 52%, #ffffff);
+  --select-ui: color-mix(in srgb, var(--select-tint) 48%, transparent);
+}
+:root[data-tone="light"] { --select-ui: color-mix(in srgb, var(--select-tint) 32%, transparent); }
+.src-page .textLayer { mix-blend-mode: multiply; }
+.src-page .textLayer ::selection { background: var(--select-paper); color: transparent; }
+.src-page .textLayer br::selection { background: transparent; }
+/* the HTML fallback layouts (slides, Word paper, text) have real dark text on the white page */
+.src-page :not(.textLayer *)::selection, .src-paper ::selection { background: var(--select-paper); }
+/* "View ingested details" (DocumentView) sits on the theme's own background */
+.doc-details ::selection { background: var(--select-ui); color: var(--text); }
+
+/* ################################################################ Calculator → chat, timer presets, today's sessions */
+/* "Send to chat" beside "Insert into note" under the calculation (both sit on the left of the result) */
+.calc-insert-now:has(+ .calc-insert-now) { margin-right: 0; }
+/* the timer pill's kinds (25 / 5, 50 / 10, Custom): small text buttons, not the round icon ones */
+.timer-presets { display: flex; align-items: center; gap: 1px; }
+.timer-pill .timer-preset { width: auto; height: 28px; padding: 0 8px; border-radius: 14px; font: inherit; font-size: 12px; font-weight: 600;
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
+.timer-pill .timer-preset.on { background: var(--accent-soft); color: var(--accent-strong); }
+.timer-phase { margin: 0 4px; padding: 2px 8px; border-radius: 10px; font-size: 11.5px; font-weight: 650; background: var(--accent-soft); color: var(--accent-strong); }
+.timer-phase.break { background: var(--ok-soft); color: var(--ok); }
+.timer-today { margin: 0 6px 0 2px; font-size: 11.5px; color: var(--text-faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.timer-pill.break.running .timer-clock { color: var(--ok); }
+.mini-timer.break.running { color: var(--ok); background: var(--ok-soft); }
+/* the study sheet's discreet line under the to-do list */
+.study-today { display: flex; align-items: center; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+
+/* ################################################################ Drop a sidebar row in the centre (subject/PaneDrop.tsx) */
+/* Shown only while a file / note / generated-notes row is dragged over the centre: left half, right half and (when
+   nothing is split) "open instead". Under the chat (z 20 in the centre), which keeps its own drop (attach). */
+.pane-drop { position: absolute; inset: 0; z-index: 18; display: flex; gap: 10px; padding: 12px; pointer-events: none; animation: fade-in 0.15s ease-out; }
+.pane-drop-zone { flex: 1; min-width: 0; pointer-events: auto; display: grid; place-items: center; border-radius: 16px;
+  border: 2px dashed color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--bg) 55%, transparent);
+  backdrop-filter: blur(3px); transition: background 0.15s, border-color 0.15s; }
+.pane-drop.zones-3 .z-replace { flex: 0.7; }
+.pane-drop-zone.over { border-style: solid; border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.pane-drop-label { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 999px; pointer-events: none; white-space: nowrap;
+  background: var(--bg-elev-2); border: 1px solid var(--border-strong); color: var(--text); font-size: 13.5px; font-weight: 600; box-shadow: var(--shadow); }
+.pane-drop-zone.over .pane-drop-label { border-color: var(--accent); }
+
+/* ################################################################ Add to notes (noteInsert.ts) */
+/* the file viewer's selection popup: "Add to notes" and a grip to drag the selection into a note */
+.ask-note-row { display: flex; align-items: stretch; gap: 2px; }
+.ask-note-row .ask-to-note { flex: 1; min-width: 0; }
+.ask-drag { display: grid; place-items: center; width: 28px; flex-shrink: 0; border-radius: 8px; color: var(--text-faint); cursor: grab; }
+.ask-drag:hover { color: var(--text); background: var(--bg-hover); }
+.ask-drag:active { cursor: grabbing; }
+/* the area box (right-drag) can be dragged into a note */
+.anno-temp-area[draggable="true"] { cursor: grab; }
+
+/* ################################################################ Make content / study sheet over an open file */
+/* The sheet is see-through (52–58% of the theme background, blurred) so the darkened map shows through. Over an open
+   file or split view the bright pages showed through it instead, and Make content's sticky footer (.make-foot: a fade
+   to 92% background, only as wide as the 860px column) then stood out as a dark, cut-off bar along the bottom. Over
+   content the sheet is as solid as that footer, so the two meet seamlessly, as they do over the map. */
+.study-sheet.over-content { background: linear-gradient(180deg, color-mix(in srgb, var(--bg-elev-2) 90%, var(--bg)), color-mix(in srgb, var(--bg) 92%, transparent) 45%); }
+
+/* ---------------------------------------------------------------- generation options, versions and copy notes
+   (quiz options in Make content → Advanced, a chat form narrowed to a file's pages, Mark a new version and the
+   score change against the previous marking, cited review comments, the viewer's simplified-layout note) */
+.make-quiz-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-bottom: 10px; }
+.make-quiz-options small { display: block; margin-top: 4px; }
+
+.tool-notice { margin: 2px 0 8px; color: var(--warn); }
+.tool-pages-row { display: flex; align-items: center; gap: 8px; }
+.tool-pages-row .input { flex: 1; min-width: 0; }
+
+.review-issue { gap: 3px; }
+.review-src { font-size: 12px; color: var(--text-faint); }
+.review-src a.cite { font-size: 12px; }
+
+.marking-newver-btn { align-self: flex-start; margin-left: auto; }
+.marking-newver { display: flex; flex-direction: column; gap: 8px; margin: 0 0 14px; padding: 12px 14px; border: 1px solid var(--border);
+  border-radius: 12px; background: var(--bg-elev); }
+.marking-newver-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
+.marking-newver-outof { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.marking-newver-outof .input { width: 80px; }
+.marking-versions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 14px; margin: 0 0 14px;
+  padding: 8px 12px; border-radius: 10px; background: var(--accent-soft); font-size: 13px; }
+.marking-versions-head { display: inline-flex; align-items: center; gap: 8px; }
+.marking-versions-list { display: inline-flex; flex-wrap: wrap; gap: 4px 12px; }
+.mark-change { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px; border-radius: 999px; font-size: 11.5px;
+  font-weight: 600; white-space: nowrap; }
+.mark-change.up { color: var(--ok); background: var(--ok-soft); }
+.mark-change.down { color: var(--bad); background: var(--bad-soft); }
+.mark-change.same, .mark-change.new { color: var(--text-faint); background: var(--bg-hover); }
+.marking-crit-head .mark-change { margin-left: -4px; }
+
+.render-note { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; align-items: center; gap: 8px;
+  max-width: min(640px, calc(100% - 32px)); padding: 7px 8px 7px 12px; border: 1px solid var(--border-strong); border-radius: 10px;
+  background: var(--bg-elev-2); box-shadow: var(--shadow); font-size: 12.5px; color: var(--text-dim); }
+.render-note-text { flex: 1; min-width: 0; }
+
+.maint-copies { display: flex; flex-direction: column; gap: 4px; }
+.maint-copy .maint-name { flex: 0 1 220px; min-width: 0; }
+.maint-copy .small { flex: 1; min-width: 0; }

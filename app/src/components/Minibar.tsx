@@ -5,6 +5,8 @@ import type { Route } from '../App';
 import logo from '../../assets/icon.svg';
 import { useLibraryActions } from './actions';
 import JobsPanel from './JobsPanel';
+import StudyTimer from './StudyTimer';
+import { PetButton } from './Pet';
 import { Modal, useOverlay } from './overlay';
 import StaleBadge from './StaleBadge';
 import SubjectIcon from './SubjectIcon';
@@ -15,7 +17,7 @@ import { redo, undo, useUndo } from '../undo';
 import { openPalette } from './CommandPalette';
 import ShortcutsList from './Shortcuts';
 import { openSetup } from './SetupWizard';
-import { startTour } from './Tour';
+import { startTour, TourId, TourList } from './Tour';
 import Icon from './Icon';
 import { usePoll } from '../hooks';
 import { useAdvanced } from '../theme';
@@ -35,6 +37,12 @@ export default function Minibar({ subjects, route, go, onChange, online }: {
   const advanced = useAdvanced();
   const tr = useTerms();
   const [help, setHelp] = useState(false);
+
+  const showTour = (id: TourId) => {
+    setHelp(false);
+    // the app tour points at a subject's page: open one first if none is showing
+    if (id === 'app' && route.name !== 'subject' && subjects.length) { go({ name: 'subject', id: subjects[0].id }); setTimeout(() => startTour('app'), 900); } else startTour(id);
+  };
 
   const menu = (e: React.MouseEvent, s: Subject) => ov.menu(e, [
     { label: 'Open', onClick: () => go({ name: 'subject', id: s.id }) },
@@ -84,6 +92,11 @@ export default function Minibar({ subjects, route, go, onChange, online }: {
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 14 5-5-5-5" /><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" /></svg>
           </button>
         </div>
+        {/* tools: the study timer (the app pet's on/off button goes beside it, in this group) */}
+        <div className="mini-tools">
+          <StudyTimer />
+          <PetButton />
+        </div>
         {online.length > 0 && (
           <button className="mini-online" onClick={() => go({ name: 'settings' })}
             data-tip={`Online: ${online.join(' and ')} via OpenRouter. Data is logged externally and may be used for training`}>
@@ -106,19 +119,19 @@ export default function Minibar({ subjects, route, go, onChange, online }: {
       {help && (
         <Modal title="Shortcuts and help" wide onClose={() => setHelp(false)}
           footer={<>
-            <button className="btn" onClick={() => {
-              setHelp(false);
-              // the tour points at a subject's page: open one first if none is showing
-              if (route.name !== 'subject' && subjects.length) { go({ name: 'subject', id: subjects[0].id }); setTimeout(startTour, 900); } else startTour();
-            }}>Show the tour</button>
+            <button className="btn" onClick={() => showTour('app')}>Show the tour</button>
             <button className="btn" onClick={() => { setHelp(false); openSetup(); }}>Set up models again</button>
             <button className="btn" onClick={() => { setHelp(false); openErrorHelp(null); }}>Error codes</button>
             <span className="spacer" />
             <button className="btn btn-primary" onClick={() => setHelp(false)}>Got it</button>
           </>}>
           <p className="muted small help-intro">Make a <b>subject</b> (e.g. Physics) with <b>topics</b> inside it (e.g. Motion), add your
-            slides, notes and textbooks, then ask Apollo questions or have it make flashcards, quizzes, notes and more. Everything you make
-            is saved in the left sidebar; your files are on the right.</p>
+            slides, notes and textbooks, then ask Apollo questions, have it make flashcards, quizzes, practice exams, notes, cheat sheets
+            and mind maps, or have it mark your own work. Everything Apollo makes is saved in the left sidebar; your files, and your own
+            notes, mind maps and drawings, are on the right.</p>
+          <h4 className="help-tours-title">Tours</h4>
+          <p className="muted small">A few tips about each part of Apollo. Each one also starts the first time you open that part, and the ? next to it shows it again.</p>
+          <TourList onPick={showTour} />
           <ShortcutsList />
         </Modal>
       )}

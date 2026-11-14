@@ -85,18 +85,92 @@ export function placeCaret(cell: HTMLTableCellElement) {
   sel.addRange(r);
 }
 
-/** Tab / Shift+Tab in a table: the next or previous cell (Tab in the last cell adds a row). Returns false when the
- * cursor isn't in a table. */
-export function tabInTable(root: HTMLElement, back: boolean): boolean {
+/** What a key did in a table: nothing (not in one), only moved the cursor, or changed the note. */
+export type TableKey = false | 'moved' | 'changed';
+
+/** Tab / Shift+Tab in a table: the next or previous cell (Tab in the last cell adds a row, which is a change). */
+export function tabInTable(root: HTMLElement, back: boolean): TableKey {
   const cell = cellOf(window.getSelection()?.anchorNode ?? null, root);
   if (!cell) return false;
   const table = cell.closest('table')!;
   const cells = [...table.querySelectorAll<HTMLTableCellElement>('td, th')];
   const i = cells.indexOf(cell);
   const next = cells[i + (back ? -1 : 1)];
-  if (next) { placeCaret(next); return true; }
-  if (back) return true;
+  if (next) { placeCaret(next); return 'moved'; }
+  if (back) return 'moved';
   const row = [...table.rows].indexOf(cell.parentElement as HTMLTableRowElement);
   replaceTable(table, changedTable(cell, 'rowBelow'), [row + 1, 0]);
-  return true;
+  return 'changed';
+}
+
+/** The column a cell starts in, counting colspans. */
+const columnOf = (cell: HTMLTableCellElement) => {
+  let col = 0;
+  for (let c = cell.previousElementSibling; c; c = c.previousElementSibling) col += (c as HTMLTableCellElement).colSpan || 1;
+  return col;
+};
+
+/** The cell in the row above (-1) or below (1) that covers `cell`'s column (the row's last cell when it's shorter),
+ * or null past the table's first or last row. */
+export function cellAcross(cell: HTMLTableCellElement, dir: -1 | 1): HTMLTableCellElement | null {
+  const table = cell.closest('table')!;
+  const rows = [...table.rows];
+  const row = rows[rows.indexOf(cell.parentElement as HTMLTableRowElement) + dir];
+  if (!row || !row.cells.length) return null;
+  const col = columnOf(cell);
+  let at = 0;
+  for (const c of row.cells) {
+    at += c.colSpan || 1;
+    if (at > col) return c;
+  }
+  return row.cells[row.cells.length - 1];
+}
+
+/** Whether the cursor sits on the cell's first (up) or last (down) visual line. Without layout (no rects) it counts as
+ * yes. */
+function onEdgeLine(cell: HTMLTableCellElement, range: Range, down: boolean): boolean {
+  const rects = typeof range.getClientRects === 'function' ? range.getClientRects() : [];
+  const caret = rects.length ? rects[down ? rects.length - 1 : 0] : null;
+  const box = cell.getBoundingClientRect();
+  if (!caret || (!caret.height && !caret.top) || !box.height) return true;
+  const cs = getComputedStyle(cell);
+  const line = parseFloat(cs.lineHeight) || (parseFloat(cs.fontSize) || 14) * 1.4;
+  return down
+    ? box.bottom - (parseFloat(cs.paddingBottom) || 0) - caret.bottom < line * 0.8
+    : caret.top - box.top - (parseFloat(cs.paddingTop) || 0) < line * 0.8;
+}
+
+/** Up / Down in a table: from the cell's first or last line, the same column of the row above or below (Chromium
+ * would otherwise walk the cells in document order). Down past the last row leaves the table (adding a paragraph
+ * after it when there is none: a change); Up past the first row goes to what comes before it. */
+export function arrowInTable(root: HTMLElement, down: boolean): TableKey {
+  const sel = window.getSelection();
+  if (!sel?.rangeCount || !sel.isCollapsed) return false;
+  const cell = cellOf(sel.anchorNode, root);
+  if (!cell) return false;
+  if (!onEdgeLine(cell, sel.getRangeAt(0), down)) return false;
+  const next = cellAcross(cell, down ? 1 : -1);
+  if (next) {
+    const r = document.createRange();
+    r.selectNodeContents(next);
+    r.collapse(down); // into the row below: its start; into the row above: its end
+    sel.removeAllRanges();
+    sel.addRange(r);
+    return 'moved';
+  }
+  const table = cell.closest('table')!;
+  let target = (down ? table.nextElementSibling : table.previousElementSibling) as HTMLElement | null;
+  let changed = false;
+  if (!target) {
+    if (!down) return false; // nothing above: let the browser decide
+    target = Object.assign(document.createElement('p'), { innerHTML: EMPTY });
+    table.after(target);
+    changed = true;
+  }
+  const r = document.createRange();
+  r.selectNodeContents(target);
+  r.collapse(down);
+  sel.removeAllRanges();
+  sel.addRange(r);
+  return changed ? 'changed' : 'moved';
 }

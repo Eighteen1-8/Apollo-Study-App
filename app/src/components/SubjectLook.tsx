@@ -1,9 +1,10 @@
 /* One place to change how a subject looks: colour (swatches or any colour) and its art (twenty subjects × five
    Fluent emoji, the group matching the subject's name first), with a live preview that plays the art's animation.
    Letters and an uploaded image stay available as alternatives. */
-import { CSSProperties, useMemo, useState } from 'react';
-import { api, inElectron, Subject } from '../api';
+import { CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
+import { api, Subject } from '../api';
 import { Modal, useOverlay } from './overlay';
+import ImageCrop from './ImageCrop';
 import SubjectIcon, { PALETTE } from './SubjectIcon';
 import { matchGroup, SUBJECT_ICON_GROUPS, SubjectArt, subjectArt } from './subjectIcons';
 import { reducedMotion } from '../theme';
@@ -56,16 +57,21 @@ export default function SubjectLook({ subject, onClose, onChange }: { subject: S
     await api.setIcon(subject.id, { icon_text: t, ...(color !== subject.color ? { color } : {}) });
     onChange(); onClose();
   };
-  const upload = async () => {
-    const p = await window.studyApp!.openFiles({ multi: false });
-    if (!p[0]) return;
-    await api.setIcon(subject.id, { image_path: p[0], ...(color !== subject.color ? { color } : {}) });
+  // an uploaded picture is cropped and scaled to a 256 px square first (ImageCrop)
+  const [crop, setCrop] = useState<string | null>(null);
+  const picker = useRef<HTMLInputElement>(null);
+  useEffect(() => () => { if (crop) URL.revokeObjectURL(crop); }, [crop]);
+  const picked = (f: File | undefined) => { if (f) setCrop(URL.createObjectURL(f)); };
+  const saveCropped = async (png: string) => {
+    await api.setIcon(subject.id, { image_png: png, ...(color !== subject.color ? { color } : {}) });
     onChange(); onClose();
   };
   const reset = async () => {
     await api.setIcon(subject.id, { icon_text: '', icon_emoji: '', icon_name: '', clear_image: true });
     onChange(); onClose();
   };
+
+  if (crop) return <ImageCrop src={crop} title={`Icon for ${subject.name}`} onCancel={() => setCrop(null)} onDone={saveCropped} />;
 
   return (
     <Modal title={`Icon for ${subject.name}`} wide onClose={onClose}
@@ -81,7 +87,9 @@ export default function SubjectLook({ subject, onClose, onChange }: { subject: S
           <div className="look-preview-name">{subject.name}</div>
           <div className="look-side">
             <button className="btn btn-sm" onClick={letters}>Use letters…</button>
-            {inElectron && <button className="btn btn-sm" onClick={upload}>Upload an image…</button>}
+            <button className="btn btn-sm" onClick={() => picker.current?.click()}>Upload an image…</button>
+            <input ref={picker} type="file" hidden accept="image/png,image/jpeg,image/webp,image/gif,image/bmp"
+              onChange={(e) => { picked(e.target.files?.[0]); e.target.value = ''; }} />
           </div>
         </div>
         <div className="look-main">

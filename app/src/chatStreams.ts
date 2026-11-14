@@ -147,5 +147,7 @@ export function useChatStreams() {
       return mine.some((u) => u.error) ? 'error' : mine.length ? 'unread' : null;
     },
     anyLive: () => live.size > 0,
+    /** Every reply being written (as of the last change; the app pet reads their status). */
+    allLive: () => [...live.values()],
   };
 }

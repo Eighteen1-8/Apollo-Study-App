@@ -5,6 +5,7 @@ italic / underline / strikethrough, text and highlight colours, fonts and sizes,
 code, and the notes components (definitions, formulas, callouts, worked examples) as shaded or indented paragraphs.
 Maths arrives as LaTeX text ($...$) because Word can't take KaTeX's HTML; graphs and inline diagrams become a short
 placeholder."""
+import base64
 import io
 import logging
 import re
@@ -269,13 +270,17 @@ class Writer:
         self.doc.add_paragraph()
 
     def image(self, el):
-        p = _asset_path(el.get("src") or "")
-        if not p:
+        src = el.get("src") or ""
+        # an inline picture (pasted into a note, or a mind map / drawing exported as a PNG)
+        m = re.match(r"data:image/(?:png|jpeg|jpg|gif|bmp);base64,(.+)$", src, re.S | re.I)
+        p = None if m else _asset_path(src)
+        if not m and not p:
             return
         try:
-            self.new_para().add_run().add_picture(str(p), width=Cm(14))
+            pic = io.BytesIO(base64.b64decode(re.sub(r"\s+", "", m.group(1)))) if m else str(p)
+            self.new_para().add_run().add_picture(pic, width=Cm(14))
         except Exception:
-            log.info("export: couldn't add image %s", p, exc_info=True)
+            log.info("export: couldn't add image %s", p or "(inline picture)", exc_info=True)
         self.para = None
 
     def align(self, p, el):

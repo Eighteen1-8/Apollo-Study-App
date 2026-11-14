@@ -50,36 +50,62 @@ function snow(w: number, h: number, amount: number, light: boolean): Fx {
   };
 }
 
-export function meteors(w: number, h: number, amount: number, light: boolean, accent: string): Fx {
+/** Meteors have their own rates (the other effects scale a count by AMOUNT): seconds between two, and on heavy a
+ * shower of several every so often. Trails are longer and brighter on heavy. */
+const METEORS: Record<EffectAmount, { gap: [number, number]; shower?: [number, number]; len: [number, number]; alpha: number; width: number }> = {
+  light: { gap: [4, 9], len: [110, 220], alpha: 0.7, width: 1.6 },
+  medium: { gap: [1.5, 4], len: [120, 240], alpha: 0.75, width: 1.7 },
+  heavy: { gap: [0.3, 1.2], shower: [6, 12], len: [150, 300], alpha: 0.85, width: 2 },
+};
+const MAX_METEORS = 40;
+
+export function meteors(w: number, h: number, level: EffectAmount, light: boolean, accent: string): Fx {
   type M = { x: number; y: number; vx: number; vy: number; len: number; life: number; age: number };
+  const cfg = METEORS[level];
   const live: M[] = [];
-  const gap = () => rand(5, 13) / amount; // seconds until the next one
-  let next = rand(1, 4);
+  let next = rand(0.5, Math.min(4, cfg.gap[1]));
+  let shower = cfg.shower ? rand(3, 8) : Infinity; // seconds until the next shower
   const head = light ? accent : '#ffffff';
+  /** One meteor, `delay` seconds from now (it waits with a negative age), along roughly `angle`. */
+  const spawn = (x: number, y: number, angle: number, delay = 0) => {
+    if (live.length >= MAX_METEORS) return;
+    const speed = rand(650, 1050);
+    live.push({ x, y, vx: -Math.cos(angle) * speed, vy: Math.sin(angle) * speed, len: rand(...cfg.len), life: rand(0.7, 1.2), age: -delay });
+  };
   return {
     step(dt) {
       next -= dt;
+      shower -= dt;
       if (next <= 0) {
-        next = gap();
-        const angle = rand(0.45, 0.75); // radians below horizontal, travelling down-left
-        const speed = rand(650, 1050);
-        live.push({ x: rand(w * 0.25, w * 1.1), y: rand(-60, h * 0.35), vx: -Math.cos(angle) * speed, vy: Math.sin(angle) * speed, len: rand(110, 220), life: rand(0.7, 1.2), age: 0 });
+        next = rand(...cfg.gap);
+        spawn(rand(w * 0.25, w * 1.1), rand(-60, h * 0.35), rand(0.45, 0.75)); // radians below horizontal, down-left
       }
-      for (const m of live) { m.age += dt; m.x += m.vx * dt; m.y += m.vy * dt; }
+      if (shower <= 0 && cfg.shower) {
+        shower = rand(...cfg.shower);
+        // 3–6 from one part of the sky, close together in time and direction
+        const x = rand(w * 0.4, w * 1.05), y = rand(-60, h * 0.25), angle = rand(0.5, 0.7);
+        const n = 3 + Math.floor(Math.random() * 4);
+        for (let i = 0; i < n; i++) spawn(x + rand(-140, 140), y + rand(-60, 60), angle + rand(-0.06, 0.06), i * rand(0.05, 0.2));
+      }
+      for (const m of live) {
+        m.age += dt;
+        if (m.age > 0) { m.x += m.vx * dt; m.y += m.vy * dt; }
+      }
       for (let i = live.length - 1; i >= 0; i--) if (live[i].age > live[i].life) live.splice(i, 1);
     },
     draw(ctx) {
       ctx.lineCap = 'round';
       for (const m of live) {
+        if (m.age <= 0) continue;
         const k = m.age / m.life, fade = Math.min(1, k * 5) * Math.min(1, (1 - k) * 3); // quick in, gentle out
         const sp = Math.hypot(m.vx, m.vy), tx = m.x - (m.vx / sp) * m.len, ty = m.y - (m.vy / sp) * m.len;
         const g = ctx.createLinearGradient(m.x, m.y, tx, ty);
         g.addColorStop(0, head);
         g.addColorStop(0.15, accent);
         g.addColorStop(1, 'transparent');
-        ctx.globalAlpha = 0.7 * fade;
+        ctx.globalAlpha = cfg.alpha * fade;
         ctx.strokeStyle = g;
-        ctx.lineWidth = 1.6;
+        ctx.lineWidth = cfg.width;
         ctx.beginPath(); ctx.moveTo(m.x, m.y); ctx.lineTo(tx, ty); ctx.stroke();
         ctx.globalAlpha = 0.5 * fade;
         ctx.fillStyle = head;
@@ -116,13 +142,13 @@ function fireflies(w: number, h: number, amount: number, light: boolean, accent:
   };
 }
 
-function make(effect: Effect, w: number, h: number, amount: number): Fx | null {
+function make(effect: Effect, w: number, h: number, level: EffectAmount): Fx | null {
   const root = document.documentElement;
   const light = root.dataset.tone === 'light';
   const accent = getComputedStyle(root).getPropertyValue('--accent').trim() || '#8b9bff';
-  if (effect === 'snow') return snow(w, h, amount, light);
-  if (effect === 'meteors') return meteors(w, h, amount, light, accent);
-  if (effect === 'fireflies') return fireflies(w, h, amount, light, accent);
+  if (effect === 'snow') return snow(w, h, AMOUNT[level], light);
+  if (effect === 'meteors') return meteors(w, h, level, light, accent);
+  if (effect === 'fireflies') return fireflies(w, h, AMOUNT[level], light, accent);
   return null;
 }
 
@@ -141,7 +167,7 @@ export default function Ambient() {
       w = window.innerWidth; h = window.innerHeight;
       canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      fx = make(a.effect, w, h, AMOUNT[a.effectAmount]);
+      fx = make(a.effect, w, h, a.effectAmount);
     };
     size();
 

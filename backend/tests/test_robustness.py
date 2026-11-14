@@ -285,6 +285,8 @@ def test_marking_copes_with_a_bad_answer_key(subject):
     ("quiz", {"questions": []}, True), ("exam", {"parts": [{"questions": []}]}, True),
     ("exam", {"parts": [{"questions": [{}]}]}, False), ("mindmap", {"mindmap": {"label": "x", "children": []}}, True),
     ("notes", {"sections": []}, True), ("cheatsheet", {"sections": [{"html": "<p>x</p>"}]}, False),
+    ("marking", {"marking": {"criteria": []}}, True), ("marking", {}, True),
+    ("marking", {"marking": {"criteria": [{"label": "Q1", "awarded": 1, "max": 2}]}}, False),
 ])
 def test_empty_content_is_never_ready(kind, content, empty):
     assert generate._is_empty(kind, content) is empty

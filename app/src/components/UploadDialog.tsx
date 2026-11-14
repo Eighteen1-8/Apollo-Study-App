@@ -18,6 +18,10 @@ const MODE_HELP_PLAIN: Record<VisionMode, string> = {
   off: 'Only the text is used. Fastest; you can have Apollo read the pictures later from the file’s menu.',
 };
 
+/** The "read pictures" choice every way of adding files starts on (dialogs, drops onto topics/textbooks, the drop
+ *  overlay). Files keep the mode they were added with (re-ingest and moves don't change it). */
+export const DEFAULT_VISION: VisionMode = 'auto';
+
 /** What a toast says once files are queued. */
 export const addedNotice = (n: number) =>
   `Adding ${n} file${n === 1 ? '' : 's'}. Apollo reads ${n === 1 ? 'it' : 'them'} in the background: you can ask about ${n === 1 ? 'it' : 'them'} once the progress bar finishes.`;
@@ -46,10 +50,10 @@ export function droppedPaths(e: React.DragEvent): string[] {
 
 /** Upload files to a topic (topic_id) or to the subject's reference library (subject_id). */
 export default function UploadDialog({ title, target, defaultMode, initialPaths, onClose, onDone }: {
-  title: string; target: { topic_id?: number; subject_id?: number }; defaultMode: VisionMode;
+  title: string; target: { topic_id?: number; subject_id?: number }; defaultMode?: VisionMode;
   initialPaths?: string[]; onClose: () => void; onDone: () => void;
 }) {
-  const [mode, setMode] = useState<VisionMode>(defaultMode);
+  const [mode, setMode] = useState<VisionMode>(defaultMode ?? DEFAULT_VISION);
   const [paths, setPaths] = useState<string[]>(initialPaths ?? []);
   const [drag, setDrag] = useState(false);
   const [busy, setBusy] = useState(false);

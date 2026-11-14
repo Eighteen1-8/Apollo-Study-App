@@ -6,8 +6,8 @@ import MaintenanceView from './MaintenanceView';
 import ShareView from './ShareView';
 import { useOverlay } from '../components/overlay';
 import { Button } from '../components/ui';
-import { ACCENTS, CLOUD_FPS, TEXT_SIZES, useAdvanced, useAppearance } from '../theme';
-import { EffectSeg, MotionSeg, ThemeGrid } from '../components/AppearancePickers';
+import { ACCENTS, CLOUD_FPS, useAdvanced, useAppearance } from '../theme';
+import { EffectSeg, MotionSeg, ThemeGrid, UiScaleControl } from '../components/AppearancePickers';
 import { logError } from '../log';
 
 type Field = {
@@ -52,7 +52,7 @@ const GROUPS: { title: string; fields: Field[] }[] = [
     title: 'Vision',
     fields: [
       { key: 'vision_default_topic', label: 'Default for topic material', type: 'select', options: ['auto', 'all', 'off'] },
-      { key: 'vision_default_reference', label: 'Default for textbooks', type: 'select', options: ['all', 'auto', 'off'] },
+      { key: 'vision_default_reference', label: 'Default for textbooks', type: 'select', options: ['auto', 'all', 'off'] },
       { key: 'vision_min_images', label: 'Slides: images needed to trigger vision', type: 'number' },
       { key: 'vision_big_image_area', label: 'Slides: single image area that triggers vision (0–1)', type: 'number' },
       { key: 'vision_low_text_words', label: 'Slides: "little text" threshold (words)', type: 'number' },
@@ -71,12 +71,14 @@ const GROUPS: { title: string; fields: Field[] }[] = [
   },
 ];
 
-const DIALS: { key: string; label: string; levels: [string, string, string]; help: string }[] = [
-  { key: 'chat_assistive', label: 'Assistive', levels: ['Answer only', 'Show the method', 'Teach every step'],
+/** One per level in the backend's chat_prompt.STYLE (api.SETTING_RANGES checks the same range); `def` = its default
+ * in config.DEFAULT_SETTINGS. */
+export const DIALS: { key: string; label: string; levels: string[]; def: number; help: string }[] = [
+  { key: 'chat_assistive', label: 'Assistive', levels: ['Answer only', 'Show the method', 'Teach every step'], def: 1,
     help: 'How much Apollo shows how to solve a problem rather than just giving the result.' },
-  { key: 'chat_concise', label: 'Length', levels: ['Detailed', 'Balanced', 'Concise'],
-    help: 'How long and wordy answers are.' },
-  { key: 'chat_interactive', label: 'Interactive', levels: ['Direct answers', 'Check understanding', 'Guide with questions'],
+  { key: 'chat_concise', label: 'Length', levels: ['Detailed', 'Balanced', 'Concise', 'Very concise'], def: 1,
+    help: 'How long and wordy answers are. Very concise: a few sentences or a short list, more only when you ask.' },
+  { key: 'chat_interactive', label: 'Interactive', levels: ['Direct answers', 'Check understanding', 'Guide with questions'], def: 0,
     help: 'At the top level Apollo breaks a problem into smaller questions for you to answer instead of giving the answer straight away.' },
 ];
 
@@ -85,11 +87,12 @@ export function PersonalityDials({ s, set, help }: { s: Settings; set: (k: strin
   return (
     <div className="dials">
       {DIALS.map((d) => {
-        const v = Math.max(0, Math.min(2, Number(s[d.key] ?? 1)));
+        const max = d.levels.length - 1;
+        const v = Math.max(0, Math.min(max, Number(s[d.key] ?? d.def) || 0));
         return (
           <div key={d.key} className="dial" title={d.help}>
             <div className="dial-head"><span>{d.label}</span><b>{d.levels[v]}</b></div>
-            <input type="range" min={0} max={2} step={1} value={v} aria-label={d.label} onChange={(e) => set(d.key, Number(e.target.value))} />
+            <input type="range" min={0} max={max} step={1} value={v} aria-label={d.label} onChange={(e) => set(d.key, Number(e.target.value))} />
             <div className="dial-ticks">{d.levels.map((l) => <span key={l}>{l}</span>)}</div>
             {help && <small className="dial-help">{d.help}</small>}
           </div>
@@ -226,14 +229,8 @@ function AppearanceSettings() {
       <h2>Appearance</h2>
       <div className="form appearance">
         <div className="field field-wide">
-          <span className="field-label">Text size</span>
-          <div className="seg text-size-seg">
-            {TEXT_SIZES.map((t) => (
-              <button key={t.id} className={a.textSize === t.id ? 'active' : ''} onClick={() => set({ textSize: t.id })}
-                style={{ fontSize: `${Math.round(13 * t.zoom)}px` }}>{t.label}</button>
-            ))}
-          </div>
-          <span className="field-help">Makes everything in the window bigger. Applies straight away.</span>
+          <span className="field-label">UI size</span>
+          <UiScaleControl />
         </div>
         <div className="field field-wide">
           <span className="field-label">Theme</span>
@@ -259,6 +256,10 @@ function AppearanceSettings() {
           <span className="field-label">Background effect</span>
           <EffectSeg />
         </div>
+        <label className="field field-bool">
+          <input type="checkbox" checked={a.pet} onChange={(e) => set({ pet: e.target.checked })} />
+          <span>Show the cat: a small companion in the corner that shows what Apollo is doing (also the cat button beside the study timer)</span>
+        </label>
         <label className="field field-bool">
           <input type="checkbox" checked={a.cloud} onChange={(e) => set({ cloud: e.target.checked })} />
           <span>Show the 3D knowledge cloud (home page background, and each subject's map)</span>

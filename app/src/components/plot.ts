@@ -6,10 +6,11 @@
  * curve under the mouse, snapping to labelled points, and sliders for any `params` the spec declares, which redraw the
  * curves live.
  *
- * Expressions are parsed by a small recursive-descent parser (never eval): numbers, x, parameter names, pi, e,
- * + - * / ^, unary minus, parentheses, implicit multiplication (2x, 3(x+1), a x) and
- * sin cos tan asin acos atan sqrt abs exp ln log.
+ * Expressions are parsed by mathExpr.ts (never eval): numbers, x, parameter names, pi, e, + - * / ^, unary minus,
+ * brackets, implicit multiplication (2x, 3(x+1), a x), ! and the functions listed there (sin cos tan … sqrt abs exp ln log).
+ * A curve whose label is empty is drawn but left out of the legend and the hover readout.
  */
+import { compileExpr, Evaluator, MathError } from './mathExpr';
 
 export interface PlotParam { name: string; min: number; max: number; step?: number; value?: number; label?: string }
 export interface PlotSpec {
@@ -22,74 +23,29 @@ export interface PlotSpec {
 
 type Vars = Record<string, number>;
 type Fn = (x: number, p: Vars) => number;
-const FUNCS: Record<string, (v: number) => number> = {
-  sin: Math.sin, cos: Math.cos, tan: Math.tan, asin: Math.asin, acos: Math.acos, atan: Math.atan,
-  sqrt: Math.sqrt, abs: Math.abs, exp: Math.exp, ln: Math.log, log: Math.log10,
-};
 
+/** A graph's expression as a function of x and the spec's parameters (the parser is mathExpr.ts, shared with the
+ * calculator). Throws when it can't be read. */
 export function compile(src: string, params: string[] = []): Fn {
-  const s = src.replace(/\s+/g, ' ').trim().replace(/\*\*/g, '^').replace(/·|×/g, '*').replace(/−/g, '-');
-  let i = 0;
-  const skip = () => { while (s[i] === ' ') i++; };
-  const peek = () => { skip(); return s[i]; };
-  const fail = (): never => { throw new Error(`Can't read "${src}"`); };
-  // longest name first, so a parameter called "ab" isn't read as a·b
-  const names = [...params].sort((a, b) => b.length - a.length);
-  const expr = (): Fn => {
-    let f = term();
-    while (peek() === '+' || peek() === '-') {
-      const op = s[i++];
-      const a = f, b = term();
-      f = op === '+' ? (x, p) => a(x, p) + b(x, p) : (x, p) => a(x, p) - b(x, p);
-    }
-    return f;
+  let f: Evaluator;
+  try { f = compileExpr(src, { names: ['x', 'X', ...params] }); } catch (e) {
+    throw new Error(`Can't read "${src}"${e instanceof MathError ? `: ${e.message}` : ''}`);
+  }
+  const scope: Vars = {};
+  return (x, p) => {
+    for (const k of params) scope[k] = p[k];
+    scope.x = x;
+    scope.X = x;
+    return f(scope);
   };
-  const term = (): Fn => {
-    let f = unary();
-    for (;;) {
-      const c = peek();
-      if (c === '*' || c === '/') {
-        i++;
-        const a = f, b = unary();
-        f = c === '*' ? (x, p) => a(x, p) * b(x, p) : (x, p) => a(x, p) / b(x, p);
-      } else if (c && /[a-z(0-9.]/i.test(c)) {
-        const a = f, b = unary();
-        f = (x, p) => a(x, p) * b(x, p);
-      } else return f;
-    }
-  };
-  const unary = (): Fn => {
-    if (peek() === '-') { i++; const a = unary(); return (x, p) => -a(x, p); }
-    if (peek() === '+') { i++; return unary(); }
-    return power();
-  };
-  const power = (): Fn => {
-    const a = atom();
-    if (peek() === '^') { i++; const b = unary(); return (x, p) => Math.pow(a(x, p), b(x, p)); }
-    return a;
-  };
-  const atom = (): Fn => {
-    const c = peek();
-    if (c === '(') { i++; const a = expr(); if (peek() !== ')') fail(); i++; return a; }
-    const num = /^\d*\.?\d+(e[+-]?\d+)?/i.exec(s.slice(i));
-    if (num) { i += num[0].length; const v = parseFloat(num[0]); return () => v; }
-    const rest = s.slice(i);
-    const fn = Object.keys(FUNCS).sort((a, b) => b.length - a.length).find((f) => rest.toLowerCase().startsWith(f) && /^[\s(]/.test(rest.slice(f.length)));
-    if (fn) { i += fn.length; const a = atom(); const g = FUNCS[fn]; return (x, p) => g(a(x, p)); }
-    const param = names.find((n) => rest.startsWith(n));
-    if (param) { i += param.length; return (_x, p) => p[param]; }
-    if (/^pi/i.test(rest)) { i += 2; return () => Math.PI; }
-    if (rest[0] === 'x' || rest[0] === 'X') { i++; return (x) => x; }
-    if (rest[0] === 'e') { i++; return () => Math.E; }
-    return fail();
-  };
-  const f = expr();
-  if (peek() !== undefined) fail();
-  return f;
 }
 
-const COLORS = ['#5b8def', '#e5484d', '#16a37f', '#d97706', '#8b5cf6', '#db2777'];
+/** Curve colours, in order (the calculator's function list uses the same ones). */
+export const COLORS = ['#5b8def', '#e5484d', '#16a37f', '#d97706', '#8b5cf6', '#db2777'];
 const W = 520, H = 320, L = 56, R = 16, B = 46;
+/** The SVG's viewBox and the plot area's margins (T is the top margin of a graph without a title), for code that maps
+ * pointer positions onto a graph (the calculator's pan and zoom). */
+export const PLOT_BOX = { W, H, L, R, B, T: 14 } as const;
 const esc = (t: string) => t.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 const fmt = (v: number) => (!Number.isFinite(v) ? '—' : Math.abs(v) >= 1e4 || (Math.abs(v) < 1e-3 && v !== 0) ? v.toExponential(2) : String(+v.toPrecision(4)));
 
@@ -122,18 +78,79 @@ function model(spec: PlotSpec): Model {
   return m;
 }
 
+const percentiles = (vals: number[]): [number, number] | null => {
+  const ys = vals.filter(Number.isFinite).sort((a, b) => a - b);
+  if (!ys.length) return null;
+  return [ys[Math.floor(ys.length * 0.02)], ys[Math.ceil(ys.length * 0.98) - 1]];
+};
+
+/** Whether a pole (vertical asymptote) lies between two neighbouring samples. A big jump is bisected towards the level
+ * halfway between them: a continuous curve's gap shrinks as the bracket narrows, a pole's doesn't (it grows). Returns
+ * the narrowed bracket [xLeft, yLeft, xRight, yRight] for a pole, or null. */
+function poleBetween(fn: (x: number) => number, xa: number, ya: number, xb: number, yb: number, span: number): [number, number, number, number] | null {
+  const jump = Math.abs(yb - ya);
+  if (!(jump > span * 0.02)) return null;
+  const c = (ya + yb) / 2;
+  let lo = xa, hi = xb, ylo = ya, yhi = yb;
+  for (let i = 0; i < 12; i++) {
+    const xm = (lo + hi) / 2, ym = fn(xm);
+    if (!Number.isFinite(ym)) return [lo, ylo, hi, yhi]; // landed on the pole itself
+    if ((ylo - c) * (ym - c) <= 0) { hi = xm; yhi = ym; } else { lo = xm; ylo = ym; }
+  }
+  return Math.abs(yhi - ylo) > jump * 0.5 ? [lo, ylo, hi, yhi] : null;
+}
+
+/** Split a sampled curve into pen-down runs for the window [y0, y1]: the pen lifts at non-finite values and at poles,
+ * where the left branch runs off one edge and the right branch comes back from the other. Values far outside the
+ * window are clamped just beyond it (invisible, and keeps the path's numbers small). `nearPole` holds the sample
+ * indices beside a pole, which `fitY` leaves out. */
+export function traceRuns(pts: [number, number][], fn: ((x: number) => number) | undefined, y0: number, y1: number) {
+  const span = y1 - y0 || 1;
+  const clamp = (y: number) => Math.min(Math.max(y, y0 - span), y1 + span);
+  const runs: [number, number][][] = [];
+  const nearPole = new Set<number>();
+  let run: [number, number][] = [];
+  const end = () => { if (run.length) runs.push(run); run = []; };
+  pts.forEach(([x, y], k) => {
+    if (!Number.isFinite(y)) { end(); return; }
+    const prev = k > 0 ? pts[k - 1] : null;
+    if (fn && prev && Number.isFinite(prev[1]) && run.length) {
+      const pole = poleBetween(fn, prev[0], prev[1], x, y, span);
+      if (pole) {
+        run.push([pole[0], clamp(pole[1])]);
+        end();
+        run.push([pole[2], clamp(pole[3])]);
+        for (let j = k - 3; j <= k + 2; j++) nearPole.add(j);
+      }
+    }
+    run.push([x, clamp(y)]);
+  });
+  end();
+  return { runs, nearPole };
+}
+
 /** y range from the data at these slider values (ignoring wild values such as asymptotes), with some headroom when
  * there are sliders. It stays fixed while a slider is dragged, so the change is visible, and is re-fitted on release. */
 function fitY(m: Model, vars: Vars) {
-  const ys = [...curves(m, vars).flatMap((c) => c.pts.map((p) => p[1])), ...(m.spec.points ?? []).map((p) => p.y)]
-    .filter(Number.isFinite).sort((a, b) => a - b);
-  if (!ys.length) return;
-  const lo = ys[Math.floor(ys.length * 0.02)], hi = ys[Math.ceil(ys.length * 0.98) - 1];
+  const cs = curves(m, vars);
+  const points = (m.spec.points ?? []).map((p) => p.y);
+  const first = percentiles([...cs.flatMap((c) => c.pts.map((p) => p[1])), ...points]);
+  if (!first) return;
+  // a second pass without the samples beside a pole, whose huge values would flatten the rest of the curve
+  const ys = cs.flatMap((c) => {
+    if (!c.fn) return c.pts.map((p) => p[1]);
+    const { nearPole } = traceRuns(c.pts, c.fn, first[0], first[1]);
+    return c.pts.filter((_p, k) => !nearPole.has(k)).map((p) => p[1]);
+  });
+  const [lo, hi] = percentiles([...ys, ...points]) ?? first;
   const pad = (hi - lo || 1) * 0.08;
   [m.y0, m.y1] = [lo - pad, hi + pad];
   if (m.y0 > 0 && m.y0 < (m.y1 - m.y0) * 0.3) m.y0 = 0;
   if (m.params.length) { const span = m.y1 - m.y0; m.y1 += span * 0.2; if (m.y0 < 0) m.y0 -= span * 0.2; }
 }
+
+/** The y window a spec gets (its own, or fitted to the curves). */
+export function plotRange(spec: PlotSpec): [number, number] { const m = model(spec); return [m.y0, m.y1]; }
 
 const initialVars = (m: Model): Vars => Object.fromEntries(m.params.map((p) => [p.name, p.value ?? (p.min + p.max) / 2]));
 
@@ -154,11 +171,9 @@ const sy = (m: Model, y: number) => m.T + (1 - (y - m.y0) / (m.y1 - m.y0)) * (H 
 function curvesSvg(m: Model, vars: Vars): string {
   const out: string[] = [];
   curves(m, vars).forEach((c, k) => {
-    let d = '', pen = false;
-    for (const [x, y] of c.pts) {
-      if (!Number.isFinite(y) || y < m.y0 - (m.y1 - m.y0) * 3 || y > m.y1 + (m.y1 - m.y0) * 3) { pen = false; continue; }
-      d += `${pen ? 'L' : 'M'}${sx(m, x).toFixed(1)},${sy(m, y).toFixed(1)}`;
-      pen = true;
+    let d = '';
+    for (const run of traceRuns(c.pts, c.fn, m.y0, m.y1).runs) {
+      run.forEach(([x, y], j) => { d += `${j ? 'L' : 'M'}${sx(m, x).toFixed(1)},${sy(m, y).toFixed(1)}`; });
     }
     out.push(`<path d="${d}" fill="none" stroke="${COLORS[k % COLORS.length]}" stroke-width="2.2"/>`);
     if (c.dots) for (const [x, y] of c.pts) out.push(`<circle cx="${sx(m, x)}" cy="${sy(m, y)}" r="3" fill="${COLORS[k % COLORS.length]}"/>`);
@@ -267,7 +282,7 @@ export function hydratePlots(root: HTMLElement) {
         const x = m.x0 + ((px - L) / (W - L - R)) * (m.x1 - m.x0);
         rows = [`x = ${fmt(x)}`];
         curves(m, vars).forEach((c, k) => {
-          if (!c.fn) return;
+          if (!c.fn || !c.label) return;
           const y = c.fn(x);
           if (Number.isFinite(y) && y >= m.y0 && y <= m.y1) marks += `<circle cx="${px}" cy="${sy(m, y)}" r="4.5" fill="${COLORS[k % COLORS.length]}" class="plot-dot"/>`;
           rows.push(`<span style="color:${COLORS[k % COLORS.length]}">●</span> ${esc((c.label ?? '').slice(0, 24))}: ${fmt(y)}`);

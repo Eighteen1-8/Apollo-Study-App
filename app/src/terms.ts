@@ -39,6 +39,9 @@ const TECH = {
   llm: 'LLM',
   embeddings: 'embeddings',
   stale: '!',
+  // the app pet's bubble (petStatus.ts)
+  visionRunning: 'Running vision on',
+  visionChecking: 'Checking the vision notes of',
 } as const;
 
 export type Term = keyof typeof TECH;
@@ -80,6 +83,8 @@ const PLAIN: Record<Term, string> = {
   llm: 'Apollo',
   embeddings: 'search',
   stale: 'Needs update',
+  visionRunning: 'Reading the pictures in',
+  visionChecking: 'Checking the picture notes of',
 };
 
 /** A term for the current mode, outside React. */

@@ -1,6 +1,32 @@
 /* The theme cards and the animation-speed buttons: Settings → Appearance and the first-run setup use the same ones.
    Both apply at once (theme.ts saves them on this computer). */
-import { EFFECT_AMOUNTS, EFFECTS, MOTIONS, THEMES, useAppearance } from '../theme';
+import { useEffect, useState } from 'react';
+import { EFFECT_AMOUNTS, EFFECTS, MOTIONS, THEMES, UI_SCALE, clampScale, scaleStep, useAppearance } from '../theme';
+import Icon from './Icon';
+
+/** The UI size (theme.ts `uiScale`): a slider with − / + and Reset. The slider shows its value while dragged and
+ * applies it on release, so the window doesn't rescale under the pointer. Ctrl + / - / 0 change the same setting. */
+export function UiScaleControl() {
+  const [a, set] = useAppearance();
+  const [v, setV] = useState(a.uiScale);
+  useEffect(() => setV(a.uiScale), [a.uiScale]);
+  const commit = (n: number) => { const c = clampScale(n); setV(c); if (c !== a.uiScale) set({ uiScale: c }); };
+  return (
+    <>
+      <div className="ui-scale">
+        <button className="icon-btn" aria-label="Smaller" title="Smaller (Ctrl -)" disabled={a.uiScale <= UI_SCALE.min}
+          onClick={() => commit(scaleStep(a.uiScale, -1))}><Icon name="minus" /></button>
+        <input type="range" min={UI_SCALE.min} max={UI_SCALE.max} step={UI_SCALE.step} value={v} aria-label="UI size"
+          onChange={(e) => setV(Number(e.target.value))} onPointerUp={() => commit(v)} onKeyUp={() => commit(v)} onBlur={() => commit(v)} />
+        <button className="icon-btn" aria-label="Bigger" title="Bigger (Ctrl +)" disabled={a.uiScale >= UI_SCALE.max}
+          onClick={() => commit(scaleStep(a.uiScale, 1))}><Icon name="add" /></button>
+        <span className="ui-scale-val" aria-live="polite">{v}%</span>
+        <button className="btn btn-sm" disabled={a.uiScale === UI_SCALE.normal} onClick={() => commit(UI_SCALE.normal)}>Reset</button>
+      </div>
+      <span className="field-help">Makes everything in the window bigger or smaller. Ctrl + and Ctrl − do the same, Ctrl 0 resets it.</span>
+    </>
+  );
+}
 
 /** The background effect (components/Ambient.tsx) and how much of it. */
 export function EffectSeg() {

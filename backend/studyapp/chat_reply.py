@@ -7,6 +7,7 @@ import logging
 import re
 import time
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -20,14 +21,23 @@ from .chat_prompt import (ATTACHED_RULES, DEFAULT_RULES, QUOTE_RULES, SEARCH_TOO
 log = logging.getLogger(__name__)
 from .chats import _add_message, _chat, _msg_out, _title_later
 from .chat_tools import READ_TOOLS, TOOL_SPECS, _read_tool, _review_message, _todo_message, _tool_message
+from .parsers import approx_tokens
 
 router = APIRouter()
 
+MAX_ROUNDS = 5  # model calls per turn: each round of read-only tool calls feeds its results into the next
+TOOL_RESULT_TOKENS = 16000  # what read-only tool results may add to one turn, in all
+LIMIT_NOTE = "\n(… cut off: the limit on lookups for this question is reached. Answer now from what you have.)"
+LAST_NOTE = "\n(That was your last lookup for this question: answer now from what you have.)"
+
 
 class Quote(BaseModel):
-    """Text the student highlighted in a document, with the sentence before and after it."""
+    """Text the student highlighted in a document, with the sentence before and after it (kind 'passage'), or part of
+    one of Apollo's replies the student is replying to (kind 'reply', `message_id` = that reply)."""
+    kind: Literal["passage", "reply"] = "passage"
+    message_id: int | None = None
     document_id: int | None = None
-    filename: str
+    filename: str = ""
     label: str = ""
     text: str
     before: str = ""
@@ -149,16 +159,19 @@ def _respond(cid: int, user_msg: dict, reasoning: str, announce_user: bool):
             system, full = _system_prompt(chat)
             hist = _history(cid)
             query = user_msg["content"] + (f"\n{quote['text']}" if quote else "")
+            seen: set[int] = set()  # chunks given this turn: search_material brings only new ones
             extra = ""
             if attached:
                 extra += "\n\n" + _attachment_material(chat, attached, query, full)
             if attached or files:
                 extra += "\n\n" + ATTACHED_RULES
-            if quote:
+            if quote and quote.get("kind") != "reply":
                 extra += "\n\n" + QUOTE_RULES
             if not full:
-                extra += "\n\n[Relevant excerpts from the study material]\n" + context.retrieved_material(chat["subject_id"], chat["topic_id"], query)
-            tb = "" if context.uses_reference_material(chat["subject_id"], chat["topic_id"]) else context.textbook_passages(chat["subject_id"], query, k=4)
+                extra += "\n\n[Relevant excerpts from the study material]\n" + context.retrieved_material(
+                    chat["subject_id"], chat["topic_id"], query, seen=seen)
+            tb = "" if context.uses_reference_material(chat["subject_id"], chat["topic_id"]) else context.textbook_passages(
+                chat["subject_id"], query, k=4, seen=seen)
             if tb:
                 extra += "\n\n[Relevant textbook passages, authoritative reference]\n" + tb
             if extra:
@@ -179,7 +192,8 @@ def _respond(cid: int, user_msg: dict, reasoning: str, announce_user: bool):
             st["level"] = level
 
             content = ""
-            for round_ in range(3):  # each search of other topics feeds back in; at most two per turn
+            tool_tokens = 0
+            for round_ in range(MAX_ROUNDS):  # each round of read-only tool calls feeds back in
                 content, searches = "", []
                 st["content"] = ""
                 for kind, data in llm.chat_stream(convo, tools=tools, max_tokens=6000 if level == "off" else 16000,
@@ -217,13 +231,22 @@ def _respond(cid: int, user_msg: dict, reasoning: str, announce_user: bool):
                                 yield ev({"type": "tool", "message": _todo_message(chat, call["arguments"])})
                             elif call["name"] == "review_content":
                                 yield ev({"type": "tool", "message": _review_message(chat, call["arguments"])})
-                if not searches or round_ == 2:
+                if not searches or round_ == MAX_ROUNDS - 1:
                     break
                 calls, results = [], []
                 for k, s in enumerate(searches):
                     if s["name"] == "search_other_topics":
                         st["searched"].append(str((s["arguments"] or {}).get("query") or user_msg["content"]))
-                    status, result = _read_tool(chat, s, others, user_msg["content"])
+                    room = TOOL_RESULT_TOKENS - tool_tokens
+                    if room <= 0:
+                        status, result = "Answering from what I found", LIMIT_NOTE.strip()
+                    else:
+                        status, result = _read_tool(chat, s, others, user_msg["content"], seen)
+                        if approx_tokens(result) > room:
+                            result = result[:int(room * 3.8)] + LIMIT_NOTE
+                        tool_tokens += approx_tokens(result)
+                    if round_ == MAX_ROUNDS - 2 and k == len(searches) - 1:
+                        result += LAST_NOTE
                     yield ev({"type": "status", "text": status})
                     tracked.update(status)
                     call_id = s.get("id") or f"call_{round_}_{k}"

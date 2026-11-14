@@ -67,8 +67,8 @@ function Palette({ go, route, onClose }: { go: (r: Route) => void; route: Route;
     for (const d of data.documents) add({ key: `d${d.id}`, kind: 'file', icon: <Icon name="file" size={15} />, title: d.filename,
       sub: `${d.kind === 'reference' ? 'Textbook' : topicName(d.topic_id) || 'File'} · ${subjectName(d.subject_id)}`, run: () => openIn(d.subject_id, { kind: 'doc', id: d.id }) });
     for (const a of data.artifacts) add({ key: `g${a.id}`, kind: a.type, icon: TYPE_ICON(a.type), title: a.title,
-      sub: `Generated · ${subjectName(a.subject_id)}`, run: () => openIn(a.subject_id, { kind: 'artifact', id: a.id }) });
-    for (const n of data.notes) add({ key: `n${n.id}`, kind: 'note', icon: <Icon name="note" size={15} />, title: n.title, sub: `My notes · ${subjectName(n.subject_id)}`, run: () => openIn(n.subject_id, { kind: 'note', id: n.id }) });
+      sub: `${a.type === 'marking' ? 'Marking' : 'Generated'} · ${subjectName(a.subject_id)}`, run: () => openIn(a.subject_id, { kind: 'artifact', id: a.id }) });
+    for (const n of data.notes) add({ key: `n${n.id}`, kind: 'note', icon: <Icon name={n.kind === 'map' ? 'noteMap' : n.kind === 'drawing' ? 'drawing' : 'note'} size={15} />, title: n.title, sub: `${n.kind === 'map' ? 'Mind map' : n.kind === 'drawing' ? 'Drawing' : 'My notes'} · ${subjectName(n.subject_id)}`, run: () => openIn(n.subject_id, { kind: 'note', id: n.id }) });
     for (const c of data.chats) add({ key: `c${c.id}`, kind: 'chat', icon: <Icon name="chat" size={15} />, title: c.title, sub: `Chat · ${subjectName(c.subject_id)}`, run: () => openIn(c.subject_id, { kind: 'chat', id: c.id }) });
     return out;
   }, [data, go, here]);

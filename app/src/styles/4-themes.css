@@ -172,7 +172,7 @@ h2 { font-size: 16.5px; font-weight: 650; letter-spacing: -0.01em; }
 
 /* ================================================================ minibar */
 .minibar { background: color-mix(in srgb, var(--minibar-bg) 82%, transparent); backdrop-filter: blur(18px) saturate(1.3);
-  border-right: 1px solid var(--border); position: relative; z-index: 30; }
+  border-right: 1px solid var(--border); position: relative; z-index: var(--z-sidebar); }
 .mini-home { padding: 3px; transition: transform 0.35s var(--ease-spring), background 0.2s, box-shadow 0.3s; }
 .mini-home:hover { transform: scale(1.06) rotate(-4deg); }
 .mini-home.active { background: var(--accent-soft); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent), 0 6px 24px -6px var(--accent-glow); }
@@ -248,7 +248,7 @@ input[type="checkbox"], input[type="radio"], input[type="range"] { accent-color:
 /* ================================================================ overlays */
 .ctx-menu { background: var(--glass-strong); backdrop-filter: blur(18px) saturate(1.4); border-radius: 12px; box-shadow: var(--shadow-lg);
   transform-origin: top left; animation: pop 0.18s var(--ease-out); }
-/* a submenu sits inside its blurred parent, where a second backdrop blur has nothing to blur: make it opaque */
+/* a submenu (portalled beside its parent) overlaps the parent's edge: opaque, so the two don't blur into each other */
 .ctx-menu.ctx-sub { background: color-mix(in srgb, var(--bg-elev) 97%, var(--text) 3%); backdrop-filter: none; }
 .ctx-item { border-radius: 7px; transition: background 0.12s, color 0.12s, padding 0.2s var(--ease-out); }
 .ctx-item:hover:not(:disabled) { padding-left: 14px; }
@@ -546,8 +546,10 @@ a.cite:hover { transform: translateY(-1px); background: color-mix(in srgb, var(-
 .dbl-hint { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); z-index: 3; padding: 3px 9px; border-radius: 7px; pointer-events: none;
   background: var(--accent); color: var(--bg); font-size: 12.5px; font-weight: 600; white-space: nowrap; box-shadow: var(--shadow-lg); animation: pop 0.2s var(--ease-out); }
 
-/* Tables in generated text (quiz questions, cards, chat): wide ones scroll instead of overflowing the card */
-.md table { display: block; max-width: 100%; overflow-x: auto; }
+/* Tables in generated text (quiz questions, cards, chat, notes): each sits in a scroller (Markdown.renderMarkdown), so
+   the table keeps a real grid that uses the width there is, and a wide one scrolls instead of overflowing the card */
+.md .table-scroll { max-width: 100%; overflow-x: auto; }
+.md table { display: table; max-width: none; }
 .card-list-item { position: relative; }
 .card-x { position: absolute; top: 6px; right: 6px; opacity: 0; transition: opacity 0.15s; }
 .card-list-item:hover .card-x { opacity: 1; }

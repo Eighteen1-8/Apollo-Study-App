@@ -2,15 +2,18 @@
 
 Every generator works group by group (see context.material_groups). Within a group the system message
 (rules + material) is identical for every call, so only the first call pays the prefill cost."""
+import hashlib
 import json
 import re
 import tempfile
 import time
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from typing import Literal
 
-from . import citations, context, db, errors, figures, llm, notehtml, pipeline
+from pydantic import BaseModel, Field, model_validator
+
+from . import citations, context, db, errors, figures, llm, marking, notehtml, pipeline
 from .parsers import IMAGE_EXTS, approx_tokens, parse, render_pdf_page, sha
 
 TOOLS = {
@@ -22,7 +25,7 @@ TOOLS = {
     "create_mindmap": "mindmap",
 }
 TYPE_TITLES = {"flashcards": "Flashcards", "quiz": "Quiz", "exam": "Exam", "notes": "Notes", "cheatsheet": "Cheat sheet",
-               "mindmap": "Mind map"}
+               "mindmap": "Mind map", "marking": "Marking"}  # marking isn't a chat tool (it needs the student's files)
 
 DIFFICULTY = {
     "easy": "EASY: keep the same structure and marks, but make every question simpler than the practice exam: "
@@ -81,8 +84,49 @@ def _extra_text(params):
 def _textbook(subject_id, query, topic_id=None):
     if context.uses_reference_material(subject_id, topic_id):
         return ""  # the textbooks are the material already
+    from .chat_prompt import TEXTBOOK_RULE  # here: chat_prompt → study_api → jobs imports this module
     tb = context.textbook_passages(subject_id, query, k=4)
-    return f"\n\nRelevant textbook passages (authoritative reference, use to check facts and add depth):\n{tb}" if tb else ""
+    # the textbook rule goes with the passages (after the cached material), so the system prompt stays the same
+    return (f"\n\nRelevant textbook passages (authoritative reference, use to check facts and add depth):\n{tb}\n"
+            f"{TEXTBOOK_RULE}") if tb else ""
+
+
+class Partial:
+    """What a generation has finished so far, saved in artifacts.partial as each section / part / batch finishes, so a
+    retry after a failure or cancel (and a job requeued at start-up) continues from there. Keyed by a hash of the
+    artifact's type, scope and params: anything changed and the saved parts are ignored. Never read as content (the
+    library shows content only once it's ready); cleared when the content is saved, and by a deliberate Regenerate
+    of ready content (chat_api.retry_artifact)."""
+
+    def __init__(self, art: dict, params: dict):
+        self.id = art.get("id")  # None: nothing to save to (a generator called on its own)
+        basis = {"type": art.get("type"), "topic": art.get("topic_id"), "params": params}
+        self.key = hashlib.sha256(json.dumps(basis, sort_keys=True, default=str).encode()).hexdigest()[:20]
+        try:
+            data = json.loads(art.get("partial") or "{}")
+        except ValueError:
+            data = {}
+        self.done: dict = (data.get("done") or {}) if isinstance(data, dict) and data.get("key") == self.key else {}
+        self.resumed = len(self.done)
+
+    def get(self, key: str):
+        return self.done.get(key)
+
+    def put(self, key: str, value):
+        self.done[key] = value
+        if self.id is not None:
+            db.ex("UPDATE artifacts SET partial=? WHERE id=?",
+                  (json.dumps({"key": self.key, "done": self.done}), self.id))
+
+    def __contains__(self, key: str) -> bool:
+        return key in self.done
+
+
+def _partial(art: dict, params: dict) -> Partial:
+    """The artifact's Partial (one per run, kept on the row dict so every generator shares it)."""
+    if not isinstance(art.get("_partial"), Partial):
+        art["_partial"] = Partial(art, params)
+    return art["_partial"]
 
 
 class Progress:
@@ -113,11 +157,26 @@ class Cards(BaseModel):
 
 
 class MCQ(BaseModel):
+    """A quiz question: multiple choice (`mcq`, 4 options) or true/false (`tf`, options exactly ["True", "False"])."""
+    type: Literal["mcq", "tf"] = "mcq"
     question: str
-    options: list[str] = Field(min_length=4, max_length=4)
+    options: list[str] = Field(min_length=2, max_length=4)
     answer_index: int = Field(ge=0, le=3)
     explanation: str
     source: str = ""
+
+    @model_validator(mode="after")
+    def _shape(self):
+        if self.type == "tf":
+            words = [o.strip().lower().rstrip(".") for o in self.options]
+            if self.answer_index > 1 or (words != ["true", "false"] and words != ["false", "true"]):
+                raise ValueError("a true/false question has options ['True', 'False'] and answer_index 0 or 1")
+            if words[0] == "false":  # always True first, so A is True everywhere
+                self.answer_index = 1 - self.answer_index
+            self.options = ["True", "False"]
+        elif len(self.options) != 4 or self.answer_index > 3:
+            raise ValueError("a multiple-choice question has exactly 4 options")
+        return self
 
 
 class MCQs(BaseModel):
@@ -150,15 +209,24 @@ def _per_section(art, params, groups, total, prog, make_task, schema, pick):
     shares = _allocate(total, [s["tokens"] for _, s in sections])
     items = []
     calls = [(gi, s, n) for (gi, s), n in zip(sections, shares) if n > 0]
+    field = next(iter(schema.model_fields))  # "cards" | "questions"
+    item_cls = schema.model_fields[field].annotation.__args__[0]
+    part = _partial(art, params)
     for k, (gi, sec, n) in enumerate(calls):
+        key = f"s:{sec.get('doc_id')}:{sec['title']}:{n}"
+        if key in part:  # finished before a failure, cancel or restart
+            items += [item_cls.model_validate(d) for d in part.get(key)]
+            continue
         prog(0.05 + 0.9 * k / len(calls), f"Section {k + 1}/{len(calls)}: {sec['title']}")
         system = _system(art["scope"], groups[gi])
         task = make_task(sec, n, [pick(i) for i in items][-60:]) + _focus_text(params) + _textbook(art["subject_id"], sec["title"], art["topic_id"])
         out = llm.chat_json([{"role": "system", "content": system}, {"role": "user", "content": task}], schema,
                             max_tokens=16000, reasoning=db.setting("generation_reasoning"), temperature=0.4)
-        new = out.cards if isinstance(out, Cards) else out.questions
+        new = getattr(out, field)
         seen = {pick(i).strip().lower() for i in items}
-        items += [i for i in new if pick(i).strip().lower() not in seen]  # exact-text dedupe
+        added = [i for i in new if pick(i).strip().lower() not in seen]  # exact-text dedupe
+        items += added
+        part.put(key, [i.model_dump() for i in added])
     return items
 
 
@@ -175,13 +243,45 @@ def gen_flashcards(art, params, groups, prog):
     return {"cards": [c.model_dump() for c in cards]}
 
 
+QUIZ_TYPES = ("mcq", "tf")  # short answers would need model marking, so quizzes stay with these two
+# the exam's DIFFICULTY wording, for a quiz (there's no practice exam to compare with)
+QUIZ_DIFFICULTY = {
+    "easy": "EASY: make every question simple: recall and direct application, one step at most in calculations, "
+            "obvious distractors, clear wording.",
+    "normal": "NORMAL: a typical revision quiz: a mix of recall and application, short calculations, plausible "
+              "distractors.",
+    "hard": "HARD: make every question demanding: analysis and evaluation, multi-step calculations, close distractors, "
+            "questions combining several concepts.",
+}
+
+
+def quiz_types(params: dict) -> list[str]:
+    types = [t for t in (params.get("types") or []) if t in QUIZ_TYPES]
+    return types or ["mcq"]
+
+
 def gen_quiz(art, params, groups, prog):
     n = max(1, min(int(params.get("count") or 10), 60))
+    types = quiz_types(params)
+    difficulty = params.get("difficulty") if params.get("difficulty") in QUIZ_DIFFICULTY else None
+    if types == ["tf"]:
+        kind = ("true/false questions (type 'tf'): each a clear statement that is definitely true or definitely false "
+                "according to the material, options exactly [\"True\", \"False\"], answer_index 0 for True or 1 for False, "
+                "and roughly as many false statements as true ones. The explanation says why, correcting a false statement")
+    elif "tf" in types:
+        kind = ("questions, mostly multiple choice (type 'mcq': 4 plausible options, exactly one correct) with about a "
+                "third true/false (type 'tf': a statement, options exactly [\"True\", \"False\"], answer_index 0 for True "
+                "or 1 for False). Each has an explanation of why the answer is right (and, for multiple choice, why the "
+                "others are wrong)")
+    else:
+        kind = ("multiple-choice questions. Each has 4 plausible options, exactly one correct, and an explanation of why it "
+                "is right and why the others are wrong")
+    level = f"\nDifficulty: {QUIZ_DIFFICULTY[difficulty]}" if difficulty else ""
+
     def task(sec, k, existing):
         ex = ("\nAlready asked (do not repeat): " + json.dumps(existing)) if existing else ""
-        return (f"Write exactly {k} multiple-choice questions from the document section '{sec['title']}' in the material. "
-                "Each has 4 plausible options, exactly one correct, and an explanation of why it is right and why the "
-                "others are wrong. Put the options only in 'options', never listed inside the question text."
+        return (f"Write exactly {k} {kind}, from the document section '{sec['title']}' in the material. "
+                "Put the options only in 'options', never listed inside the question text." + level
                 + ITEM_FORMAT + ex)
     qs = _per_section(art, params, groups, n, prog, task, MCQs, lambda q: q.question)
     for q in qs:  # the slide/page that actually holds the answer (citations.py)
@@ -247,7 +347,14 @@ def gen_notes(art, params, groups, prog):
     sections = [(gi, s) for gi, g in enumerate(groups) for s in g["sections"]]
     focus = (params.get("focus") or "").strip()
     out, written = [], []
+    part = _partial(art, params)
     for k, (gi, sec) in enumerate(sections):
+        key = f"n:{sec.get('doc_id')}:{sec['title']}"
+        if key in part:  # written before a failure, cancel or restart
+            page = part.get(key)
+            out.append({"title": sec["title"], "topic": sec["topic"], **page})
+            written.append((sec["title"], page))
+            continue
         label = f"Writing notes {k + 1}/{len(sections)}: {sec['title']}"
         prog(0.05 + 0.9 * k / len(sections), label)
         task = (f"Write comprehensive, visually clear study notes for the document section '{sec['title']}', as a page "
@@ -269,6 +376,7 @@ def gen_notes(art, params, groups, prog):
                      task + _textbook(art["subject_id"], sec["title"], art["topic_id"]), art, prog, label)
         out.append({"title": sec["title"], "topic": sec["topic"], **page})
         written.append((sec["title"], page))
+        part.put(key, page)
     return {"sections": out}
 
 
@@ -281,7 +389,15 @@ def gen_cheatsheet(art, params, groups, prog):
     """One page per material group. Later parts see an outline of the earlier ones and add only what is new, so a
     large scope (or a focus list every group touches) doesn't produce the same cheat sheet several times over."""
     out, written = [], []
+    part = _partial(art, params)
     for gi, g in enumerate(groups):
+        key = f"c{gi}:" + ",".join(f"{s.get('doc_id')}/{s['title']}" for s in g["sections"])
+        if key in part:  # written before a failure, cancel or restart (None: that part had nothing new)
+            done = part.get(key)
+            if done:
+                out.append(done)
+                written.append((done["title"], done))
+            continue
         label = f"Writing cheat sheet {gi + 1}/{len(groups)}"
         prog(0.1 + 0.85 * gi / len(groups), label)
         task = ("Write a dense, scannable one-page cheat sheet for ALL the material above. Group it by topic in "
@@ -297,10 +413,12 @@ def gen_cheatsheet(art, params, groups, prog):
                      "Spend the page on what this material adds.\n" + covered)
         page = _page(_system(art["scope"], g), task, art, prog, label, max_tokens=12000, allow_empty=gi > 0)
         if page is None:
+            part.put(key, None)
             continue  # this part had nothing new
         title = f"Part {gi + 1} · {_group_title(g)}" if len(groups) > 1 else "Cheat sheet"
         out.append({"title": title, **page})
         written.append((title, page))
+        part.put(key, {"title": title, **page})
     return {"sections": out}
 
 
@@ -326,7 +444,12 @@ def _prune(nodes: list[MapNode], depth: int) -> list[dict]:
 
 def gen_mindmap(art, params, groups, prog):
     trees = []
+    part = _partial(art, params)
     for gi, g in enumerate(groups):
+        key = f"m{gi}:" + ",".join(f"{s.get('doc_id')}/{s['title']}" for s in g["sections"])
+        if key in part:  # mapped before a failure, cancel or restart
+            trees.append(MindMap.model_validate(part.get(key)))
+            continue
         prog(0.1 + 0.85 * gi / len(groups), f"Mapping the material {gi + 1}/{len(groups)}" if len(groups) > 1 else "Mapping the material")
         task = ("Build a mind map of ALL the material above, showing how its ideas connect. The centre is the overall "
                 "subject of this material. Use 4-8 main branches (the big themes, in the order the material teaches them), "
@@ -336,6 +459,7 @@ def gen_mindmap(art, params, groups, prog):
         res = llm.chat_json([{"role": "system", "content": _system(art["scope"], g)}, {"role": "user", "content": task}],
                             MindMap, max_tokens=12000, reasoning=db.setting("generation_reasoning"), temperature=0.3)
         trees.append(res)
+        part.put(key, res.model_dump())
     if len(trees) == 1:
         root = {"label": trees[0].central.strip()[:80], "note": "", "source": "", "children": _prune(trees[0].branches, 1)}
     else:  # one branch per group of material
@@ -407,9 +531,9 @@ def _practice_exam_content(path: Path, subject_id: int):
     text = "\n\n".join(f"[{u['label']}]\n{u['text']}" for u in units if u["text"].strip())
     images = []
     if path.suffix.lower() == ".pdf":
-        images = [render_pdf_page(path, u["idx"], dpi=110) for u in units[:12]]
-    elif path.suffix.lower() in IMAGE_EXTS:
-        images = [data]
+        images = [(render_pdf_page(path, u["idx"], dpi=110), "image/png") for u in units[:12]]
+    elif path.suffix.lower() in IMAGE_EXTS:  # a photo of a paper exam: scaled down, sent as its real type
+        images = [llm.model_image(data, max_side=2048)]
     # one row per subject and file: generating again from the same practice exam reuses it
     row = db.q1("SELECT id FROM practice_exams WHERE subject_id=? AND sha256=? ORDER BY id DESC LIMIT 1", (subject_id, digest))
     if row:
@@ -445,40 +569,55 @@ def gen_exam(art, params, groups, prog):
     pid, text, images = _practice_exam_content(path, art["subject_id"])
     topics = ", ".join(t["name"] for t in context.topics_in_scope(art["subject_id"], art["topic_id"]))
 
-    prog(0.08, "Analysing exam structure")
-    content = [{"type": "text", "text":
-                f"This is a PRACTICE EXAM a student uploaded. The student studies: {art['scope']} (topics: {topics}).\n"
-                "Extract its exact STRUCTURE as a blueprint: every part/section in order, the question type, how many "
-                "questions, marks per question, sub-question structure (e.g. case studies), instructions, time allowed and "
-                "total marks. Describe the difficulty profile (cognitive level, calculation depth, distractor quality, answer "
-                "length) and style notes per part. Also say which subject the exam is about and whether it matches the "
-                f"student's subject.\n\nExtracted text:\n{text}"}]
-    content += [llm.image_part(img) for img in images]
-    bp = llm.chat_json([{"role": "user", "content": content}], Blueprint, max_tokens=12000, reasoning=db.setting("generation_reasoning"), temperature=0.2)
+    saved = _partial(art, params)
+    if "bp" in saved:  # the structure was read before a failure, cancel or restart
+        bp = Blueprint.model_validate(saved.get("bp"))
+    else:
+        prog(0.08, "Analysing exam structure")
+        content = [{"type": "text", "text":
+                    f"This is a PRACTICE EXAM a student uploaded. The student studies: {art['scope']} (topics: {topics}).\n"
+                    "Extract its exact STRUCTURE as a blueprint: every part/section in order, the question type, how many "
+                    "questions, marks per question, sub-question structure (e.g. case studies), instructions, time allowed and "
+                    "total marks. Describe the difficulty profile (cognitive level, calculation depth, distractor quality, answer "
+                    "length) and style notes per part. Also say which subject the exam is about and whether it matches the "
+                    f"student's subject.\n\nExtracted text:\n{text}"}]
+        content += [llm.image_part(img, mime) for img, mime in images]
+        bp = llm.chat_json([{"role": "user", "content": content}], Blueprint, max_tokens=12000, reasoning=db.setting("generation_reasoning"), temperature=0.2)
+        saved.put("bp", bp.model_dump())
     db.ex("UPDATE practice_exams SET blueprint=? WHERE id=?", (bp.model_dump_json(), pid))
 
+    # Like quizzes: each part's questions are shared out over every document section in scope by size (one call per
+    # section with a share), so a small file still gets its questions instead of being outweighed within its group.
+    sections = [(gi, s) for gi, g in enumerate(groups) for s in g["sections"]]
     parts_out = []
     for pi, part in enumerate(bp.parts):
-        shares = _allocate(part.count, [g["tokens"] for g in groups])
+        shares = _allocate(part.count, [s["tokens"] for _, s in sections])
+        calls = [(gi, sec, n) for (gi, sec), n in zip(sections, shares) if n > 0]
         qs: list[ExamQ] = []
-        for gi, n in enumerate(shares):
-            if n == 0:
+        for ci, (gi, sec, n) in enumerate(calls):
+            key = f"p{pi}:{sec.get('doc_id')}:{sec['title']}:{n}"
+            if key in saved:
+                qs += [ExamQ.model_validate(d) for d in saved.get(key)]
                 continue
-            prog(0.15 + 0.8 * pi / len(bp.parts), f"Part {part.name}: writing {n} question(s)")
+            prog(0.15 + 0.8 * (pi + ci / len(calls)) / len(bp.parts),
+                 f"Part {part.name}: writing {n} question(s)" + (f" ({ci + 1}/{len(calls)})" if len(calls) > 1 else ""))
             sub = f" Each question has a shared stimulus and {part.subquestions_per_question} sub-questions." if part.subquestions_per_question else ""
+            written = [q.prompt[:200] for q in qs][-30:]
             task = (f"Write {n} NEW exam question(s) for '{part.name}' of an exam with this blueprint:\n{part.model_dump_json()}\n"
                     f"Question type: {part.question_type}; {part.marks_each:g} marks each.{sub}\n"
                     f"Difficulty: {DIFFICULTY.get(difficulty, DIFFICULTY['normal'])}\n"
                     f"Overall difficulty profile of the practice exam: {bp.difficulty_profile}\n"
-                    "Questions must test THIS student's material above, spread across different sections, and must be completely "
-                    "different from the practice exam's questions (copy its style and format only, never its content).\n"
+                    f"Questions must test THIS student's material above, from the document section '{sec['title']}', and must "
+                    "be completely different from the practice exam's questions (copy its style and format only, never its content).\n"
                     "MCQ/true-false: give options and answer_index. Written questions: give a model answer and a marking rubric "
                     "whose point marks add up to the question's marks. Case studies: put the scenario in 'stimulus' and the parts "
                     f"in 'subquestions' (multiple-choice sub-questions get their own options and answer_index).\n\nPractice exam text, for STYLE reference only:\n{text[:12000]}"
+                    + (("\n\nAlready written for this part (do not repeat): " + json.dumps(written)) if written else "")
                     + _extra_text(params)
-                    + _textbook(art["subject_id"], f"{part.name} {part.question_type} {art['scope']}", art["topic_id"]))
+                    + _textbook(art["subject_id"], f"{sec['title']} {part.question_type}", art["topic_id"]))
             out = llm.chat_json([{"role": "system", "content": _system(art["scope"], groups[gi])}, {"role": "user", "content": task}],
                                 ExamQs, max_tokens=20000, reasoning=db.setting("generation_reasoning"), temperature=0.5)
+            kept = []
             for q in out.questions[:n]:
                 full = q.stimulus + " " + q.prompt + " " + " ".join(s.prompt for s in q.subquestions)
                 if _similar(full, text) > 0.5:
@@ -489,7 +628,9 @@ def gen_exam(art, params, groups, prog):
                 if not _key_ok(q) or (had_subs and not q.subquestions):
                     continue
                 q.marks = part.marks_each if not q.subquestions else sum(s.marks for s in q.subquestions)
-                qs.append(q)
+                kept.append(q)
+            qs += kept
+            saved.put(key, [q.model_dump() for q in kept])
         parts_out.append({"name": part.name, "instructions": part.instructions, "type": part.question_type,
                           "questions": [q.model_dump() for q in qs]})
     total = sum(q["marks"] for p in parts_out for q in p["questions"])
@@ -499,7 +640,7 @@ def gen_exam(art, params, groups, prog):
 
 
 GENERATORS = {"flashcards": gen_flashcards, "quiz": gen_quiz, "notes": gen_notes, "cheatsheet": gen_cheatsheet, "exam": gen_exam,
-              "mindmap": gen_mindmap}
+              "mindmap": gen_mindmap, "marking": marking.gen_marking}
 
 
 def run_artifact(artifact_id: int, job):
@@ -508,22 +649,29 @@ def run_artifact(artifact_id: int, job):
         raise pipeline.Cancelled()
     params = json.loads(art["params"])
     art["scope"] = context.scope_label(art["subject_id"], art["topic_id"])
-    if params.get("document_ids"):
-        names = [d["filename"] for d in db.q(f"SELECT filename FROM documents WHERE id IN ({','.join('?' * len(params['document_ids']))})",
-                                             tuple(params["document_ids"]))]
+    units = context.norm_units(params.get("units"))
+    named = params.get("document_ids") or (list(units) if units else None)
+    if named:
+        names = [d["filename"] for d in db.q(f"SELECT filename FROM documents WHERE id IN ({','.join('?' * len(named))})",
+                                             tuple(named))]
         if names:
             art["scope"] = f"{art['scope'].split(' (')[0].split(' › ')[0]} › {', '.join(names)}"
     db.ex("UPDATE artifacts SET status='running', error=NULL, updated_at=? WHERE id=?", (time.time(), artifact_id))
     prog = Progress(artifact_id, job)
-    prog(0.01, "Collecting material")
+    done = _partial(art, params).resumed
+    prog(0.01, f"Continuing where it stopped ({done} part{'s' if done != 1 else ''} already done)" if done
+         else "Collecting material")
     doc_ids = params.get("document_ids") or None
-    groups = context.material_groups(art["subject_id"], art["topic_id"], _gen_budget(), doc_ids)
-    if not groups:
-        raise ValueError(context.material_problem(art["subject_id"], art["topic_id"], doc_ids) or "No readable material in this scope.")
+    groups = []  # marking collects its own material, which may be none at all (marking.py)
+    if art["type"] != "marking":
+        groups = context.material_groups(art["subject_id"], art["topic_id"], _gen_budget(), doc_ids, units)
+        if not groups:
+            raise ValueError(context.material_problem(art["subject_id"], art["topic_id"], doc_ids, units)
+                             or "No readable material in this scope.")
     content = GENERATORS[art["type"]](art, params, groups, prog)
     if _is_empty(art["type"], content):  # never saved as "ready" with nothing in it
         raise errors.AppError("APO-GEN-403", f"{art['type']} generation produced no items")
-    db.ex("UPDATE artifacts SET status='ready', content=?, progress=1, message='Ready', updated_at=? WHERE id=?",
+    db.ex("UPDATE artifacts SET status='ready', content=?, partial=NULL, progress=1, message='Ready', updated_at=? WHERE id=?",
           (json.dumps(content), time.time(), artifact_id))
 
 
@@ -536,6 +684,8 @@ def _is_empty(kind: str, content: dict) -> bool:
         return not any(p.get("questions") for p in content.get("parts", []))
     if kind == "mindmap":
         return not (content.get("mindmap") or {}).get("children")
+    if kind == "marking":
+        return not (content.get("marking") or {}).get("criteria")
     return not content.get("sections")
 
 

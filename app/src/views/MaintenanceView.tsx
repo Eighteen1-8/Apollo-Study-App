@@ -5,6 +5,7 @@ import { MenuItem, useOverlay } from '../components/overlay';
 import { Button, Empty, Pill } from '../components/ui';
 import { logError } from '../log';
 import Icon from '../components/Icon';
+import ErrorText from '../components/ErrorText';
 
 const KIND: Record<FlagKind, string> = {
   malformed: 'Malformed output', incomplete: 'Incomplete', misleading: 'False or misleading', failed: 'Vision failed',
@@ -93,6 +94,7 @@ export default function MaintenanceView({ subjectId }: { subjectId?: number }) {
         await ov.confirm({ title: 'Re-embedding', confirmText: 'OK', body: r.queued ? `${plural(r.queued, 'file')} queued (see the jobs list).` : 'Everything is up to date.' }); }}
         onReparse={async () => { const r = await api.reparse({}); reload();
           await ov.confirm({ title: 'Reading files again', confirmText: 'OK', body: `${plural(r.queued, 'file')} queued (see the jobs list). Vision notes are kept for every page whose content hasn't changed.` }); }} />
+      <Copies o={o} onChange={reload} />
 
       <section className="section">
         <h2>Library</h2>
@@ -275,6 +277,40 @@ function Index({ o, onReembed, onReparse }: { o: MaintOverview; onReembed: () =>
   );
 }
 
+/** Word/PowerPoint files without an exact PDF copy (render.py): the viewer shows them in a simpler layout. */
+function Copies({ o, onChange }: { o: MaintOverview; onChange: () => void }) {
+  const failed = o.documents.filter((d) => d.render_error);
+  const [busy, setBusy] = useState<number | null>(null);
+  if (!failed.length) return null;
+  const retry = async (ids: number[]) => {
+    for (const id of ids) {
+      setBusy(id);
+      try { await api.retryRender(id); } catch (e) { logError('retrying an Office copy', e, 'warning'); }
+    }
+    setBusy(null);
+    onChange();
+  };
+  return (
+    <section className="section">
+      <h2>Exact copies for the viewer</h2>
+      <div className="maint-line">
+        <span><b>{plural(failed.length, 'Word or PowerPoint file')}</b> {failed.length === 1 ? 'has' : 'have'} no exact copy, so the viewer
+          shows a simpler layout. The reason is below each one.</span>
+        <Button small disabled={busy !== null} onClick={() => retry(failed.map((d) => d.id))}>{busy !== null ? 'Trying…' : 'Try all again'}</Button>
+      </div>
+      <div className="maint-copies">
+        {failed.map((d) => (
+          <div key={d.id} className="maint-row maint-copy">
+            <span className="maint-name" title={d.path}>{d.filename}</span>
+            <span className="small"><ErrorText text={d.render_error} /></span>
+            <Button small disabled={busy !== null} onClick={() => retry([d.id])}>{busy === d.id ? 'Trying…' : 'Try again'}</Button>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function Stats({ docs, onFlags }: { docs: MaintDoc[]; onFlags: () => void }) {
   const flags = sum(docs, (d) => d.flags);
   const reviewing = docs.some((d) => d.reviewing);
@@ -300,6 +336,7 @@ function DocRow({ d, onFlags, onMenu }: { d: MaintDoc; onFlags: () => void; onMe
         <span title="Text chunks · visual chunks">{d.text_chunks} + {d.vision_chunks} chunks</span>
         {d.vision_total > 0 && <span title="Pages with vision notes">vision {d.vision_done}/{d.vision_total}{d.vision_failed ? `, ${d.vision_failed} failed` : ''}</span>}
         {d.reviewing && <Pill status="running">reviewing</Pill>}
+        {d.render_error && <span className="maint-warn" title={d.render_error}>simplified view</span>}
         {d.flags > 0 && <button className="maint-flags" onClick={onFlags} title="Show vision issues">⚑ {d.flags}</button>}
         <span className="maint-size" title={`File ${fmtBytes(s.file)} · viewer copy ${fmtBytes(s.render)} · images ${fmtBytes(s.assets)} · index ${fmtBytes(s.index)}`}>{fmtBytes(s.total)}</span>
       </span>

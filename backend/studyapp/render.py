@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 import pymupdf
@@ -46,18 +47,43 @@ def _soffice() -> str | None:
     return None
 
 
+TIMEOUT = 300  # seconds per export: a long deck in PowerPoint can take minutes, so this stays generous
+
+
+def _tail(b: bytes | str | None) -> str:
+    """The last meaningful line of a converter's output (PowerShell's error record, LibreOffice's message)."""
+    text = b.decode("utf-8", "replace") if isinstance(b, bytes) else (b or "")
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.strip().startswith(("+", "~", "At "))]
+    return lines[0][:300] if lines else ""
+
+
 def _convert(src: Path, out: Path, kind: str) -> bool:
+    return export_pdf(src, out, kind) is None
+
+
+def export_pdf(src: Path, out: Path, kind: str) -> str | None:
+    """Export src to out as PDF. None when it worked; otherwise why not, as "plain message [APO-FILE-3xx]" (the
+    technical detail goes to the log)."""
+    from . import errors
+    reasons: list[str] = []
+    office = _office_available(kind)
     try:
-        if _office_available(kind):
+        if office:
             ps1 = Path(__file__).with_name("office_export.ps1")
-            subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps1), "-Kind", kind,
-                            "-In", str(src), "-Out", str(out)], capture_output=True, timeout=300,
-                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps1), "-Kind", kind,
+                                "-In", str(src), "-Out", str(out)], capture_output=True, timeout=TIMEOUT,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             if out.exists():
-                return True
-            log.warning("Office export of %s produced no PDF", src.name)
-    except Exception:
+                return None
+            why = _tail(r.stderr) or _tail(r.stdout) or f"exit code {r.returncode}"
+            log.warning("Office export of %s produced no PDF: %s", src.name, why)
+            reasons.append(f"Office: {why}")
+    except subprocess.TimeoutExpired:
+        log.warning("Office export of %s timed out after %ss", src.name, TIMEOUT)
+        reasons.append("Office: timed out")
+    except Exception as e:
         log.warning("Office export of %s failed", src.name, exc_info=True)
+        reasons.append(f"Office: {e}")
     soffice = _soffice()
     if soffice:
         try:
@@ -68,22 +94,42 @@ def _convert(src: Path, out: Path, kind: str) -> bool:
             # take the JSON options, so it's tried again plainly
             kinds = (['pdf:impress_pdf_Export:{"ExportHiddenSlides":{"type":"boolean","value":"true"}}', "pdf"]
                      if src.suffix.lower() == ".pptx" else ["pdf"])
+            why = ""
             for kind in kinds:
-                subprocess.run([soffice, "--headless", "--convert-to", kind, "--outdir", str(tmp), str(src)], capture_output=True,
-                               timeout=300, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                r = subprocess.run([soffice, "--headless", "--convert-to", kind, "--outdir", str(tmp), str(src)], capture_output=True,
+                                   timeout=TIMEOUT, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
                 if made.exists():
                     break
+                why = _tail(r.stderr) or _tail(r.stdout) or f"exit code {r.returncode}"
             if made.exists():
                 made.replace(out)
             shutil.rmtree(tmp, ignore_errors=True)
-            return out.exists()
-        except Exception:
+            if out.exists():
+                return None
+            log.warning("LibreOffice export of %s produced no PDF: %s", src.name, why)
+            reasons.append(f"LibreOffice: {why}")
+        except subprocess.TimeoutExpired:
+            log.warning("LibreOffice export of %s timed out after %ss", src.name, TIMEOUT)
+            reasons.append("LibreOffice: timed out")
+        except Exception as e:
             log.warning("LibreOffice export of %s failed", src.name, exc_info=True)
-    return False
+            reasons.append(f"LibreOffice: {e}")
+    app = "PowerPoint" if kind == "pptx" else "Word"
+    if not office and not soffice:
+        return str(errors.AppError("APO-FILE-310", "no converter installed", plain=(
+            f"Neither Microsoft {app} nor LibreOffice is installed, so Apollo can't make an exact copy of the file.")))
+    timed_out = any(r.endswith("timed out") for r in reasons)
+    who = f"Microsoft {app}" if office else "LibreOffice"
+    plain = (f"{who} took longer than {TIMEOUT // 60} minutes to copy the file." if timed_out
+             else f"{who} couldn't copy the file" + (": a dialog may be open in it, or the file may be damaged." if office else "."))
+    err = errors.AppError("APO-FILE-309", "; ".join(reasons)[:400], plain=plain)
+    log.warning("%s: %s", err.code, err.technical)
+    return str(err)
 
 
 def rendered_pdf(doc: dict, convert=True) -> Path | None:
-    """The cached exact PDF of an Office file, converting it now if needed (and allowed)."""
+    """The cached exact PDF of an Office file, converting it now if needed (and allowed). A failure is remembered for
+    this run (not retried on every view) and its reason kept in documents.render_error until `retry` or a success."""
     if doc["ext"] not in OFFICE_EXTS:
         return None
     out = renders_dir() / f"{doc['sha256']}.pdf"
@@ -93,13 +139,26 @@ def rendered_pdf(doc: dict, convert=True) -> Path | None:
     with _lock:  # one Office conversion at a time
         if not out.exists():
             part = out.with_suffix(".part.pdf")
-            ok = _convert(doc_path(doc), part, doc["ext"][1:])
-            if ok:
+            error = export_pdf(doc_path(doc), part, doc["ext"][1:])
+            if error is None and part.exists():
                 part.replace(out)
             else:
                 part.unlink(missing_ok=True)
                 _failed.add(doc["sha256"])
+                if doc.get("id") is not None:  # every copy of the same file shares the render
+                    db.ex("UPDATE documents SET render_error=?, updated_at=? WHERE sha256=? AND ext=?",
+                          (error or "Apollo couldn't make an exact copy of this file. [APO-FILE-309]", time.time(),
+                           doc["sha256"], doc["ext"]))
+    if out.exists() and doc.get("render_error"):
+        db.ex("UPDATE documents SET render_error=NULL, updated_at=? WHERE sha256=?", (time.time(), doc["sha256"]))
     return out if out.exists() else None
+
+
+def retry(doc: dict) -> Path | None:
+    """Try again (the viewer's or Maintenance's button): forget this run's failure and convert now."""
+    _failed.discard(doc["sha256"])
+    db.ex("UPDATE documents SET render_error=NULL WHERE sha256=?", (doc["sha256"],))
+    return rendered_pdf({**doc, "render_error": None})
 
 
 def viewer_pdf(doc: dict, convert=True) -> Path | None:
@@ -144,12 +203,3 @@ def unit_positions(doc: dict, units: list[dict] | None = None) -> dict[int, list
                     break
     db.ex("UPDATE documents SET render_map=? WHERE id=?", (json.dumps(out), doc["id"]))
     return out
-
-
-def unit_at(positions: dict[int, list[float]], page: int, y: float) -> int | None:
-    """The Word section that a point in the exact PDF belongs to: the last section starting at or before it."""
-    best = None
-    for idx, (p, py) in sorted(positions.items(), key=lambda kv: (kv[1][0], kv[1][1])):
-        if (p, py) <= (page, y + 0.002):
-            best = idx
-    return best

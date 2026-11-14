@@ -23,7 +23,28 @@ export type ViewAction =
   | { type: 'closePrimary' }
   | { type: 'clear' }
   | { type: 'restore'; snap: ViewSnap }
-  | { type: 'chatFull'; on: boolean };
+  | { type: 'chatFull'; on: boolean }
+  /** Something dragged from a sidebar and dropped on one of the centre's drop zones (`dropZones`). */
+  | { type: 'place'; pane: Omit<SplitPane, 'nonce'>; where: DropWhere };
+
+/** Where a pane dropped in the centre goes: `open` (nothing is open), `replace` what's open (nothing split), or the
+ * `left` / `right` side (a new second pane, or replacing that side when split). */
+export type DropWhere = 'open' | 'replace' | 'left' | 'right';
+/** The drop zones the centre offers for a view, left to right. */
+export function dropZones(v: Pick<View, 'doc' | 'page' | 'split'>): DropWhere[] {
+  if (!v.doc && !v.page) return ['open'];
+  return v.split ? ['left', 'right'] : ['left', 'replace', 'right'];
+}
+/** Which zone a point is over: `frac` is how far across the centre it is (0 = left edge). */
+export function zoneAt(zones: DropWhere[], frac: number): DropWhere {
+  const i = Math.min(zones.length - 1, Math.max(0, Math.floor(frac * zones.length)));
+  return zones[i];
+}
+/** Where a note opened "beside" what's showing goes (Add to notes): beside a file, never over it. */
+export function besideWhere(v: Pick<View, 'doc' | 'page' | 'split'>): DropWhere {
+  if (!v.doc && !v.page) return 'open';
+  return v.split?.kind === 'doc' && !v.doc ? 'left' : 'right';
+}
 
 let tick = 0;
 /** A fresh key that remounts a viewer (Date.now() alone can repeat within a millisecond). */
@@ -64,6 +85,14 @@ export function viewReducer(v: View, a: ViewAction): View {
       return { doc: a.snap.doc ? { ...a.snap.doc, nonce: nonce(), details: false } : null, page: a.snap.page, split: a.snap.split, chatFull: false };
     case 'chatFull':
       return v.chatFull === a.on ? v : { ...v, chatFull: a.on };
+    case 'place': {
+      const first = primaryPane(v);
+      if (a.where === 'open' || !first) return { ...v, ...asPrimary({ ...a.pane, nonce: 0 }), split: null, chatFull: false };
+      if (a.where === 'replace') return { ...v, ...asPrimary({ ...a.pane, nonce: 0 }), chatFull: false };
+      if (a.where === 'right') return { ...v, split: { ...a.pane, nonce: nonce() }, chatFull: false };
+      // left: the new one is first; what was first moves beside it unless something is already there
+      return { ...v, ...asPrimary({ ...a.pane, nonce: 0 }), split: v.split ?? first, chatFull: false };
+    }
   }
 }
 

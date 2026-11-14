@@ -21,7 +21,7 @@ export default function AddFilesDialog({ subject, onTopic, onNewTopic, onReferen
             <div className="addf-sub">Saved in a topic. Apollo uses them to answer questions and make study material for that topic.</div>
             <div className="addf-choices">
               {topics.map((t) => <button key={t.id} className="btn btn-sm" onClick={() => onTopic(t)}>Add to {t.name}</button>)}
-              <button className={`btn btn-sm${topics.length ? '' : ' btn-primary'}`} onClick={onNewTopic}>+ New topic…</button>
+              <button className={`btn btn-sm${topics.length ? '' : ' btn-primary'}`} onClick={onNewTopic}><Icon name="add" size={14} /> New topic…</button>
             </div>
           </div>
         </div>

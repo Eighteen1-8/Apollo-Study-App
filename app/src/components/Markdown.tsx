@@ -107,7 +107,9 @@ export function renderMarkdown(src: string, opts: { citations?: boolean; figures
   const body = opts.html ? text
     : opts.inline ? (marked.parseInline(text, { async: false }) as string)  // one line, no <p> around it
     : (marked.parse(repairTables(text), { async: false }) as string);
-  return DOMPurify.sanitize(body.replace(/@@KEEP(\d+)@@/g, (_, i) => keep[Number(i)]), PURIFY);
+  const clean = DOMPurify.sanitize(body.replace(/@@KEEP(\d+)@@/g, (_, i) => keep[Number(i)]), PURIFY) as string;
+  // each table in a scroller, so a wide one scrolls while the table itself keeps a real grid (Word export: as is)
+  return opts.mathText ? clean : clean.replace(/<table\b/g, '<div class="table-scroll"><table').replace(/<\/table>/g, '</table></div>');
 }
 
 /** For saved messages/sections: every figure tag in them was already resolved (an empty map = none were found). */

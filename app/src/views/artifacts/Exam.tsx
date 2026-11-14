@@ -1,9 +1,13 @@
 /* Exams generated from a practice exam: answer, submit for marking, and the marked script with feedback. */
 import { useEffect, useMemo, useState } from 'react';
 import { api, Artifact, ArtifactContent, Attempt, ExamQuestion } from '../../api';
+import ErrorText from '../../components/ErrorText';
 import Markdown from '../../components/Markdown';
 import { useOverlay } from '../../components/overlay';
 import { Progress } from '../../components/ui';
+import { onChange } from '../../events';
+import { logError } from '../../log';
+import { getPref, removePref, setPref } from '../../prefs';
 
 export function leaves(parts: NonNullable<ArtifactContent['parts']>) {
   const out: { key: string; label: string; q: ExamQuestion | (ExamQuestion['subquestions'][number] & { type?: string; options?: string[] }) }[] = [];
@@ -21,29 +25,70 @@ export function Exam({ artifact }: { artifact: Artifact }) {
   const c = artifact.content!;
   const parts = c.parts ?? [];
   const keys = useMemo(() => leaves(parts), [parts]);
-  const [answers, setAnswers] = useState<Record<string, string>>({});
+  // A new attempt's answers are kept as they are typed (examDraft:<id>), so closing the viewer doesn't lose them.
+  const draftKey = `examDraft:${artifact.id}`;
+  const [draft, setDraft] = useState<Record<string, string>>(() => getPref(draftKey, {}, (v) => { try { return JSON.parse(v); } catch { return {}; } }));
   const [attempt, setAttempt] = useState<Attempt | null>(null);
+  const [attempts, setAttempts] = useState<Artifact['attempts']>(artifact.attempts);
   const [showKey, setShowKey] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => setAttempts(artifact.attempts), [artifact.attempts]);
 
+  const answers = attempt ? attempt.answers : draft;
+  const setAnswers = (a: Record<string, string>) => {
+    if (attempt) return;
+    setDraft(a);
+    if (Object.values(a).some((v) => v.trim())) setPref(draftKey, JSON.stringify(a)); else removePref(draftKey);
+  };
+
+  // The attempt picker and score follow the attempt being marked: a 'mark' job's progress changes the jobs list.
+  const track = (a: Attempt) => {
+    setAttempt((cur) => (cur && cur.id !== a.id ? cur : a));
+    setAttempts((list) => [{ id: a.id, kind: a.kind, status: a.status, score: a.score, total: a.total, created_at: a.created_at },
+      ...list.filter((t) => t.id !== a.id)].sort((x, y) => y.id - x.id));
+  };
+  const marking = attempt?.status === 'marking' ? attempt.id : null;
   useEffect(() => {
-    if (!attempt || attempt.status !== 'marking') return;
-    const t = setTimeout(() => api.attempt(attempt.id).then(setAttempt), 2000);
-    return () => clearTimeout(t);
-  }, [attempt]);
+    if (marking == null) return;
+    let alive = true;
+    const refresh = () => { api.attempt(marking).then((a) => alive && track(a)).catch((e) => logError('exam marking', e, 'warning')); };
+    refresh();
+    const off = onChange(['jobs'], refresh);
+    return () => { alive = false; off(); };
+  }, [marking]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const loadAttempt = async (id: number) => {
-    const a = await api.attempt(id);
-    setAttempt(a);
-    setAnswers(a.answers);
+  const loadAttempt = async (id: number | null) => {
+    setErr(null);
+    if (id == null) { setAttempt(null); return; }
+    try { const a = await api.attempt(id); track(a); setAttempt(a); }
+    catch (e) { setErr(String(e)); }
+  };
+  const send = async (ans: Record<string, string>) => {
+    setErr(null);
+    try {
+      const a = await api.submitAttempt(artifact.id, ans);
+      track(a);
+      setAttempt(a);
+      setDraft({});
+      removePref(draftKey);
+    } catch (e) { setErr(String(e)); }
   };
   const submit = async () => {
     const blank = keys.filter((k) => !(answers[k.key] ?? '').trim()).length;
     if (!(await ov.confirm({ title: 'Submit exam for marking?', confirmText: 'Submit',
       body: blank ? `${blank} question(s) are unanswered and will score 0.` : 'Apollo will mark every answer against the marking guide.' }))) return;
-    setAttempt(await api.submitAttempt(artifact.id, answers));
+    await send(answers);
+  };
+  /** A failed or cancelled marking: change the answers and submit them again as a new attempt. */
+  const editAgain = () => {
+    if (!attempt) return;
+    setDraft(attempt.answers);
+    setPref(draftKey, JSON.stringify(attempt.answers));
+    setAttempt(null);
   };
 
   const marked = attempt?.status === 'marked' ? attempt.result : null;
+  const unfinished = attempt && (attempt.status === 'failed' || attempt.status === 'cancelled');
   const locked = !!attempt;
   let qn = 0;
 
@@ -56,18 +101,31 @@ export function Exam({ artifact }: { artifact: Artifact }) {
         <span>Total: <b>{c.total_marks} marks</b></span>
         {c.time_minutes ? <span>Time: <b>{c.time_minutes} min</b></span> : null}
         <span className="spacer" />
-        {artifact.attempts.length > 0 && (
-          <select value={attempt?.id ?? ''} onChange={(e) => e.target.value ? loadAttempt(Number(e.target.value)) : (setAttempt(null), setAnswers({}))}>
+        {attempts.length > 0 && (
+          <select value={attempt?.id ?? ''} onChange={(e) => loadAttempt(e.target.value ? Number(e.target.value) : null)}>
             <option value="">New attempt</option>
-            {artifact.attempts.map((t) => <option key={t.id} value={t.id}>Attempt #{t.id}{t.score != null ? ` · ${t.score}/${t.total}` : ''}</option>)}
+            {attempts.map((t) => (
+              <option key={t.id} value={t.id}>Attempt #{t.id}{t.score != null ? ` · ${t.score}/${t.total}`
+                : t.status === 'marking' ? ' · marking…' : t.status === 'failed' ? ' · not marked' : t.status === 'cancelled' ? ' · cancelled' : ''}</option>
+            ))}
           </select>
         )}
         <label className="check"><input type="checkbox" checked={showKey} onChange={(e) => setShowKey(e.target.checked)} /> Show answers</label>
       </div>
       {c.blueprint?.instructions && <div className="exam-instructions">{c.blueprint.instructions}</div>}
 
+      {err && <div className="banner banner-bad"><ErrorText text={err} /></div>}
       {attempt?.status === 'marking' && (
         <div className="marking"><div>{attempt.message || 'Marking…'}</div><Progress value={attempt.progress} /></div>
+      )}
+      {attempt && unfinished && (
+        <div className="banner banner-bad exam-unmarked">
+          <div>{attempt.status === 'cancelled' ? 'Marking was cancelled.' : <>This attempt couldn't be marked: <ErrorText text={attempt.message} /></>}</div>
+          <div className="exam-unmarked-actions">
+            <button className="btn btn-sm btn-primary" onClick={() => send(attempt.answers)}>Mark again</button>
+            <button className="btn btn-sm" onClick={editAgain}>Change answers</button>
+          </div>
+        </div>
       )}
       {marked && (
         <div className="score">

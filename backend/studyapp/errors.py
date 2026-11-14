@@ -189,9 +189,20 @@ CATALOGUE: dict[str, Info] = {
                        "Extra material for content generation is passed as text only; image files have no text layer.",
                        ["a .png/.jpg chosen as extra material"], ["convert it to PDF, or attach it in the chat instead"], 400),
     "APO-FILE-309": _i("Office conversion failed", "Apollo couldn't make an exact copy of this file to show it, so a simpler view is used.",
-                       "render.py couldn't export the .pptx/.docx to PDF with Microsoft Office (COM) or LibreOffice; the viewer falls "
-                       "back to its HTML layout.", ["Office isn't installed or is busy with a dialog", "LibreOffice isn't installed"],
-                       ["close open Office dialogs and reopen the file", "install LibreOffice"], 500),
+                       "render.py couldn't export the .pptx/.docx to PDF with Microsoft Office (COM, office_export.ps1) or LibreOffice: "
+                       "no PDF was written, the converter raised, or it ran past render.TIMEOUT. The viewer falls back to its HTML "
+                       "layout; the reason is kept in documents.render_error (Maintenance → Files, advanced mode).",
+                       ["Office is busy with a dialog (activation, protected view, repair)", "the file is damaged or password-protected",
+                        "a very large deck that takes longer than the timeout"],
+                       ["close open Office dialogs, then Try again in the viewer", "open and re-save the file in Office",
+                        "install LibreOffice as a second converter"], 500),
+    "APO-FILE-310": _i("No Office converter", "Neither Microsoft Office nor LibreOffice is installed, so a simpler view is used.",
+                       "render.py found no converter for .pptx/.docx: the PowerPoint.Application / Word.Application COM class "
+                       "isn't registered and soffice.exe isn't on PATH or in Program Files. The viewer uses its HTML layout "
+                       "(viewer.py) and slide images for vision come from parsers.compose_slide.",
+                       ["Office isn't installed (or is a click-to-run install without COM registration)",
+                        "LibreOffice isn't installed, or is installed somewhere unusual"],
+                       ["install Microsoft Office or LibreOffice, then use Try again in the viewer or Maintenance"], 500),
     # ---------------------------------------------------------------- making content
     "APO-GEN-401": _i("No material to use", "There's nothing for Apollo to use yet: the message says what to add or wait for.",
                       "context.material_problem found no units with text or vision notes in the requested scope.",
@@ -204,6 +215,17 @@ CATALOGUE: dict[str, Info] = {
                       "The generator completed without producing items (e.g. every question was dropped as a copy of the practice "
                       "exam, or the model returned empty lists).", ["a model too small for the task", "a focus that matches nothing"],
                       ["retry; change or remove the focus"], 500),
+    "APO-GEN-404": _i("Too much to mark", "That's too much work to mark at once. Mark fewer pages or files at a time.",
+                      "marking.py: the work has more than marking.MAX_PAGES pages in total, or its text is too long for the "
+                      "model's context window together with the rubric and material.",
+                      ["a long PDF or several files added together", "a small context window setting"],
+                      ["mark one file or part of it at a time", "check against nothing (no material) to leave more room"], 400),
+    "APO-GEN-410": _i("Model can't see pictures", "Apollo's language model can't look at pictures, so it can't check a drawing. "
+                      "Use a model with vision, or describe the drawing in a note instead.",
+                      "The chat model rejected a request containing an image (no vision / multimodal input), e.g. checking one "
+                      "of the student's drawings.", ["a text-only model is selected", "the local server was started without "
+                      "its vision projector"], ["pick a model with vision in Settings (OpenRouter lists which ones see images)",
+                                               "start the local server with vision enabled"], 400),
     # ---------------------------------------------------------------- data
     "APO-DATA-501": _i("Database busy", "Apollo's data was busy for a moment. Try again.",
                        "SQLite returned 'database is locked' (SQLITE_BUSY) after the busy timeout.",

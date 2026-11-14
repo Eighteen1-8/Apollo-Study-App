@@ -45,7 +45,7 @@ export default function DocumentView({ id, focus, onClose, onBack }: { id: numbe
   const busy = ['queued', 'parsing', 'embedding', 'vision'].includes(d.status);
 
   return (
-    <div className="page" data-find={d.filename}>
+    <div className="page doc-details" data-find={d.filename}>
       <header className="page-head">
         <div>
           <h1 className="doc-title">{d.filename}</h1>
@@ -55,7 +55,7 @@ export default function DocumentView({ id, focus, onClose, onBack }: { id: numbe
           </div>
         </div>
         <div className="head-actions">
-          <Button small onClick={onBack}>← Back to document</Button>
+          <Button small onClick={onBack}><Icon name="back" size={14} /> Back to document</Button>
           <Pill status={d.status}>{d.status === 'vision' ? `Vision ${d.vision_done}/${d.vision_total}` : d.status}</Pill>
           <button className="close-x" title="Close document" onClick={onClose}><Icon name="close" size={18} /></button>
         </div>

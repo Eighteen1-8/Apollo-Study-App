@@ -316,8 +316,11 @@ async function createWindow() {
 ipcMain.handle('dialog:openFiles', async (_e, opts = {}) => {
   const res = await dialog.showOpenDialog({
     properties: opts.multi === false ? ['openFile'] : ['openFile', 'multiSelections'],
+    // the formats backend parsers.SUPPORTED reads
     filters: opts.filters || [
-      { name: 'Study material', extensions: ['pdf', 'pptx', 'docx', 'txt', 'md', 'csv', 'html', 'htm', 'png', 'jpg', 'jpeg', 'webp', 'bmp'] },
+      { name: 'Study material', extensions: ['pdf', 'pptx', 'docx', 'txt', 'md', 'csv', 'tsv', 'json', 'html', 'htm', 'xml', 'rtf', 'tex',
+        'png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'tif', 'tiff'] },
+      { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'tif', 'tiff'] },
       { name: 'All files', extensions: ['*'] },
     ],
   });
@@ -359,13 +362,36 @@ ipcMain.handle('capture:rect', async (e, r) => {
 });
 ipcMain.handle('clipboard:image', (_e, png) => { clipboard.writeImage(nativeImage.createFromBuffer(Buffer.from(String(png), 'base64'))); });
 
+// The study timer finished (StudyTimer.tsx): flash the taskbar button until the window is looked at.
+ipcMain.on('window:flash', (e) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (!win || win.isDestroyed() || win.isFocused()) return;
+  win.flashFrame(true);
+  win.once('focus', () => { if (!win.isDestroyed()) win.flashFrame(false); });
+});
+
 ipcMain.on('backend:info', (e) => { e.returnValue = { url: `http://127.0.0.1:${backendPort}`, token: backendToken }; });
 
-// Settings → Appearance → Text size: the page's zoom (Chromium's own, so pointer maths and pdf.js stay right).
+// Settings → Appearance → UI size: the page's zoom (Chromium's own, so pointer maths and pdf.js stay right).
 ipcMain.on('window:zoom', (e, f) => {
   const z = Number(f);
   if (Number.isFinite(z) && z >= 0.8 && z <= 1.6) e.sender.setZoomFactor(z);
 });
+
+// Ctrl + / Ctrl - / Ctrl 0 go to the page (theme.ts), which changes the saved UI size and zooms through window:zoom,
+// so the shortcuts and the Settings slider always agree. Both Ctrl+= and Ctrl+Plus (and the numpad keys) count.
+function zoomItems() {
+  const step = (dir) => (_item, win) => { if (win) win.webContents.send('zoom:step', dir); };
+  return [
+    { label: 'Actual size', accelerator: 'CmdOrCtrl+0', click: step(0) },
+    { label: 'Bigger', accelerator: 'CmdOrCtrl+=', click: step(1) },
+    { label: 'Smaller', accelerator: 'CmdOrCtrl+-', click: step(-1) },
+    { label: 'Bigger', accelerator: 'CmdOrCtrl+Plus', click: step(1), visible: false },
+    { label: 'Bigger', accelerator: 'CmdOrCtrl+numadd', click: step(1), visible: false },
+    { label: 'Smaller', accelerator: 'CmdOrCtrl+numsub', click: step(-1), visible: false },
+    { label: 'Actual size', accelerator: 'CmdOrCtrl+num0', click: step(0), visible: false },
+  ];
+}
 
 ipcMain.on('window:chrome', (e, c) => {
   const win = BrowserWindow.fromWebContents(e.sender);
@@ -398,7 +424,7 @@ app.whenReady().then(async () => {
   // the document, notes or chat being read instead of the whole window.
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }] },
-    { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }] },
+    { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' }, ...zoomItems()] },
   ]));
   lockToLocalhost();
   setupSpelling();

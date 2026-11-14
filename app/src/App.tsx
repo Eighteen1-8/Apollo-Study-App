@@ -6,6 +6,8 @@ import Minibar from './components/Minibar';
 import Ambient from './components/Ambient';
 import TooltipLayer from './components/Tooltip';
 import FindLayer from './components/FindBar';
+import CalculatorLayer from './components/Calculator';
+import PetLayer from './components/Pet';
 import ErrorBoundary from './components/ErrorBoundary';
 import Home from './views/Home';
 import SubjectView from './views/SubjectView';
@@ -119,6 +121,8 @@ export default function App() {
         <Ambient />
         <TooltipLayer />
         <FindLayer />
+        <CalculatorLayer />
+        {backendUp && <PetLayer />}
         <ToastLayer />
         <CommandPalette go={go} route={route} />
         {backendUp && <SetupWizard subjectsCount={list.length} onFinished={(id) => { refresh(); if (id) go({ name: 'subject', id }); }} />}

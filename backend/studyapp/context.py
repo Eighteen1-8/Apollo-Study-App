@@ -31,16 +31,50 @@ def _unit_block(u: dict) -> str:
 REFERENCE_LABEL = "Reference library"
 
 
-def topic_documents(subject_id: int, topic_id: int | None, doc_ids: list[int] | None = None) -> list[dict]:
+def norm_units(units) -> dict[int, list[int]] | None:
+    """A page/slide selection ({doc_id: [unit idx, ...]}, keys may be strings after JSON) as sorted ints; None when empty."""
+    if not units:
+        return None
+    return {int(k): sorted({int(i) for i in v}) for k, v in units.items()}
+
+
+def ranges_text(idxs: list[int]) -> str:
+    """[3, 4, 5, 7, 12, 13] -> "3–5, 7, 12–13"."""
+    out, run = [], []
+    for i in sorted(set(idxs)):
+        if run and i == run[-1] + 1:
+            run.append(i)
+            continue
+        if run:
+            out.append(f"{run[0]}–{run[-1]}" if len(run) > 1 else str(run[0]))
+        run = [i]
+    if run:
+        out.append(f"{run[0]}–{run[-1]}" if len(run) > 1 else str(run[0]))
+    return ", ".join(out)
+
+
+def topic_documents(subject_id: int, topic_id: int | None, doc_ids: list[int] | None = None,
+                    units: dict[int, list[int]] | None = None) -> list[dict]:
     """The scope's study material. A whole-subject scope whose topics hold no material (no topics yet, or only
     textbooks uploaded) falls back to the reference library, so a subject can be studied from its textbooks alone.
     `doc_ids` narrows the scope to those files of the subject (topic files or textbooks), e.g. "make content from
-    this file"."""
+    this file"; a file in the trash is never material (a Regenerate after it was deleted finds nothing in it).
+    `units` (chosen pages/slides, {doc_id: [idx]}) narrows it to the files they're in: any file of the subject for a
+    whole-subject scope (textbooks too), the topic's files for a topic, or those of `doc_ids`."""
+    if units:
+        ids = [i for i in units if not doc_ids or i in doc_ids]
+        if not ids:
+            return []
+        where = " AND d.topic_id=? AND d.kind='topic'" if topic_id is not None and not doc_ids else ""
+        return db.q(f"""SELECT d.*, COALESCE(t.name, '{REFERENCE_LABEL}') AS topic_name FROM documents d
+                        LEFT JOIN topics t ON t.id=d.topic_id
+                        WHERE d.subject_id=? AND d.id IN ({','.join('?' * len(ids))}) AND d.kind<>'trash' AND d.unit_count > 0{where}
+                        ORDER BY d.id""", (subject_id, *ids, *((topic_id,) if where else ())))
     if doc_ids:
         marks = ",".join("?" * len(doc_ids))
         return db.q(f"""SELECT d.*, COALESCE(t.name, '{REFERENCE_LABEL}') AS topic_name FROM documents d
                         LEFT JOIN topics t ON t.id=d.topic_id
-                        WHERE d.subject_id=? AND d.id IN ({marks}) AND d.unit_count > 0 ORDER BY d.id""",
+                        WHERE d.subject_id=? AND d.id IN ({marks}) AND d.kind<>'trash' AND d.unit_count > 0 ORDER BY d.id""",
                     (subject_id, *doc_ids))
     ids = [t["id"] for t in topics_in_scope(subject_id, topic_id)]
     docs = []
@@ -61,8 +95,16 @@ def uses_reference_material(subject_id: int, topic_id: int | None) -> bool:
     return bool(docs) and docs[0]["kind"] == "reference"
 
 
-def material_problem(subject_id: int, topic_id: int | None, doc_ids: list[int] | None = None) -> str | None:
+def material_problem(subject_id: int, topic_id: int | None, doc_ids: list[int] | None = None,
+                     units: dict[int, list[int]] | None = None) -> str | None:
     """Why a scope has nothing to generate from, in words the student can act on; None when it has material."""
+    if units:
+        if material_groups(subject_id, topic_id, 10 ** 9, doc_ids, units):
+            return None
+        if not topic_documents(subject_id, topic_id, doc_ids, units):
+            return "The pages you chose aren't in this material any more. Choose them again."
+        return ("The pages you chose have no readable text yet. Choose other pages, wait until the file has finished being "
+                "read, or run vision on it if its pages are pictures.")
     if any(d["token_count"] or d["vision_done"] for d in topic_documents(subject_id, topic_id, doc_ids)):
         return None
     if doc_ids:
@@ -87,9 +129,41 @@ def material_problem(subject_id: int, topic_id: int | None, doc_ids: list[int] |
     return "This subject has no files yet. Upload files to a topic or the reference library first."
 
 
-def document_sections(doc: dict, budget: int) -> list[dict]:
-    """A document's units rendered as text, split into pieces no larger than `budget` tokens."""
-    units = db.q("SELECT * FROM units WHERE document_id=? AND duplicate_of IS NULL ORDER BY idx", (doc["id"],))
+def _chosen_units(doc_id: int, idxs: list[int], chosen: set[int]) -> list[dict]:
+    """The chosen pages of a file. An exact duplicate of a page elsewhere is normally left out (its original is the
+    material); when chosen, it's included (its text is stored) unless its original was chosen too, and it reads the
+    original's vision notes (vision runs on originals only)."""
+    if not idxs:
+        return []
+    rows = db.q(f"SELECT * FROM units WHERE document_id=? AND idx IN ({','.join('?' * len(idxs))}) ORDER BY idx", (doc_id, *idxs))
+    out = []
+    for u in rows:
+        if u["duplicate_of"] is not None:
+            if u["duplicate_of"] in chosen:
+                continue
+            orig = db.q1("SELECT vision_status, vision_relevant, vision_notes FROM units WHERE id=?", (u["duplicate_of"],))
+            if orig and u["vision_status"] != "done":
+                u = {**u, **orig}
+        out.append(u)
+    return out
+
+
+def chosen_unit_ids(units: dict[int, list[int]] | None) -> set[int]:
+    ids: set[int] = set()
+    for did, idxs in (units or {}).items():
+        if idxs:
+            ids |= {r["id"] for r in db.q(f"SELECT id FROM units WHERE document_id=? AND idx IN ({','.join('?' * len(idxs))})",
+                                          (did, *idxs))}
+    return ids
+
+
+def document_sections(doc: dict, budget: int, idxs: list[int] | None = None, chosen: set[int] | None = None) -> list[dict]:
+    """A document's units rendered as text, split into pieces no larger than `budget` tokens. `idxs`: only those
+    pages/slides (`chosen`: the unit ids of the whole selection, see _chosen_units)."""
+    if idxs is not None:
+        units = _chosen_units(doc["id"], idxs, chosen or set())
+    else:
+        units = db.q("SELECT * FROM units WHERE document_id=? AND duplicate_of IS NULL ORDER BY idx", (doc["id"],))
     header = f"=== Document: {doc['filename']} (topic: {doc['topic_name']}) ==="
     pieces, cur, cur_tok = [], [], 0
     for u in units:
@@ -112,11 +186,14 @@ def document_sections(doc: dict, budget: int) -> list[dict]:
     return out
 
 
-def material_groups(subject_id: int, topic_id: int | None, budget: int, doc_ids: list[int] | None = None) -> list[dict]:
-    """Pack all document sections in scope into groups of <= budget tokens. Each group: {sections, text, tokens}."""
+def material_groups(subject_id: int, topic_id: int | None, budget: int, doc_ids: list[int] | None = None,
+                    units: dict[int, list[int]] | None = None) -> list[dict]:
+    """Pack all document sections in scope into groups of <= budget tokens. Each group: {sections, text, tokens}.
+    `units`: only the chosen pages/slides ({doc_id: [idx]}, see topic_documents)."""
     groups, cur = [], []
-    for doc in topic_documents(subject_id, topic_id, doc_ids):
-        for sec in document_sections(doc, budget):
+    chosen = chosen_unit_ids(units) if units else None
+    for doc in topic_documents(subject_id, topic_id, doc_ids, units):
+        for sec in document_sections(doc, budget, units.get(doc["id"]) if units else None, chosen):
             if cur and sum(s["tokens"] for s in cur) + sec["tokens"] > budget:
                 groups.append(cur)
                 cur = []
@@ -126,17 +203,24 @@ def material_groups(subject_id: int, topic_id: int | None, budget: int, doc_ids:
     return [{"sections": g, "text": "\n\n\n".join(s["text"] for s in g), "tokens": sum(s["tokens"] for s in g)} for g in groups]
 
 
-def retrieved_material(subject_id: int, topic_id: int | None, query: str, k: int = 12) -> str:
-    """Retrieval fallback when the scope doesn't fit in context: top chunks (text or vision notes) + their vision notes."""
+def retrieved_material(subject_id: int, topic_id: int | None, query: str, k: int = 12, seen: set | None = None) -> str:
+    """Retrieval fallback when the scope doesn't fit in context: top chunks (text or vision notes) + their vision notes.
+    `seen` collects the chunk ids given (the chat's search_material leaves them out)."""
     ids = [d["id"] for d in topic_documents(subject_id, topic_id)]
-    return _format_hits(search.search(query, ids, k))
+    hits = search.search(query, ids, k)
+    if seen is not None:
+        seen.update(h["chunk_id"] for h in hits)
+    return _format_hits(hits)
 
 
-def textbook_passages(subject_id: int, query: str, k: int = 5) -> str:
+def textbook_passages(subject_id: int, query: str, k: int = 5, seen: set | None = None) -> str:
     ids = [r["id"] for r in db.q("SELECT id FROM documents WHERE subject_id=? AND kind='reference' AND unit_count > 0", (subject_id,))]
     if not ids or not query.strip():
         return ""
-    return _format_hits(search.search(query, ids, k))
+    hits = search.search(query, ids, k)
+    if seen is not None:
+        seen.update(h["chunk_id"] for h in hits)
+    return _format_hits(hits)
 
 
 def _format_hits(hits: list[dict]) -> str:

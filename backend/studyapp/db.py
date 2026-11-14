@@ -120,7 +120,7 @@ LEGACY_MIGRATIONS = [
         created_at REAL NOT NULL, updated_at REAL NOT NULL
     )""",
     "CREATE INDEX IF NOT EXISTS annotations_doc ON annotations(document_id, unit)",
-    # annotated_at: last change to annotation text; annotations_ingested: the annotated_at the last ingest included.
+    # annotated_at / annotations_ingested: from "re-ingest with my notes", since removed; no longer read.
     "ALTER TABLE documents ADD COLUMN annotated_at REAL",
     "ALTER TABLE documents ADD COLUMN annotations_ingested REAL",
     # Word only: where each section starts in the exact PDF copy, {unit idx: [page, y fraction]} (render.py)
@@ -247,6 +247,15 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     (11, ["ALTER TABLE subjects ADD COLUMN questions TEXT"]),
     # a Lucide icon chosen for the subject (SubjectIcon.tsx SUBJECT_ICONS), in place of the old emoji option
     (12, ["ALTER TABLE subjects ADD COLUMN icon_name TEXT"]),
+    # the student's notes can also be a mind map / flowchart ('map') or a drawing ('drawing'); `data` holds their
+    # JSON (boxes and links, or vector strokes). Still never ingested.
+    (13, ["ALTER TABLE user_notes ADD COLUMN kind TEXT NOT NULL DEFAULT 'note'",
+          "ALTER TABLE user_notes ADD COLUMN data TEXT"]),
+    # artifacts.partial: what a generation or marking has finished so far ({"key": params hash, "done": {...}}), so a
+    # retry after a failure, cancel or restart continues instead of starting over (generate.Partial); cleared when ready.
+    # documents.render_error: why Office/LibreOffice couldn't make the exact PDF copy ("plain message [APO-FILE-3xx]")
+    (14, ["ALTER TABLE artifacts ADD COLUMN partial TEXT",
+          "ALTER TABLE documents ADD COLUMN render_error TEXT"]),
 ]
 # Rows in `jobs` that only show interactive model work in the jobs list (jobs.track); no worker runs them.
 INTERACTIVE_JOBS = ("chat", "define", "quiz_review")

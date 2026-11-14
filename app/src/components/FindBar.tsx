@@ -8,10 +8,9 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { findAll, paint } from './textRange';
 import Icon from './Icon';
+import { useFloating } from './floating';
 
 let lastTarget: Element | null = null;
-/** Where the find bar was dragged to, relative to its usual corner of the content. */
-let lastOffset = { dx: 0, dy: 0 };
 
 /** A match somewhere in a renderer's full text (not necessarily rendered yet). */
 export interface FindHit { page: number; index: number }
@@ -129,29 +128,9 @@ function FindBar({ scope, initial, onClose }: { scope: HTMLElement; initial?: st
     return () => window.clearInterval(t);
   }, [scope]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // dragged by its grip; the offset is kept for the next time it opens (until the app restarts)
-  const [offset, setOffset] = useState(lastOffset);
-  const startDrag = (e: React.PointerEvent) => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    const x0 = e.clientX - offset.dx, y0 = e.clientY - offset.dy;
-    const bar = (e.currentTarget as HTMLElement).parentElement!;
-    const start = bar.getBoundingClientRect();
-    const o0 = offset;
-    const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
-    const move = (ev: PointerEvent) => {
-      // moved by (n - o0) from where it started; kept 8 px inside the window
-      const next = {
-        dx: clamp(ev.clientX - x0, o0.dx + 8 - start.left, o0.dx + window.innerWidth - 8 - start.right),
-        dy: clamp(ev.clientY - y0, o0.dy + 8 - start.top, o0.dy + window.innerHeight - 8 - start.bottom),
-      };
-      lastOffset = next;
-      setOffset(next);
-    };
-    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); input.current?.focus(); };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-  };
+  // dragged by its grip; the offset from its usual corner is kept for the next time it opens (floating.tsx)
+  const fl = useFloating<HTMLDivElement>('find', { onDragEnd: () => input.current?.focus() });
+  const offset = fl.offset;
 
   // find again when the text changes underneath (a reply streaming in, a page of a PDF rendering)
   useEffect(() => {
@@ -216,9 +195,8 @@ function FindBar({ scope, initial, onClose }: { scope: HTMLElement; initial?: st
   const more = provider && partial ? '+' : '';
 
   return createPortal(
-    <div className="find-bar" role="search" style={{ top: Math.max(box.top + 8, 44) + offset.dy, right: Math.max(window.innerWidth - box.right + 12, 12) - offset.dx }}>
-      <span className="find-grip" title="Drag to move (double-click to put it back)" onPointerDown={startDrag}
-        onDoubleClick={() => { lastOffset = { dx: 0, dy: 0 }; setOffset(lastOffset); }} aria-hidden>⋮⋮</span>
+    <div ref={fl.ref} className="find-bar" role="search" style={{ top: Math.max(box.top + 8, 44) + offset.dy, right: Math.max(window.innerWidth - box.right + 12, 12) - offset.dx }}>
+      <span className="find-grip" title="Drag to move (double-click to put it back)" {...fl.grip} aria-hidden><Icon name="grip" size={15} /></span>
       <input ref={input} className="find-input" value={q} placeholder={`Find in ${what}`} spellCheck={false}
         onChange={(e) => setQ(e.target.value)}
         onKeyDown={(e) => {
@@ -228,7 +206,7 @@ function FindBar({ scope, initial, onClose }: { scope: HTMLElement; initial?: st
       <span className="find-count" title={more ? 'Still searching the rest of the file' : undefined}>
         {q.trim() ? (searching ? '…' : count ? `${at + 1}/${count}${more}` : more ? '…' : 'No matches') : ''}</span>
       <button className="icon-btn" title="Previous (Shift+Enter)" disabled={!count} onClick={() => step(-1)}><Icon name="chevronUp" /></button>
-      <button className="icon-btn" title="Next (Enter)" disabled={!count} onClick={() => step(1)}>↓</button>
+      <button className="icon-btn" title="Next (Enter)" disabled={!count} onClick={() => step(1)}><Icon name="chevronDown" /></button>
       <button className="icon-btn" title="Close (Esc)" onClick={onClose}><Icon name="close" size={15} /></button>
     </div>,
     document.body,

@@ -10,7 +10,10 @@ from studyapp.api import app
 client = TestClient(app)
 
 
-def test_example_subject_is_complete_and_made_once():
+def test_example_subject_is_complete_and_made_once(monkeypatch):
+    # whatever is running on this machine, the test has no embedding model
+    down = {"ok": False, "online": False, "paused": False, "error": "off", "code": None}
+    monkeypatch.setattr(examples.llm, "model_status", lambda: {"llm": down, "embed": down})
     r = client.post("/examples/physics").json()
     sid = r["id"]
     try:

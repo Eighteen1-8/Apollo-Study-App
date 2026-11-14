@@ -11,6 +11,7 @@ anything interactive, like chat, gets `Paused` straight away."""
 import logging
 import base64
 import contextlib
+import io
 import json
 import re
 import threading
@@ -236,6 +237,11 @@ def profile() -> dict:
     return {**DEFAULT_PROFILE, **(saved if isinstance(saved, dict) else {})}
 
 
+def tools_supported() -> bool:
+    """Whether the chat model gets native tools (OpenRouter always; the local server when its profile says so)."""
+    return bool(llm_cfg()["online"] or profile()["tools"])
+
+
 def _level(reasoning, levels: list[str]) -> str:
     """The server's level nearest to the one asked for (xhigh on a server whose top is "high" uses "high")."""
     order = ["low", "medium", "high", "xhigh"]
@@ -294,8 +300,49 @@ def chat(messages, max_tokens=4096, reasoning="off", temperature=None, response_
             "usage": data.get("usage") or {}}
 
 
-def image_part(png: bytes, mime="image/png") -> dict:
-    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(png).decode()}"}}
+_IMAGE_SIGNATURES = ((b"\x89PNG\r\n\x1a\n", "image/png"), (b"\xff\xd8\xff", "image/jpeg"), (b"GIF87a", "image/gif"),
+                     (b"GIF89a", "image/gif"), (b"BM", "image/bmp"), (b"II*\x00", "image/tiff"), (b"MM\x00*", "image/tiff"))
+SENT_AS_IS = ("image/png", "image/jpeg")  # what every vision server reads; anything else is converted to PNG first
+
+
+def image_mime(data: bytes) -> str | None:
+    """The image type from the file's first bytes (never from its name), or None when it isn't a known image."""
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return next((mime for sig, mime in _IMAGE_SIGNATURES if data.startswith(sig)), None)
+
+
+def model_image(data: bytes, max_side: int | None = None) -> tuple[bytes, str]:
+    """(bytes, mime) of an image ready to send to a vision model: PNG and JPEG go as they are; other types (WEBP, GIF,
+    BMP, TIFF) become PNG, and with `max_side` a larger picture (a phone photo) is scaled down to fit it."""
+    mime = image_mime(data)
+    if mime in SENT_AS_IS and max_side is None:
+        return data, mime
+    from PIL import Image, ImageOps
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            if mime in SENT_AS_IS and max(im.size) <= max_side:
+                return data, mime
+            im = ImageOps.exif_transpose(im)  # photos: the way up the camera recorded
+            if max_side and max(im.size) > max_side:
+                im.thumbnail((max_side, max_side))
+            buf = io.BytesIO()
+            if mime == "image/jpeg":  # a photo stays a JPEG (a PNG of it would be several times larger)
+                im.convert("RGB").save(buf, "JPEG", quality=90)
+                return buf.getvalue(), "image/jpeg"
+            im.convert("RGBA" if "A" in im.getbands() or "transparency" in im.info else "RGB").save(buf, "PNG")
+            return buf.getvalue(), "image/png"
+    except Exception as e:  # not an image PIL can read: send it as it is, labelled as what it looks like
+        log.warning("couldn't convert an image for the model (%s): %s", mime, e)
+        return data, mime or "image/png"
+
+
+def image_part(data: bytes, mime: str | None = None) -> dict:
+    """An image for a chat message. Without `mime` the type is read from the bytes and converted when needed
+    (model_image), so a WEBP or GIF is never labelled as something else."""
+    if mime is None:
+        data, mime = model_image(data)
+    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode()}"}}
 
 
 class StreamCancelled(Exception):

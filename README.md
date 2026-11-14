@@ -72,7 +72,7 @@ The first launch walks you through setup: where the models run (this computer or
 1. **Create a subject** — `+` on the left minibar (or *New subject* on the home screen). Right click to customise.
 2. **Create a topic** —  Create a topic within a subject to group material and everything you generate.
 3. **Upload study material** — Drag files in (PPTX, DOCX, PDF, text, images), or click on `+` to upload reference material. Each file is parsed into units (slides/pages/sections), exactly deduplicated, chunked and embedded.
-4. **Vision notes** — a second pass has a vision model annotate slides/pages (auto mode: units with images or little text). Progress shows on the jobs bar at the bottom of the rail (note that this is very slow). The notes are embedded too, so scanned pages and diagrams turn up in search.
+4. **Vision notes** — a second pass has a vision model annotate slides/pages (Auto, the default when adding files and textbooks: units with images or little text; *Every page* and *Off* are the other choices). Progress shows on the jobs bar at the bottom of the rail (note that this is very slow). The notes are embedded too, so scanned pages and diagrams turn up in search.
    Right-click a subject, topic or file → **Check vision notes** to flag broken or wrong notes (quick checks, then Apollo compares each page with its image); **Settings → Maintenance** lists the flags with the reason, re-runs vision on just those pages, and shows disk use, leftovers to clean up and files that need re-embedding.
 5. **Reference library** — Upload entire textbooks and other entire subject materials into the reference libary. All data stays locally on your device (unless an online API is used).
 
@@ -82,15 +82,18 @@ The first launch walks you through setup: where the models run (this computer or
 - Quick actions under the input — **Flashcards, Quiz, Exam, Full notes, Cheat sheet, Mind map** — open a short form, then generate and save to the *Generated* panel (grouped by topic).
 - Ask Apollo to generate you this content - it can also tailor it to what you struggle with most.
 - A reply keeps writing in its own chat while you switch chats or subjects (a dot marks replies you haven't seen). **Stop** keeps what was written so far.
-- **Slash commands** run in the app and never reach the model: `/stats`, `/effort`, `/create`, `/topic`, `/context`, `/todo`, `/new`, `/rename`, `/title`, `/stop`, `/delete`, `/help`. The meter beside the input shows how full the context window is.
+- **Reply to part of an answer**: select some text in one of Apollo's replies and press *Reply* to follow up on just that part (the sent message links back to it), *Explain this* to have it explained more simply at once, or *Add to my notes* to quote it in a note.
+- When the material it was given doesn't answer a question, Apollo **searches your files further by itself** (this topic, the whole subject or the textbooks; the status line says so). Ask it about the app itself ("what can you do?", "how do I mark an essay?") and it reads its own help instead of guessing.
+- **Slash commands** run in the app and never reach the model: `/stats`, `/effort`, `/create`, `/topic`, `/context`, `/todo`, `/calc` (open the calculator, or work out `/calc 2sin(30)` right in the chat), `/graph` (draw `/graph x^2` in the calculator), `/new`, `/rename`, `/title`, `/stop`, `/delete`, `/shortcuts`, `/help`. The meter beside the input shows how full the context window is.
 - Opening a document floats the chat in a bottom corner: drag its header to move it (or onto a note's Comments panel), drag its inner corner to resize, collapse with ▾. Two header buttons put it **side by side** with what's open (drag the divider) or **full screen**; leaving full screen goes back to the layout you came from.
 - Only one blank chat exists per subject. Deleted chats can be brought back with Undo.
 
 ### Notes
 - **My notes** (right sidebar) are your own rich-text notes. They're never added to Apollo's material, since they may be wrong, but Apollo can read them when you ask it to.
 - The toolbar has headings, lists, colours, highlights and **tables**: pick a size from the grid (the first row is a header), Tab moves between cells (Tab in the last cell adds a row), and right-click a cell for rows, columns or deleting the table.
-- Highlight text and ask Apollo to **check** or **revise** it; suggestions appear in the Comments panel and only change the note when you apply them (undoable).
+- Highlight text and ask Apollo to **check** or **revise** it; suggestions appear in the Comments panel and only change the note when you apply them (undoable). A check is short: a one- or two-sentence verdict and only the mistakes that matter, most important first, each with its fix and a link that opens the slide or page it relies on.
 - Spell check is offline (Australian English by default; British or US English in Settings). Export a note to Word or PDF.
+- The `+` beside My notes also makes a **mind map / flowchart** (double-click for a box, drag a box's dot onto another to link them, shapes, colours, Tidy, undo) or a **drawing** (pen with pressure, highlighter, eraser, lines, arrows, shapes, text, plain/grid/lined paper). Both save as you go and export as a picture, Word or PDF. **Check with Apollo** reads a map's boxes and links (click an issue to see the box) or looks at a picture of a drawing with your one-line "what this shows"; Apollo never rewrites them.
 
 ### Finding things
 - **Ctrl+K** searches everything in every subject: subjects, topics, files, chats, generated content and notes.
@@ -104,16 +107,27 @@ The first launch walks you through setup: where the models run (this computer or
 - The revision to-do list folds away from its heading, like the chat list and My notes.
 
 ### Viewing documents
-Click a document in a topic to open the viewer. A toolbar in the top right helps you annotate and work through content.
+Click a document in a topic to open the viewer. A toolbar in the top right helps you annotate and work through content. Your highlights, drawings and notes on a file stay yours: they're never added to the material Apollo answers from.
+
+Drag a file, a note or generated notes from a sidebar into the middle to open it there, or on the left or right half to see it **side by side** with what's open. With a note beside a file, select text and press **Add to notes** (or drag the selection, or the popup's grip, into the note) to quote it with its file and page; a right-drag box can be added or dragged in as a picture. With no note open, *Add to notes* offers your recent notes or a new one, opened beside the file.
+
+The **calculator** button (also in the note, mind map and drawing toolbars) opens a movable calculator that stays open across files: scientific mode (typed expressions, history, `ans`, degrees/radians, functions and physics constants) and graphing mode (several functions, drag/zoom, trace, table of values). With a note open it can insert a result or a graph; with a chat open, **Send to chat** puts a result, or the graph's functions, in the chat box so you can ask about them.
 
 ### Studying
 - **Start studying** sits in front of a subject's knowledge cloud, which stays darkened and still until you press *Press to explore the map* (the button fades away and you can orbit, zoom and click; *Back to studying* at the top right brings it back). It opens the study panel: a chat box (its placeholder suggests three questions Apollo wrote for the subject; press Enter and the chat grows out of it to fill the screen; close it to come back), what to continue, your to-do list (ticked ones fold into *Completed*) and the Make content buttons.
+- You can drop files from the sidebar onto the study panel's chat box, and type `/` there for the commands.
 - **Quizzes/Flashcards** open fullscreen. With flashcards, mark `✓` / `✗`under each card for confidence. Marking `✗` lets Apollo know in chat the topics you are struggling with.
+- **Choose pages or slides**: in Make content's last step, *Advanced* lets you pick a file and type ranges (`3-7, 12`), click thumbnails or pick a chapter, e.g. a quiz on slides 10–20. In the chat, just ask ("a quiz on slides 10–20 of Lecture 3"): the form shows the file and pages, editable before it starts.
+- **Quiz options**: under *Advanced*, a quiz's difficulty (easy, normal, hard) and its questions: multiple choice, true/false, or mixed. The chat's quiz form has the difficulty too.
+- **Retry continues**: if making something fails or is cancelled part way (or the app closes), *Retry* / *Continue* carries on from the finished parts. *Regenerate* on finished content starts over.
+- **Marking**: Make content → *Marking* has Apollo mark your own work (Word, PDF, PowerPoint, text or photos of handwritten pages, up to 40 pages), with an optional rubric, a total and instructions, checked against a topic, the whole subject or nothing. You get a score, each question or criterion's feedback and corrections beside your pages, and *Ask Apollo about this* on any of it. The files are copied for that marking only, never added to your material. *Mark a new version* marks your improved work the same way (same rubric, total and instructions unless you change them) and shows what improved, what's still to do, the score change overall and per criterion, and links to earlier versions.
+- **Study timer**: the clock on the left bar. Set the minutes with − / + (Shift: 1 minute), start, and Apollo tells you (and flashes the taskbar) when the time is up. Pick **25 / 5** or **50 / 10** for focus-and-break rounds (the break starts by itself; the next focus round waits for Start); today's focus sessions and minutes show in the timer and on the study panel.
+- **Tutorials**: each part of the app shows a few tips the first time it opens; its `?` button replays them, and the help window lists them all.
 
 ### Settings
 - Endpoints, model ids and keys (local or OpenRouter - online mode is optional; the OpenRouter models are listed to pick from). **Test connections** also checks what the model server supports (reasoning levels, JSON, tools, streamed usage).
-- Appearance: text size, themes (Hydrogen, Lithium, Iodine, Carbon, Oxygen, Helium, Fluorine), accent colour, **animation speed** (Off, Fast, Normal, Gentle), 3D knowledge cloud, its idle drift, and its **frame rate** (30 for laptops, 60, 120, or match the display).
-- **Chat tutor**: how Apollo answers (Assistive, Length, Interactive) and, in advanced mode, its rules.
+- Appearance: **UI size** (80–160%; Ctrl + / Ctrl − / Ctrl 0 move the same slider), themes (Hydrogen, Lithium, Iodine, Carbon, Oxygen, Helium, Fluorine), accent colour, **animation speed** (Off, Fast, Normal, Gentle), a background effect (snow, meteors, fireflies), 3D knowledge cloud, its idle drift, its **frame rate** (match the display by default, or 30 for laptops, 60, 120), and the pet.
+- **Chat tutor**: how Apollo answers (Assistive, Length from thorough to very concise, Interactive) and, in advanced mode, its rules.
 - **Mode**: Standard (plain words, guided steps) or Advanced (technical terms, the context meter, Maintenance, every tuning setting).
 - **Maintenance**: disk use, clean-up, re-embedding and re-reading files, vision flags, the log, and database backups (daily and on demand, restored at the next start).
 - **Share**: export or import a subject, topic or files as a study pack.
@@ -148,11 +162,11 @@ flowchart LR
 
 **Storage.** One SQLite database in the data folder holds everything: subjects, topics, files and their *units* (a slide, page or Word section), chunks with their embeddings (float32 BLOBs) and an FTS5 keyword index, generated content, chats, notes, annotations, settings (API keys encrypted with Windows DPAPI) and the job queue. Original files, rendered PDFs and images sit beside it. Schema changes are numbered migrations run once at start-up, after a backup.
 
-**Reading a file** (an `ingest` job): parse into units with native parsers (python-pptx, python-docx, PyMuPDF; Office equations become LaTeX) → drop exact duplicates (SHA-256, never a model's judgement) → chunk by structure → embed. A separate `vision` job then has the language model describe slides and pages with pictures; those notes are embedded as their own chunks so diagrams and scans can be found. Word and PowerPoint files are also exported once to an exact PDF (Office or LibreOffice) for the viewer.
+**Reading a file** (an `ingest` job): parse into units with native parsers (python-pptx, python-docx, PyMuPDF; Office equations become LaTeX) → drop exact duplicates (SHA-256, never a model's judgement) → chunk by structure → embed. A separate `vision` job then has the language model describe slides and pages with pictures; those notes are embedded as their own chunks so diagrams and scans can be found. Word and PowerPoint files are also exported once to an exact PDF (Office or LibreOffice) for the viewer; when that isn't possible the viewer shows a simpler layout with a note saying why and *Try again* (Settings → Maintenance lists these files).
 
 **Answering** (chat): if a scope's material fits in about 60% of the context window, all of it goes in the system prompt, kept byte-identical between turns so the server's prefix cache hits; otherwise hybrid search (BM25 + cosine similarity, fused by rank) adds the best passages to the question. Textbooks are always searched per question. Replies stream to the UI as server-sent events, cite `[[file · Page N]]`, and each citation is checked against the text it supports after the reply ends. The model can call tools to make content or read the to-do list and notes.
 
-**Making content** (a `generate` job): flashcards, quizzes, exams, notes, cheat sheets and mind maps are coverage-driven. Item counts are shared out across every section of the material in proportion to its size, one model call per section, so nothing is skipped. Practice exams are reproduced in their exact structure, and marking compares written answers against a rubric.
+**Making content** (a `generate` job): flashcards, quizzes, exams, notes, cheat sheets and mind maps are coverage-driven. Item counts are shared out across every section of the material in proportion to its size, one model call per section, so nothing is skipped. Practice exams are reproduced in their exact structure, with each part's questions shared out over the sections the same way, and marking compares written answers against a rubric. Finished sections are saved as they're done, so a retry continues instead of starting over.
 
 **Jobs.** A persistent queue with three lanes (`ingest` on the CPU, `vision`, `generate`), all model calls going through one gate sized to what the server can run at once. Jobs survive restarts, can be cancelled, prioritised or paused per model, and long vision jobs yield to waiting work.
 

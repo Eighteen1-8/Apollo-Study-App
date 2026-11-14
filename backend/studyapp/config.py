@@ -92,9 +92,10 @@ DEFAULT_SETTINGS = {
     "openrouter_embed_model": os.environ.get("OPENROUTER_EMBED_MODEL", "nvidia/nemotron-3.5-embed-1b:free"),
     "openrouter_context": int(os.environ.get("OPENROUTER_CONTEXT", 131072)),
     "openrouter_concurrency": int(os.environ.get("OPENROUTER_CONCURRENCY", 1)),
-    # Vision: "off" | "auto" (heuristic) | "all" (every unit with any content)
+    # Vision: "off" | "auto" (heuristic) | "all" (every unit with any content). Used when an upload names no mode;
+    # every way of adding files in the UI starts on "auto" (UploadDialog.DEFAULT_VISION).
     "vision_default_topic": "auto",
-    "vision_default_reference": "all",
+    "vision_default_reference": "auto",
     # Qwen reasoning effort per use: "off" | "low" | "medium" | "xhigh" (the levels the chat template supports)
     "reasoning_levels": ["low", "medium", "xhigh"],
     # what the local model server accepts (llm.DEFAULT_PROFILE until Settings → Test connections probes it)
@@ -116,10 +117,10 @@ DEFAULT_SETTINGS = {
     # Chunking
     "chunk_target_tokens": 600,
     "chunk_max_slides": 5,
-    # Chat tutor: custom rules ("" = built-in default) and style, each 0-2
+    # Chat tutor: custom rules ("" = built-in default) and style dials (levels in chat_prompt.STYLE)
     "chat_system_prompt": "",
-    "chat_assistive": 1,  # show methods / worked steps
-    "chat_concise": 1,  # 0 detailed, 1 balanced, 2 concise
+    "chat_assistive": 1,  # show methods / worked steps (0-2)
+    "chat_concise": 1,  # 0 detailed, 1 balanced, 2 concise, 3 very concise
     "chat_interactive": 0,  # guide with smaller questions instead of giving answers
     "chat_auto_title": True,  # Apollo names a chat after its first reply
     # Paused models (the jobs panel): background jobs wait, chat reports it. Lets Qwen be unloaded to free VRAM.

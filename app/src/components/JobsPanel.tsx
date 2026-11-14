@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { api } from '../api';
 import { usePoll } from '../hooks';
 import { Pill, Progress } from './ui';
@@ -19,7 +20,9 @@ const VERB: Record<string, [string, string]> = {
   review: ['Giving feedback on', 'Gave feedback on'], chat: ['Replying in', 'Replied in'], define: ['Defining', 'Defined'],
   quiz_review: ['Reviewing', 'Reviewed'], questions: ['Thinking of example questions for', 'Thought of example questions for'],
 };
-const sentence = (type: string, name: string, live: boolean) => {
+const sentence = (type: string, name: string, live: boolean): string => {
+  // marking the student's work runs as a 'generate' job titled "Marking: essay"
+  if (type === 'generate' && name.startsWith('Marking: ')) return sentence('mark', name.slice(9), live);
   const v = VERB[type];
   return v ? `${v[live ? 0 : 1]} ‘${name}’` : name;
 };
@@ -29,10 +32,15 @@ const left = (secs: number) => (secs < 50 ? 'less than a minute left' : `about $
 const NOTIFY = ['ingest', 'generate', 'mark', 'vision', 'review'];
 function notifyDone(type: string, name: string, ok: boolean) {
   if (typeof Notification === 'undefined' || document.hasFocus()) return;
-  const title = !ok ? `Couldn’t finish ‘${name}’` : type === 'generate' ? `‘${name}’ is ready to study`
+  const title = !ok ? `Couldn’t finish ‘${name}’` : type === 'generate' && name.startsWith('Marking: ') ? `‘${name.slice(9)}’ has been marked`
+    : type === 'generate' ? `‘${name}’ is ready to study`
     : type === 'ingest' ? `‘${name}’ has been added` : type === 'mark' ? `‘${name}’ has been marked` : `${sentence(type, name, false)}`;
   try { new Notification(title, { body: ok ? 'Open Apollo to carry on.' : 'Open Apollo and see the Activity list for why.', silent: false }); } catch { /* not allowed here */ }
 }
+
+const openers = new Set<() => void>();
+/** Opens the jobs list from elsewhere (the app pet's click). */
+export function openJobsList() { openers.forEach((f) => f()); }
 
 /** Jobs indicator for the mini sidebar: a check while idle; while anything is queued, an hourglass that drains and
  * flips inside a ring that fills with the running job's progress. Click for the full list; finished jobs can be dismissed from it.
@@ -42,6 +50,7 @@ export default function JobsPanel() {
   const tr = useTerms();
   const advanced = useAdvanced();
   const root = useRef<HTMLDivElement>(null);
+  useEffect(() => { const f = () => setOpen(true); openers.add(f); return () => { openers.delete(f); }; }, []);
   const jobs = usePoll(() => api.jobs(false), 700, [], ['jobs']);
   const list = jobs.data ?? [];
   const active = list.filter((j) => ACTIVE.includes(j.status));
@@ -57,10 +66,23 @@ export default function JobsPanel() {
   const togglePause = (k: 'llm' | 'embed') => api.setPause({ [k]: !paused[k] }).then(() => { pause.reload(); jobs.reload(); });
   const pausedLabel = [paused.llm && tr('llm'), paused.embed && tr('embeddings')].filter(Boolean).join(' and ');
 
-  // a press anywhere outside the button and the list closes it (a backdrop can't: the sidebar's blur traps it)
+  // The list is portalled to the body (the minibar's backdrop-filter would make it the containing block and clip it),
+  // placed beside the button. A press anywhere outside both closes it.
+  const pop = useRef<HTMLDivElement>(null);
+  const [at, setAt] = useState<{ left: number; bottom: number } | null>(null);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const r = root.current?.getBoundingClientRect();
+      if (r) setAt({ left: r.right + 12, bottom: Math.max(8, window.innerHeight - r.bottom) });
+    };
+    place();
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [open]);
   useEffect(() => {
     if (!open) return;
-    const down = (e: PointerEvent) => { if (!root.current?.contains(e.target as Node)) setOpen(false); };
+    const down = (e: PointerEvent) => { if (!root.current?.contains(e.target as Node) && !pop.current?.contains(e.target as Node)) setOpen(false); };
     const key = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
     window.addEventListener('pointerdown', down, true);
     window.addEventListener('keydown', key);
@@ -118,8 +140,9 @@ export default function JobsPanel() {
         {active.length > 0 && <span key={active.length} className="jobs-v-count">{active.length}</span>}
         {anyPaused && <span className="jobs-v-paused" aria-label="Paused"><Icon name="pause" size={10} /></span>}
       </button>
-      {open && (
-        <div className="jobs-popover jobs-popover-side" role="dialog" aria-label={advanced ? 'Background jobs' : 'Activity'}>
+      {open && createPortal(
+        <div ref={pop} className="jobs-popover jobs-popover-side" role="dialog" aria-label={advanced ? 'Background jobs' : 'Activity'}
+          style={at ? { left: at.left, bottom: at.bottom } : { visibility: 'hidden' }}>
           <div className="jobs-popover-head">
             <span>{advanced ? 'Jobs' : 'Activity'} <span className="muted">(last hour)</span></span>
             {finished > 0 && <button className="link-btn" onClick={() => dismiss()}>Clear finished</button>}
@@ -181,7 +204,8 @@ export default function JobsPanel() {
               </div>
             );
           })}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

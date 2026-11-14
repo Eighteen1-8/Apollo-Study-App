@@ -1,9 +1,11 @@
-/* Quizzes: answer one question at a time, then results with Apollo's review of what to revise. */
+/* Quizzes: answer one question at a time, then results with Apollo's review of what to revise. Questions are
+   multiple choice (A-D) or true/false (T/F: options ["True", "False"], `type: 'tf'`). */
 import { useEffect, useState } from 'react';
 import { api, Artifact, QuizReview, Subject } from '../../api';
 import Markdown from '../../components/Markdown';
 import { Source } from './Sections';
 import Icon from '../../components/Icon';
+import ErrorText from '../../components/ErrorText';
 
 /** Some quizzes repeat the A-D options at the end of the question text; they're already shown as buttons. Cut that
  * tail only when it really starts with the first option. */
@@ -18,6 +20,9 @@ export function questionText(q: { question: string; options: string[] }) {
   const norm = (t: string) => t.split(WS).join(' ').trim().toLowerCase();
   return norm(q.question.slice(m.index! + m[0].length)).startsWith(norm(q.options[0]).slice(0, 30)) ? q.question.slice(0, m.index).trimEnd() : q.question;
 }
+
+/** The key shown on (and typed for) option k: A-D, or T/F for a true/false question. */
+const optionKey = (q: { type?: string }, k: number) => (q.type === 'tf' ? (k === 0 ? 'T' : 'F') : String.fromCharCode(65 + k));
 
 export function Quiz({ artifact, subject }: { artifact: Artifact; subject: Subject }) {
   const qs = artifact.content!.questions ?? [];
@@ -52,7 +57,8 @@ export function Quiz({ artifact, subject }: { artifact: Artifact; subject: Subje
     const k = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.ctrlKey || e.metaKey || e.altKey) return;
       const key = e.key.toLowerCase();
-      const n = /^[1-9]$/.test(key) ? Number(key) - 1 : /^[a-i]$/.test(key) ? key.charCodeAt(0) - 97 : -1;
+      const n = q.type === 'tf' ? (key === 't' || key === '1' ? 0 : key === 'f' || key === '2' ? 1 : -1)
+        : /^[1-9]$/.test(key) ? Number(key) - 1 : /^[a-i]$/.test(key) ? key.charCodeAt(0) - 97 : -1;
       if (n >= 0 && n < q.options.length && !isChecked) setPicked({ ...picked, [qi]: n });
       else if (e.key === 'Enter') { e.preventDefault(); next(); }
     };
@@ -76,19 +82,19 @@ export function Quiz({ artifact, subject }: { artifact: Artifact; subject: Subje
             <button key={k} disabled={isChecked}
               className={`option${picked[qi] === k ? ' selected' : ''}${isChecked && k === q.answer_index ? ' correct' : ''}${isChecked && k === picked[qi] && !right ? ' wrong' : ''}`}
               onClick={() => setPicked({ ...picked, [qi]: k })}>
-              <span className="option-letter">{String.fromCharCode(65 + k)}</span><Markdown text={o} />
+              <span className="option-letter">{optionKey(q, k)}</span><Markdown text={o} />
             </button>
           ))}
         </div>
         {isChecked && (
           <div className={`explain ${right ? 'explain-ok' : 'explain-bad'}`}>
-            <b>{right ? 'Correct!' : `Not quite. The answer is ${String.fromCharCode(65 + q.answer_index)}.`}</b>
+            <b>{right ? 'Correct!' : `Not quite. The answer is ${q.type === 'tf' ? q.options[q.answer_index] : String.fromCharCode(65 + q.answer_index)}.`}</b>
             <Markdown text={q.explanation} />
             <Source s={q.source} />
           </div>
         )}
         <div className="quiz-actions">
-          <span className="muted small">{score} correct so far · <span className="quiz-keys">pick with <kbd>A</kbd>–<kbd>{String.fromCharCode(64 + q.options.length)}</kbd>, then <kbd>Enter</kbd></span></span>
+          <span className="muted small">{score} correct so far · <span className="quiz-keys">pick with {q.type === 'tf' ? <><kbd>T</kbd> or <kbd>F</kbd></> : <><kbd>A</kbd>–<kbd>{String.fromCharCode(64 + q.options.length)}</kbd></>}, then <kbd>Enter</kbd></span></span>
           <span className="spacer" />
           {!isChecked ? (
             <button className="btn btn-primary" disabled={picked[qi] === undefined} onClick={next}>Check answer</button>
@@ -120,7 +126,7 @@ export function QuizResults({ artifact, subject, picked, onRestart, onRetryMisse
     try {
       setReview(await api.quizReview(artifact.id, Object.fromEntries(Object.entries(picked).map(([k, v]) => [k, v]))));
     } catch (e) {
-      setErr(String(e));
+      setErr(String(e).replace(/^Error: /, ''));
     } finally {
       setLoading(false);
     }
@@ -146,7 +152,8 @@ export function QuizResults({ artifact, subject, picked, onRestart, onRetryMisse
       <div className="results-list">
         {qs.map((q, k) => (
           <div key={k} className={`result-row ${picked[k] === q.answer_index ? 'right' : 'wrong'}`}>
-            <span className="result-mark">{picked[k] === q.answer_index ? '✓' : '✗'}</span>
+            <span className="result-mark" aria-label={picked[k] === q.answer_index ? 'Right' : 'Wrong'}>
+              <Icon name={picked[k] === q.answer_index ? 'check' : 'wrong'} size={15} strokeWidth={2.6} /></span>
             <Markdown text={questionText(q)} />
           </div>
         ))}
@@ -162,7 +169,7 @@ export function QuizResults({ artifact, subject, picked, onRestart, onRetryMisse
             <button className="btn btn-primary" disabled={loading} onClick={runReview}>{loading ? 'Reviewing…' : 'Review my answers'}</button>
           </>
         )}
-        {err && <div className="small bad">{err}</div>}
+        {err && <div className="small bad"><ErrorText text={err} /></div>}
         {review && (
           <div className="review">
             <Markdown text={review.summary} />
@@ -184,7 +191,7 @@ export function QuizResults({ artifact, subject, picked, onRestart, onRetryMisse
                         {r.source && <div className="src-note">Revise from: {r.source}</div>}
                       </div>
                       <button className={`btn btn-sm${added.has(k) ? '' : ' btn-primary'}`} disabled={added.has(k)} onClick={() => addTodo(k, r)}>
-                        {added.has(k) ? '✓ Added' : '+ Add to to-do'}
+                        {added.has(k) ? <><Icon name="check" size={14} /> Added</> : <><Icon name="add" size={14} /> Add to to-do</>}
                       </button>
                     </div>
                   ))}

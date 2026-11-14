@@ -1,9 +1,13 @@
 """Study features around generated content: subject icons, revision to-dos, flashcard ratings, quiz review,
 and managing the saved content library."""
+import base64
+import hashlib
+import io
 import json
 import time
 
 from fastapi import APIRouter, HTTPException
+from PIL import Image
 from pydantic import BaseModel
 
 from . import config, db, grants, jobs, llm
@@ -28,11 +32,38 @@ class IconBody(BaseModel):
     icon_name: str | None = None  # a subject-art key from the picker (app/src/components/subjectIcons.ts)
     clear_image: bool = False
     image_path: str | None = None  # local file chosen by the user; copied into the app's assets
+    image_png: str | None = None  # base64 PNG: the student's picture, cropped and scaled in the app (ImageCrop.tsx)
+
+
+ICON_PX = 512  # largest icon side kept (the app sends 256 px)
+
+
+def _icon_png(b64: str) -> bytes:
+    """The uploaded icon, checked to be a real PNG image of a sensible size (PIL decodes it), as PNG bytes."""
+    try:
+        raw = base64.b64decode(b64, validate=True)
+    except ValueError:
+        raise HTTPException(400, "Not an image")
+    if not raw.startswith(b"\x89PNG") or len(raw) > 8_000_000:
+        raise HTTPException(400, "The icon must be a PNG image under 8 MB")
+    try:
+        with Image.open(io.BytesIO(raw)) as im:
+            im.verify()
+        with Image.open(io.BytesIO(raw)) as im:  # verify() leaves the image unusable: open it again to check its size
+            if im.format != "PNG" or not (0 < im.width <= ICON_PX and 0 < im.height <= ICON_PX):
+                raise HTTPException(400, f"The icon must be a PNG of at most {ICON_PX}×{ICON_PX} pixels")
+            im.load()
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(400, "[APO-FILE-304] Couldn't read this image")
+    return raw
 
 
 @router.patch("/subjects/{sid}/icon")
 def set_icon(sid: int, body: IconBody):
     s = _subject(sid)
+    new_image = None
     fields = {}
     if body.color is not None:
         fields["color"] = body.color
@@ -46,21 +77,28 @@ def set_icon(sid: int, body: IconBody):
         fields["icon_name"] = body.icon_name.strip()[:40] or None
         fields["icon_emoji"] = None
         fields["icon_text"] = None
-    if body.image_path:
+    if body.image_png:
+        png = _icon_png(body.image_png)
+        # named by content: a new picture gets a new URL, so no cached copy of the old one is shown
+        new_image = f"subject_icons/{sid}_{hashlib.sha256(png).hexdigest()[:12]}.png"
+        config.write_atomic(config.assets_dir() / new_image, png)
+    elif body.image_path:
         src = grants.require(body.image_path)
         if not src.is_file() or src.suffix.lower() not in IMAGE_EXTS:
-            raise HTTPException(400, "Choose a PNG, JPG, WEBP, BMP or GIF image")
-        folder = config.assets_dir() / "subject_icons"
-        folder.mkdir(parents=True, exist_ok=True)
-        rel = f"subject_icons/{sid}_{int(time.time())}{src.suffix.lower()}"
-        config.copy_atomic(src, config.assets_dir() / rel)
-        fields["icon_image"] = rel
-    if body.clear_image or body.icon_text is not None or body.icon_emoji is not None or body.icon_name is not None:
-        if s["icon_image"] and not body.image_path:
-            (config.assets_dir() / s["icon_image"]).unlink(missing_ok=True)
-            fields["icon_image"] = None
+            raise HTTPException(400, "Choose a PNG, JPG, WEBP, BMP, GIF or TIFF image")
+        new_image = f"subject_icons/{sid}_{int(time.time())}{src.suffix.lower()}"
+        config.copy_atomic(src, config.assets_dir() / new_image)
+    if new_image:
+        fields["icon_image"] = new_image
+    elif body.clear_image or body.icon_text is not None or body.icon_emoji is not None or body.icon_name is not None:
+        fields["icon_image"] = None
     if fields:
         db.ex(f"UPDATE subjects SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?", (*fields.values(), sid))
+    # the picture it replaced (or cleared) is no longer used anywhere
+    if "icon_image" in fields and s["icon_image"] and s["icon_image"] != fields["icon_image"]:
+        old = (config.assets_dir() / s["icon_image"]).resolve()
+        if old.parent == (config.assets_dir() / "subject_icons").resolve():
+            old.unlink(missing_ok=True)
     return db.q1("SELECT * FROM subjects WHERE id=?", (sid,))
 
 
@@ -246,11 +284,20 @@ def restore_artifact(aid: int):
 def purge_deleted(days: float = 7):
     """Delete for good the generated content and notes deleted more than `days` ago (at start-up)."""
     cutoff = time.time() - days * 86400
+    drawings = [r["id"] for r in db.q("SELECT id FROM user_notes WHERE kind='drawing' AND deleted_at IS NOT NULL "
+                                      "AND deleted_at < ?", (cutoff,))]
     with db.tx() as c:
         c.execute("DELETE FROM reviews WHERE target='note' AND target_id IN "
                   "(SELECT id FROM user_notes WHERE deleted_at IS NOT NULL AND deleted_at < ?)", (cutoff,))
         c.execute("DELETE FROM user_notes WHERE deleted_at IS NOT NULL AND deleted_at < ?", (cutoff,))
+        gone = [r[0] for r in c.execute("SELECT id FROM artifacts WHERE type='marking' AND deleted_at IS NOT NULL AND deleted_at < ?",
+                                        (cutoff,)).fetchall()]
         c.execute("DELETE FROM artifacts WHERE deleted_at IS NOT NULL AND deleted_at < ?", (cutoff,))
+    from .marking import remove_files  # the copied work and its page images
+    for aid in gone:
+        remove_files(aid)
+    from .notes_api import delete_snapshots
+    delete_snapshots(drawings)  # the pictures Check with Apollo sent for those drawings
 
 
 # ---------------------------------------------------------------- flashcard ratings
@@ -430,7 +477,7 @@ def palette():
         "documents": db.q("SELECT id, subject_id, topic_id, kind, filename FROM documents WHERE kind<>'trash' ORDER BY id DESC"),
         "artifacts": db.q("""SELECT id, subject_id, topic_id, type, title FROM artifacts
                              WHERE status='ready' AND deleted_at IS NULL ORDER BY id DESC"""),
-        "notes": db.q("SELECT id, subject_id, topic_id, title FROM user_notes WHERE deleted_at IS NULL ORDER BY updated_at DESC"),
+        "notes": db.q("SELECT id, subject_id, topic_id, title, kind FROM user_notes WHERE deleted_at IS NULL ORDER BY updated_at DESC"),
         "chats": db.q("""SELECT id, subject_id, topic_id, title, updated_at FROM chats WHERE deleted_at IS NULL
                          AND EXISTS (SELECT 1 FROM messages m WHERE m.chat_id=chats.id) ORDER BY updated_at DESC LIMIT 400"""),
     }

@@ -15,23 +15,49 @@ import { Flashcards } from './artifacts/Flashcards';
 import { Quiz } from './artifacts/Quiz';
 import { Exam } from './artifacts/Exam';
 import { Sections } from './artifacts/Sections';
+import { Marking, criterionQuote } from './artifacts/Marking';
 import Icon from '../components/Icon';
+import { TourButton, TourId, useFirstTime } from '../components/Tour';
+import ErrorText from '../components/ErrorText';
+import { Empty } from '../components/ui';
+import { onChange } from '../events';
+import { ApiError } from '../errors';
+
+/** A failed load in plain words: deleted content says so; anything else keeps its error code. */
+function loadError(e: unknown): string {
+  if (e instanceof ApiError && e.status === 404) return 'This content was deleted.';
+  return String(e).replace(/^Error: /, '');
+}
+
+/** The tour for each kind of content (Tour.tsx), in the full-screen viewer and in the centre pane. */
+const FULLSCREEN_TOURS: Partial<Record<string, TourId>> = { flashcards: 'flashcards', quiz: 'quiz', exam: 'exam', marking: 'marking' };
+const PAGE_TOURS: Partial<Record<string, TourId>> = { notes: 'studynotes', cheatsheet: 'cheatsheet', mindmap: 'mindmap', marking: 'marking' };
 
 /** Fullscreen viewer for generated content, closed with the × at the top right (or Escape). */
 export default function ArtifactViewer({ id, subject, onClose }: { id: number; subject: Subject; onClose: () => void }) {
   const ov = useOverlay();
   const [a, setA] = useState<Artifact | null>(null);
-  useEffect(() => { api.artifact(id).then(setA); }, [id]);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    const k = (e: KeyboardEvent) => e.key === 'Escape' && !document.querySelector('.modal-backdrop') && onClose();
+    let alive = true;
+    setError(null);
+    api.artifact(id).then((x) => alive && setA(x)).catch((e) => alive && setError(loadError(e)));
+    return () => { alive = false; };
+  }, [id]);
+  useEffect(() => {
+    // Escape closes a dialog or menu open over the viewer first
+    const k = (e: KeyboardEvent) => e.key === 'Escape' && !e.defaultPrevented
+      && !document.querySelector('.modal-backdrop, .ctx-menu') && onClose();
     window.addEventListener('keydown', k);
     return () => window.removeEventListener('keydown', k);
   }, [onClose]);
+  const tour = a ? FULLSCREEN_TOURS[a.type] : undefined;
+  useFirstTime(tour, !!a?.content);
   // portalled so it always covers the window, whatever transformed/clipped panel it was opened from
   return createPortal(
     <div className="fullscreen">
       <div className="fs-top">
-        <div className="fs-title">{a?.title ?? 'Loading…'}</div>
+        <div className="fs-title">{a?.title ?? (error ? "Couldn't open this" : 'Loading…')}</div>
         {a?.type === 'exam' && a.content && (
           <button className="btn btn-sm" onClick={(e) => ov.menu(e, [false, true].flatMap((answers) => (['docx', 'pdf'] as const).map((f, i) => ({
             label: `${f === 'docx' ? 'Word document (.docx)' : 'PDF'}${answers ? ' with answers and marking scheme' : ''}`,
@@ -42,12 +68,15 @@ export default function ArtifactViewer({ id, subject, onClose }: { id: number; s
             },
           }))), { anchor: e.currentTarget, place: 'below' })}>Export <Icon name="chevronDown" size={14} /></button>
         )}
+        {tour && a?.content && <TourButton id={tour} />}
         <button className="close-x close-x-lg" title="Close (Esc)" onClick={onClose}><Icon name="close" size={20} /></button>
       </div>
       <div className="fs-body" data-find={a?.title ?? 'this page'}>
+        {error && <Empty title="Couldn't open this content"><ErrorText text={error} /></Empty>}
         {a?.content && (
           a.type === 'flashcards' ? <Flashcards artifact={a} />
             : a.type === 'quiz' ? <Quiz artifact={a} subject={subject} />
+            : a.type === 'marking' ? <Marking artifact={a} />
             : <div className="fs-doc">{a.type === 'exam' ? <Exam artifact={a} /> : <Sections content={a.content} />}</div>
         )}
       </div>
@@ -78,19 +107,20 @@ export function ArtifactPage({ id, onClose, onCite, onAsk, onAttach }: {
     opened.current = true;
     if (reviews.data.some((r) => r.status === 'queued' || r.status === 'running')) setShowReviews(true);
   }, [reviews.data]);
-  const shot = useAreaShot(a?.title ?? 'notes', onAttach, (msg) => ov.confirm({ title: "Couldn't take a screenshot", body: msg, confirmText: 'OK' }));
+  const shot = useAreaShot(a?.title ?? 'notes', onAttach, (msg) => ov.confirm({ title: "Couldn't take a screenshot", body: msg, confirmText: 'OK' }),
+    a ? { subjectId: a.subject_id, source: a.title } : undefined);
+  const [error, setError] = useState<string | null>(null);
+  const busy = a?.status === 'queued' || a?.status === 'running';
   useEffect(() => {
     let alive = true;
-    const load = () => api.artifact(id).then((x) => {
-      if (!alive) return;
-      setA(x);
-      if (x.status === 'queued' || x.status === 'running') setTimeout(load, 2500); // regenerating
-    });
-    load();
+    setError(null);
+    api.artifact(id).then((x) => { if (alive) setA(x); }).catch((e) => { if (alive) setError(loadError(e)); });
     return () => { alive = false; };
   }, [id, gen]);
-  const busy = a?.status === 'queued' || a?.status === 'running';
+  // while it is being regenerated, its progress arrives as library changes (no polling)
+  useEffect(() => (busy ? onChange(['library'], () => setGen((g) => g + 1)) : undefined), [busy]);
   const isMap = a?.type === 'mindmap';
+  const isMarking = a?.type === 'marking';
   const reviewable = a?.type === 'notes' || a?.type === 'cheatsheet';
   const secs = a?.content?.sections ?? [];
 
@@ -182,6 +212,25 @@ export function ArtifactPage({ id, onClose, onCite, onAsk, onAttach }: {
     const area = shot.takeMenu();
     if (area) { ov.menu(e, area); return; }
     if (!a) return;
+    if (isMarking) {  // selected feedback: ask about it or copy it
+      const r = selectionIn(scroll.current);
+      const root = scroll.current?.querySelector('.marking');
+      const crit = (r?.startContainer.parentElement ?? (e.target as Element)).closest<HTMLElement>('[data-crit]');
+      const c = crit ? a.content?.marking?.criteria[Number(crit.dataset.crit)] : undefined;
+      const items: MenuItem[] = [];
+      if (r && root) {
+        const q = quoteParts(root, r);
+        items.push({ label: 'Ask Apollo about this', onClick: () => onAsk({ document_id: null, filename: a.title, label: c?.label ?? 'Marking', ...q }) },
+          { label: 'Copy', hint: 'Ctrl+C', onClick: () => navigator.clipboard.writeText(r.toString()) });
+      } else if (c) {
+        items.push({ label: `Ask Apollo about ${c.label}`, onClick: () => onAsk(criterionQuote(a.title, c)) },
+          { label: 'Copy feedback', onClick: () => navigator.clipboard.writeText(c.feedback) });
+      }
+      items.push({ label: 'Export to Word…', separatorBefore: items.length > 0, onClick: () => exportAs('docx', a.title, (word) => artifactHtml(a, word)).catch((err) => logError('export', err)) },
+        { label: 'Export to PDF…', onClick: () => exportAs('pdf', a.title, (word) => artifactHtml(a, word)).catch((err) => logError('export', err)) });
+      ov.menu(e, items);
+      return;
+    }
     if (isMap) {  // a node: ask about it or copy it
       const node = (e.target as Element).closest<SVGGElement>('[data-mm]');
       if (!node) return;
@@ -315,16 +364,23 @@ export function ArtifactPage({ id, onClose, onCite, onAsk, onAttach }: {
     },
   })), { anchor: e.currentTarget, place: 'below' });
 
-  const kind = a?.type === 'notes' ? 'Full notes' : a?.type === 'cheatsheet' ? 'Cheat sheet' : 'Mind map';
+  const kind = a?.type === 'notes' ? 'Full notes' : a?.type === 'cheatsheet' ? 'Cheat sheet' : isMarking ? 'Marking' : 'Mind map';
+  const pageTour = a ? PAGE_TOURS[a.type] : undefined;
+  useFirstTime(pageTour, !!a?.content);
   const active = (reviews.data ?? []).length;
   return (
     <div className={`source artifact-page${showReviews ? ' with-reviews' : ''}`}>
       <header className="source-head">
         <div className="source-title" title={a?.title}>{a?.title ?? ''}</div>
-        {a && <span className="muted small">{kind}{isMap ? '' : ` · ${secs.length} sections`}</span>}
+        {a && <span className="muted small">{kind}{isMap || isMarking ? '' : ` · ${secs.length} sections`}</span>}
         {a && (busy
           ? <span className="muted small">{a.message || 'Regenerating…'} {Math.round(a.progress * 100)}%</span>
-          : <button className="btn btn-sm" title="Write this again from your material" onClick={async () => {
+          : a.status !== 'ready' && a.resumable ? <button className="btn btn-sm" title="Carry on from the parts already finished" onClick={async () => {
+            await api.retryArtifact(id);
+            setA({ ...a, status: 'queued', progress: 0, message: 'Waiting for Apollo…' });
+            setGen((g) => g + 1);
+          }}>Continue</button>
+          : <button className="btn btn-sm" title={isMarking ? 'Mark the work again' : 'Write this again from your material'} onClick={async () => {
             await api.retryArtifact(id);
             setA({ ...a, status: 'queued', progress: 0, message: 'Waiting for Apollo…' });
             setGen((g) => g + 1);
@@ -336,18 +392,22 @@ export function ArtifactPage({ id, onClose, onCite, onAsk, onAttach }: {
             <button className="btn btn-sm" onClick={exportMenu}>Export <Icon name="chevronDown" size={14} /></button>
           </>
         )}
+        {isMarking && !busy && a?.content && <button className="btn btn-sm" onClick={exportMenu}>Export <Icon name="chevronDown" size={14} /></button>}
+        {pageTour && a?.content && <TourButton id={pageTour} />}
         <button className="close-x" title="Close" onClick={onClose}><Icon name="close" size={18} /></button>
       </header>
       <div className="ne-body">
         <div ref={scroll} className={`artifact-scroll${isMap ? ' is-map' : ''}`} data-find={isMap ? undefined : (a?.title ?? 'these notes')}
           onPointerDown={shot.onPointerDown} onContextMenu={contextMenu}>
+          {error && !a && <Empty title="Couldn't open this content"><ErrorText text={error} /></Empty>}
           {a?.content && (isMap
             ? a.content.mindmap && <MindMap root={a.content.mindmap} title={a.title} onCite={onCite}
               onAsk={(text, before) => onAsk({ document_id: null, filename: a.title, label: 'Mind map', text, before, after: '' })} />
+            : isMarking ? <Marking artifact={a} onAsk={onAsk} onCite={onCite} />
             : <div className="fs-doc"><Sections content={a.content} onCite={onCite} /></div>)}
         </div>
         {showReviews && (
-          <Reviews target="artifact" id={id} list={reviews.data ?? []} onClose={() => setShowReviews(false)}
+          <Reviews target="artifact" id={id} list={reviews.data ?? []} onClose={() => setShowReviews(false)} onCite={onCite}
             onApplied={() => { reviews.reload(); setGen((g) => g + 1); }} />
         )}
       </div>

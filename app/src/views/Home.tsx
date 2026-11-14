@@ -78,7 +78,7 @@ export default function Home({ subjects, go, onChange, online }: {
                 <ol className="home-steps">
                   <li>Make a <b>subject</b> for each course, e.g. Physics.</li>
                   <li>Add <b>topics</b> inside it, e.g. Motion, and drop in your slides, notes and textbooks.</li>
-                  <li>Ask Apollo questions, or have it make flashcards, quizzes, practice exams and notes from them.</li>
+                  <li>Ask Apollo questions, have it make flashcards, quizzes, practice exams and notes from them, or have it mark your own work.</li>
                 </ol>
                 <div className="home-start">
                   <Button kind="primary" onClick={act.newSubject}>Create your first subject</Button>

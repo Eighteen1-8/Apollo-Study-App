@@ -1,11 +1,10 @@
 /* The chat's composer (ChatView). */
-import { useState } from 'react';
 import { AreaSource, Chat, ChatFileCheck, inElectron, Quote, ToolName } from '../../api';
 import { DraggedDoc } from '../../components/FileList';
 import { useOverlay } from '../../components/overlay';
 import { CREATE_ITEMS } from '../SubjectView';
 import { stopReply } from '../../chatStreams';
-import { matchCommands, SlashCommand } from '../../components/slashCommands';
+import { runsAtOnce, SlashCommand, SlashMenu, useSlashMenu } from '../../components/slashCommands';
 import ContextMeter from '../../components/ContextMeter';
 import { levelLabel } from './types';
 import { useTerms } from '../../terms';
@@ -30,30 +29,29 @@ export function Composer({ quote, onClearQuote, attached, setAttached, tempFiles
   const ov = useOverlay();
   const tr = useTerms();
   const advanced = useAdvanced();
-  const [slashAt, setSlashAt] = useState(0);
-  const slashList: SlashCommand[] = input.startsWith('/') && !/\s/.test(input) ? matchCommands(input.slice(1)) : [];
-  /** Enter or a click on a suggestion: run it when it needs nothing more (no arguments, or optional ones in [ ]);
-   * otherwise put it in the box to finish typing. Tab always just completes the name. */
-  const slashPick = (c: SlashCommand, complete = false) => {
-    setSlashAt(0);
+  /** Enter or a click on a suggestion: run it when it needs nothing more; otherwise put it in the box to finish
+   * typing. Tab always just completes the name. */
+  const slash = useSlashMenu(input, (c: SlashCommand, complete: boolean) => {
     textarea.current?.focus();
-    if (!complete && (!c.args || c.args.startsWith('['))) {
+    if (!complete && runsAtOnce(c)) {
       setInput('');
       runCommand(`/${c.name}`).catch((e) => card(<div className="banner banner-bad">{String(e).replace(/^Error: /, '')}</div>));
       return;
     }
     setInput(`/${c.name}${c.args ? ' ' : ''}`);
-  };
+  }, () => setInput(''));
 
   return (
     <div className="composer">
       {quote && (
         <div className="reply-banner">
           <div className="reply-main">
-            <div className="reply-label">Replying to a highlight in <b>{quote.filename}</b>{quote.label && ` · ${quote.label.split(' · ')[0]}`}</div>
+            <div className="reply-label">{quote.kind === 'reply'
+              ? <>Replying to part of Apollo's answer</>
+              : <>Replying to a highlight in <b>{quote.filename}</b>{quote.label && ` · ${quote.label.split(' · ')[0]}`}</>}</div>
             <div className="reply-text">“{quote.text}”</div>
           </div>
-          <button className="x-btn" title="Remove highlight" onClick={onClearQuote}><Icon name="close" size={14} /></button>
+          <button className="x-btn" title={quote.kind === 'reply' ? 'Stop replying to this' : 'Remove highlight'} onClick={onClearQuote}><Icon name="close" size={14} /></button>
         </div>
       )}
       {attached.length > 0 && (
@@ -82,33 +80,12 @@ export function Composer({ quote, onClearQuote, attached, setAttached, tempFiles
         </div>
       )}
       <div className="composer-input">
-        {slashList.length > 0 && (
-          <div className="slash-menu" role="listbox">
-            {slashList.map((c, i) => (
-              <button key={c.name} className={`slash-item${i === Math.min(slashAt, slashList.length - 1) ? ' on' : ''}`}
-                onMouseDown={(e) => { e.preventDefault(); slashPick(c); }} onMouseEnter={() => setSlashAt(i)}>
-                <b>/{c.name}</b>{c.args && <span className="slash-args">{c.args}</span>}<span className="slash-sum">{c.summary}</span>
-              </button>
-            ))}
-          </div>
-        )}
+        <SlashMenu menu={slash} />
         <textarea ref={textarea} rows={1}
-          placeholder={quote ? 'Ask about the highlighted text…' : attached.length || tempFiles.length ? 'Ask about the attached file…' : `Message Apollo about ${topicName(chat?.topic_id)}… (/ for commands)`}
-          value={input} onChange={(e) => { setInput(e.target.value); setSlashAt(0); }}
+          placeholder={quote ? (quote.kind === 'reply' ? 'Reply to that part of the answer…' : 'Ask about the highlighted text…') : attached.length || tempFiles.length ? 'Ask about the attached file…' : `Message Apollo about ${topicName(chat?.topic_id)}… (/ for commands)`}
+          value={input} onChange={(e) => { setInput(e.target.value); slash.reset(); }}
           onKeyDown={(e) => {
-            if (slashList.length) {
-              if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-                e.preventDefault();
-                setSlashAt((i) => (Math.min(i, slashList.length - 1) + (e.key === 'ArrowDown' ? 1 : -1) + slashList.length) % slashList.length);
-                return;
-              }
-              if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
-                e.preventDefault();
-                slashPick(slashList[Math.min(slashAt, slashList.length - 1)], e.key === 'Tab');
-                return;
-              }
-              if (e.key === 'Escape') { e.preventDefault(); setInput(''); return; }
-            }
+            if (slash.onKeyDown(e)) return;
             if (e.key === 'Escape' && busy && chat) { e.preventDefault(); stopReply(chat.id); return; }
             if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!busy || input.trim().startsWith('/')) send(); }
           }} />
@@ -135,11 +112,11 @@ export function Composer({ quote, onClearQuote, attached, setAttached, tempFiles
         {chat && <ContextMeter chatId={chat.id} deps={[chat.topic_id, finishedTick, messageCount]} advanced={advanced}
           onNewChat={() => { runCommand('/new').catch((e) => card(<div className="banner banner-bad">{String(e).replace(/^Error: /, '')}</div>)); }} />}
         <span className="spacer" />
-        {!floating && CREATE_ITEMS.map((c) => (
+        {!floating && CREATE_ITEMS.filter((c) => c.chat !== false).map((c) => (
           <button key={c.tool} className="chip" onClick={() => quick(c.tool)}>{c.label.replace(' (from a practice exam)', '')}</button>
         ))}
         {floating && (
-          <button className="pill-btn" onClick={(e) => ov.menu(e, CREATE_ITEMS.map((c) => ({ label: c.label, onClick: () => quick(c.tool) })),
+          <button className="pill-btn" onClick={(e) => ov.menu(e, CREATE_ITEMS.filter((c) => c.chat !== false).map((c) => ({ label: c.label, onClick: () => quick(c.tool) })),
             { anchor: e.currentTarget, place: 'above' })}><Icon name="create" size={14} /> Create <Icon name="chevronDown" size={13} className="caret" /></button>
         )}
       </div>

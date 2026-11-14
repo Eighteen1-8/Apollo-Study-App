@@ -7,19 +7,28 @@ import Icon from '../../components/Icon';
 import { Todos } from '../resources/Todos';
 import { TYPE_ICON } from '../LibraryPanel';
 import { MAKE_TYPES } from './MakeContent';
+import { DOC_DRAG, DraggedDoc, draggedDocs } from '../../components/FileList';
+import { runsAtOnce, SlashMenu, useSlashMenu } from '../../components/slashCommands';
+import { formatToday, useStudyToday } from '../../timer';
 
 const ago = (t: number) => {
   const d = Math.floor((Date.now() / 1000 - t) / 86400);
   return d <= 0 ? 'Today' : d === 1 ? 'Yesterday' : d < 7 ? `${d} days ago` : new Date(t * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
 };
-const ACTION: Record<ArtifactType, string> = { flashcards: 'Practise', quiz: 'Start', exam: 'Start', notes: 'Read', cheatsheet: 'Read', mindmap: 'Open' };
+/** "2 focus sessions · 50 min today", from the study timer (only once there's one). */
+function StudiedToday() {
+  const text = formatToday(useStudyToday());
+  return text ? <div className="study-today muted small"><Icon name="timer" size={13} /> {text}</div> : null;
+}
+const ACTION: Record<ArtifactType, string> = { flashcards: 'Practise', quiz: 'Start', exam: 'Start', notes: 'Read', cheatsheet: 'Read', mindmap: 'Open', marking: 'See feedback' };
 
 export default function StudyPanel({ subject, open, onAsk, onOpenChat, onOpenArtifact, onMake }: {
   subject: Subject;
   /** Slid up (it stays mounted while hidden, so it slides away with its content). */
   open: boolean;
-  /** Text for the chat: put in a new chat's composer (typing), or sent straight away (a suggestion). */
-  onAsk: (text: string, send: boolean, from?: DOMRect) => void;
+  /** Text for the chat: put in a new chat's composer (typing), or sent straight away (a suggestion), with the library
+   * files dropped on the bar; a "/command" runs in the chat. */
+  onAsk: (text: string, send: boolean, from?: DOMRect, attachments?: DraggedDoc[]) => void;
   onOpenChat: (id: number) => void; onOpenArtifact: (id: number) => void; onMake: (type: ArtifactType) => void;
 }) {
   const [text, setText] = useState('');
@@ -46,12 +55,39 @@ export default function StudyPanel({ subject, open, onAsk, onOpenChat, onOpenArt
     return () => clearTimeout(t);
   }, [open]);
 
+  // library files dragged onto the bar go with the question (as when dropped on the chat)
+  const [attached, setAttached] = useState<DraggedDoc[]>([]);
+  const [dropping, setDropping] = useState(false);
+  useEffect(() => { setAttached([]); }, [subject.id]);
+  const isDocDrag = (e: React.DragEvent) => e.dataTransfer.types.includes(DOC_DRAG);
+  const onDrop = (e: React.DragEvent) => {
+    setDropping(false);
+    if (!isDocDrag(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const ds = draggedDocs(e);
+    setAttached((a) => [...a, ...ds.filter((d) => !a.some((x) => x.id === d.id))]);
+    input.current?.focus();
+  };
+
   // typing stays here; Enter (or the send button) opens the chat, which grows out of this box, and sends the text
   const send = (t = text) => {
     const v = t.trim();
-    onAsk(v, !!v, input.current?.getBoundingClientRect());
+    if (!v && !attached.length) return;
+    onAsk(v, !!v, input.current?.getBoundingClientRect(), attached);
     setText('');
+    setAttached([]);
   };
+  // "/" shows the commands, as in the chat: one that needs nothing more runs at once (the chat opens to show it)
+  const slash = useSlashMenu(text, (c, complete) => {
+    if (!complete && runsAtOnce(c)) {
+      setText('');
+      onAsk(`/${c.name}`, true, input.current?.getBoundingClientRect());
+      return;
+    }
+    setText(`/${c.name}${c.args ? ' ' : ''}`);
+    input.current?.focus();
+  }, () => setText(''));
 
   const topics = subject.topics.filter((t) => t.doc_count);
   const first = topics[0]?.name;
@@ -70,12 +106,31 @@ export default function StudyPanel({ subject, open, onAsk, onOpenChat, onOpenArt
           <span className="study-ask-orb"><Icon name="ask" size={16} /></span>
           <b>Ask Apollo anything about {subject.name}</b>
         </div>
-        <div className="study-ask-row">
-          <textarea ref={input} rows={3} value={text} onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); if (text.trim()) send(); } }} aria-label={`Ask Apollo about ${subject.name}`}
-            className={swap ? 'swap' : undefined} placeholder={subject.questions?.length ? `e.g. ${asks[ask % asks.length]}` : asks[0]} />
-          <button className="send-btn" aria-label="Open the chat" title="Open the chat" onClick={() => send()}>
-            <Icon name="send" size={18} strokeWidth={2.4} />
+        {attached.length > 0 && (
+          <div className="attach-row">
+            {attached.map((d) => (
+              <span key={d.id} className="attach-chip" title={d.filename}>
+                <span className="attach-icon"><Icon name="attach" size={13} /></span><span className="attach-name">{d.filename}</span>
+                <button className="x-btn" title="Remove" onClick={() => setAttached((a) => a.filter((x) => x.id !== d.id))}><Icon name="close" size={14} /></button>
+              </span>
+            ))}
+          </div>
+        )}
+        <div className={`study-ask-row${dropping ? ' dropping' : ''}`}
+          onDragOver={(e) => { if (isDocDrag(e)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setDropping(true); } }}
+          onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropping(false); }}
+          onDrop={onDrop}>
+          <SlashMenu menu={slash} />
+          <textarea ref={input} rows={3} value={text} onChange={(e) => { setText(e.target.value); slash.reset(); }}
+            onKeyDown={(e) => {
+              if (slash.onKeyDown(e)) return;
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); }
+            }} aria-label={`Ask Apollo about ${subject.name}`}
+            className={swap && !attached.length ? 'swap' : undefined}
+            placeholder={dropping ? 'Drop to ask Apollo about this file' : attached.length ? 'Ask about the attached file…'
+              : subject.questions?.length ? `e.g. ${asks[ask % asks.length]}` : asks[0]} />
+          <button className="send-btn" aria-label="Ask Apollo" title="Ask Apollo (Enter)" disabled={!text.trim() && !attached.length} onClick={() => send()}>
+            <Icon name="send" size={22} strokeWidth={2.4} />
           </button>
         </div>
         <div className="study-ideas">
@@ -106,6 +161,7 @@ export default function StudyPanel({ subject, open, onAsk, onOpenChat, onOpenArt
         </section>
         <section className="study-card study-todos" aria-label="To-do list">
           <Todos subject={subject} />
+          <StudiedToday />
         </section>
       </div>
 

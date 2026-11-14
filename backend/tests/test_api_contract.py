@@ -1,6 +1,7 @@
 """The UI's types (app/src/api.ts) against what the backend really sends: every field an interface declares as required
 must be in the response. Backend rows are plain dicts, so FastAPI's schema can't check this; this test catches a
 renamed or dropped column before the UI shows `undefined`."""
+import json
 import re
 import time
 from pathlib import Path
@@ -111,6 +112,12 @@ def test_notes_endpoints_match_their_types(library):
         client.post(f"/reviews/{r['id']}/dismiss")
         for c in client.get(f"/subjects/{sid}/chats").json():
             check(c, "Chat")
+        # a mind map and a drawing are notes too
+        for kind in ("map", "drawing"):
+            other = client.post(f"/subjects/{sid}/notes", json={"kind": kind}).json()
+            check(other, "Note")
+            check(client.patch(f"/notes/{other['id']}", json={"data": {"nodes": [], "edges": [], "items": []}}).json(), "Note")
+            client.delete(f"/notes/{other['id']}")
     finally:
         client.delete(f"/notes/{note['id']}")
     now = time.time()
@@ -121,10 +128,54 @@ def test_notes_endpoints_match_their_types(library):
     db.ex("DELETE FROM artifacts WHERE id=?", (aid,))
 
 
+def test_content_and_document_endpoints_match_their_types(library):
+    sid, did = library["sid"], library["did"]
+    now = time.time()
+    with db.tx() as c:
+        c.execute("INSERT INTO units(document_id, idx, kind, label, text, content_hash, token_count) VALUES (?, 1, 'page', "
+                  "'Page 1', 'Some text', 'contract-u1', 3)", (did,))
+        c.execute("INSERT INTO chunks(document_id, unit_start, unit_end, label, text, token_count) VALUES (?, 1, 1, 'Page 1', "
+                  "'Some text', 3)", (did,))
+    content = {"parts": [{"name": "A", "instructions": "", "type": "short", "questions": [
+        {"type": "short", "prompt": "Why?", "marks": 2, "model_answer": "Because.", "rubric": []}]}]}
+    aid = db.ex("INSERT INTO artifacts(subject_id, type, title, content, status, created_at, updated_at) "
+                "VALUES (?, 'exam', 'E', ?, 'ready', ?, ?)", (sid, json.dumps(content), now, now))
+    try:
+        att = client.post(f"/artifacts/{aid}/attempts", json={"answers": {"p0q0": "x"}}).json()
+        check(att, "Attempt")
+        check(client.get(f"/attempts/{att['id']}").json(), "Attempt")
+        art = client.get(f"/artifacts/{aid}").json()
+        check(art, "Artifact")
+        assert art["attempts"] and set(art["attempts"][0]) >= {"id", "kind", "status", "score", "total", "created_at"}
+        check(client.get(f"/artifacts/{aid}/summary").json(), "ArtifactSummary")
+        doc = client.get(f"/documents/{did}").json()
+        check(doc, "DocDetail")
+        units = client.get(f"/documents/{did}/units").json()
+        check(units, "DocUnits")
+        check(units["units"][0], "DocUnit")
+        check(doc["units"][0], "Unit")
+        for j in client.get("/jobs").json():
+            check(j, "Job")
+    finally:
+        db.ex("DELETE FROM jobs WHERE type='mark'")
+        db.ex("DELETE FROM artifacts WHERE id=?", (aid,))
+        db.ex("DELETE FROM chunks WHERE document_id=?", (did,))
+        db.ex("DELETE FROM units WHERE document_id=?", (did,))
+
+
 def test_a_missing_field_is_caught():
     with pytest.raises(AssertionError, match="no longer sends"):
         check({"id": 1, "type": "ingest"}, "Job")
     assert {"document_id", "filename", "status", "progress", "message", "error"} <= required_fields("Job")
+
+
+def test_quote_matches_the_request_model():
+    """Quote is sent by the UI: every field it declares must be one the backend's pydantic model reads."""
+    from studyapp.chat_reply import Quote
+    body, _ = _body("Quote")
+    declared = {m.group(1) for m in re.finditer(r"(?:^|[;\n])\s*(\w+)\s*\??:", body)}
+    assert declared == set(Quote.model_fields)
+    assert required_fields("Quote") <= set(Quote.model_fields)
 
 
 def test_chat_endpoints_match_their_types(library, monkeypatch):

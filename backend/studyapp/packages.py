@@ -10,8 +10,9 @@ A pack (FORMAT, VERSION) holds:
     data/<doc key>.npy        the chunks' vectors (float32, one row per chunk that has one; chunk "vec" is the row)
 
 Exact-duplicate links only point inside the pack: a unit duplicating a file that isn't exported carries its own text and
-chunks instead. The student's notes (annotations, merged into unit text at ingest) go in only if asked; otherwise the
-pack carries clean text and the chunks that changed are embedded again for it. Importing never parses or runs vision:
+chunks instead. The student's annotations (highlights, notes, drawings) go in only if asked; they are never part of the
+unit text. Packs from older versions may have them folded into unit text: importing cuts that out (_strip_notes) and
+rebuilds those documents' chunks. Importing never parses or runs vision:
 units, chunks and vectors are copied, dedupe links are recomputed against what is already there (pipeline.relink),
 and only vectors from a different embedding model are made again. Packs come from other people, so nothing in one is
 trusted: member names are never used as paths, files are checked against their hashes, and vectors load without pickle."""
@@ -32,7 +33,7 @@ from pydantic import BaseModel
 
 from . import config, db, grants, jobs, llm, pipeline, render, vision_audit
 from .chunker import chunk_units
-from .parsers import SUPPORTED
+from .parsers import SUPPORTED, approx_tokens
 
 router = APIRouter()
 
@@ -97,8 +98,8 @@ def _annotated(doc_id) -> int:
 
 
 def _strip_notes(text: str) -> str:
-    i = text.find(pipeline.ANNOTATIONS_HEADER)
-    return text if i < 0 else text[:i].rstrip()
+    """Unit text from an older pack without the student's annotations folded into it."""
+    return pipeline.without_annotations(text)
 
 
 @router.post("/export/preview")
@@ -112,7 +113,7 @@ def export_preview(b: ExportScope):
 
 
 def _embed_missing(chunks: list[dict]):
-    """Give every chunk without a current vector one (the clean copies made for an export without notes)."""
+    """Give every chunk without a current vector one (chunks rebuilt for a file that carries content it shared)."""
     model = llm.embed_model()
     todo = [c for c in chunks if c["embedding"] is None or c["embed_model"] != model]
     batch = int(db.setting("embed_batch"))
@@ -122,7 +123,7 @@ def _embed_missing(chunks: list[dict]):
             c["embedding"], c["embed_model"] = v.astype(np.float32).tobytes(), model
 
 
-def _pack_document(doc: dict, keys: dict[int, str], include_notes: bool, unit_keys: dict[int, tuple]) -> dict:
+def _pack_document(doc: dict, keys: dict[int, str], unit_keys: dict[int, tuple]) -> dict:
     """A document's units and chunks as the pack holds them (see the module notes)."""
     units = db.q("SELECT * FROM units WHERE document_id=? ORDER BY idx", (doc["id"],))
     changed = False
@@ -133,9 +134,6 @@ def _pack_document(doc: dict, keys: dict[int, str], include_notes: bool, unit_ke
         row["vision_reasons"] = json.loads(u["vision_reasons"])
         row["vision_image"] = Path(u["vision_image"]).name if u["vision_image"] else None
         row["duplicate_of"] = None
-        if not include_notes and pipeline.ANNOTATIONS_HEADER in u["text"]:
-            row["text"] = _strip_notes(u["text"])
-            changed = True
         if u["duplicate_of"] is not None:
             target = unit_keys.get(u["duplicate_of"])
             if target and target[0] in keys.values():
@@ -174,8 +172,6 @@ def export_pack(b: ExportBody):
     docs = [d for d in docs if d["status"] in ("ready", "vision")]
     if not docs:
         raise HTTPException(400, "Nothing to export: no file in this selection has finished ingesting")
-    if not b.include_notes and any(_annotated(d["id"]) for d in docs) and llm.paused("embed"):
-        raise HTTPException(409, "Clean copies of annotated files need the embedding model: resume embeddings first")
     keys = {d["id"]: f"d{i}" for i, d in enumerate(docs, 1)}
     unit_keys = {r["id"]: (keys[r["document_id"]], r["idx"]) for r in db.q(
         f"SELECT id, document_id, idx FROM units WHERE document_id IN ({','.join('?' * len(keys))})", tuple(keys))}
@@ -198,7 +194,7 @@ def export_pack(b: ExportBody):
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as z:
             for d in docs:
                 key = keys[d["id"]]
-                data = _pack_document(d, keys, b.include_notes, unit_keys)
+                data = _pack_document(d, keys, unit_keys)
                 vecs, chunks = [], []
                 for c in data["chunks"]:
                     row = {k: c[k] for k in ("unit_start", "unit_end", "label", "text", "token_count", "source")}
@@ -345,7 +341,15 @@ def _import(z: zipfile.ZipFile, m: dict, b: ImportBody) -> dict:
             continue
         npy = _read(z, f"data/{key}.npy")
         vecs = np.load(io.BytesIO(npy), allow_pickle=False).astype(np.float32) if npy else None
+        stripped = False
+        for u in data["units"]:  # an older pack may have the sender's notes folded into the text
+            text = str(u.get("text") or "")
+            if pipeline.ANNOTATIONS_HEADER in text:
+                u["text"] = _strip_notes(text)
+                u["token_count"], stripped = approx_tokens(u["text"]), True
         did = _insert_document(sid, topic_id, kind, d, data, vecs, stored.stat().st_size, now)
+        if stripped:
+            unresolved.add(did)  # chunks rebuilt from the clean text; unchanged chunk text keeps its vector
         new_ids[key] = did
         _copy_assets(z, key, did)
         if d.get("ext") in render.OFFICE_EXTS:

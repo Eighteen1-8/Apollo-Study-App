@@ -1,6 +1,5 @@
 """The student's annotations on a document (highlights, note boxes, pen strokes, text boxes), "Define this", and
-exporting an annotated PDF. Text-bearing annotations are folded into the material on the next ingest
-(pipeline.annotation_blocks), so changing them flags the document for re-ingest."""
+exporting an annotated PDF. Annotations are the student's own and are never part of the material Apollo reads."""
 import logging
 import json
 import re
@@ -12,14 +11,13 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from . import context, db, grants, jobs, llm, pipeline, render, search
+from . import context, db, grants, jobs, llm, render, search
 
 log = logging.getLogger(__name__)
 
 router = APIRouter()
 
 KINDS = ("highlight", "note", "ink", "textbox", "region")  # region: a screenshot area sent to the chat
-TEXT_KINDS = ("highlight", "note", "textbox")  # what ingest folds into the material; ink is drawing only
 
 
 def _out(a):
@@ -36,24 +34,11 @@ def _doc(did):
     return d
 
 
-def _touch(did, kind):
-    if kind in TEXT_KINDS:
-        db.ex("UPDATE documents SET annotated_at=? WHERE id=?", (time.time(), did))
-
-
-def status(did) -> dict:
-    d = _doc(did)
-    has = db.q1(f"SELECT 1 FROM annotations WHERE document_id=? AND kind IN ({','.join('?' * len(TEXT_KINDS))})",
-                (did, *TEXT_KINDS)) is not None
-    changed = d["annotated_at"] is not None and d["annotated_at"] != d["annotations_ingested"]
-    # Deleting every note also counts as a change if the last ingest included some.
-    return {"needs_reingest": changed and (has or d["annotations_ingested"] is not None), "doc_status": d["status"]}
-
-
 @router.get("/documents/{did}/annotations")
 def list_annotations(did: int):
+    _doc(did)
     items = [_out(a) for a in db.q("SELECT * FROM annotations WHERE document_id=? ORDER BY unit, id", (did,))]
-    return {"items": items, **status(did)}
+    return {"items": items}
 
 
 class AnnoBody(BaseModel):
@@ -71,7 +56,6 @@ def create_annotation(did: int, body: AnnoBody):
     now = time.time()
     aid = db.ex("INSERT INTO annotations(document_id, unit, kind, anchor, data, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
                 (did, body.unit, body.kind, json.dumps(body.anchor), json.dumps(body.data), now, now))
-    _touch(did, body.kind)
     return _out(db.q1("SELECT * FROM annotations WHERE id=?", (aid,)))
 
 
@@ -90,9 +74,6 @@ def patch_annotation(aid: int, body: AnnoPatch):
     anchor = body.anchor if body.anchor is not None else json.loads(a["anchor"])
     db.ex("UPDATE annotations SET unit=?, anchor=?, data=?, updated_at=? WHERE id=?",
           (body.unit if body.unit is not None else a["unit"], json.dumps(anchor), json.dumps(data), time.time(), aid))
-    # Only text changes alter what Qwen would read; moving or hiding a note doesn't.
-    if body.anchor is not None or (body.data and {"text", "title"} & body.data.keys()):
-        _touch(a["document_id"], a["kind"])
     return _out(db.q1("SELECT * FROM annotations WHERE id=?", (aid,)))
 
 
@@ -101,17 +82,7 @@ def delete_annotation(aid: int):
     a = db.q1("SELECT * FROM annotations WHERE id=?", (aid,))
     if a:
         db.ex("DELETE FROM annotations WHERE id=?", (aid,))
-        _touch(a["document_id"], a["kind"])
     return {"ok": True}
-
-
-@router.post("/documents/{did}/reingest-annotations")
-def reingest_with_annotations(did: int):
-    """Re-read the file with the student's notes folded in. Vision notes for unchanged pages are kept."""
-    _doc(did)
-    jobs.cancel_for_document(did)
-    db.ex("UPDATE documents SET status='queued', updated_at=? WHERE id=?", (time.time(), did))
-    return {"job_id": jobs.enqueue("ingest", did, ref_id=pipeline.KEEP_VISION)}
 
 
 # ---------------------------------------------------------------- Define this

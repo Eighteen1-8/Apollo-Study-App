@@ -101,7 +101,7 @@ export default function ResourcePanel({ subject, go, onChange, onOpenDoc, onCrea
     async (ids) => { await api.orderTopics(subject.id, ids); onChange(); });
   const toggle = (id: number) => setOpen((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const uploadRef = (paths?: string[]) =>
-    setUpload({ title: `Add textbooks to ${subject.name}`, target: { subject_id: subject.id }, mode: 'all', paths });
+    setUpload({ title: `Add textbooks to ${subject.name}`, target: { subject_id: subject.id }, mode: 'auto', paths });
   /** Move files to a topic (topicId) or the reference library (null); a file that changes topic leaves its folder
    * (the backend does that). Resolves to the ids that are now there (failures are reported). */
   const moveTo = async (ds: DraggedDoc[], topicId: number | null) => {

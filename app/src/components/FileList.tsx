@@ -11,6 +11,7 @@ import { useReorder } from './reorder';
 import { statusWord, term, useTerms } from '../terms';
 import { useAdvanced } from '../theme';
 import Icon from './Icon';
+import { setPaneDrag } from '../views/subject/PaneDrop';
 
 const ICON: Record<string, string> = { '.pdf': 'PDF', '.pptx': 'PPT', '.docx': 'DOC' };
 
@@ -116,6 +117,7 @@ export default function FileList({ docs, onOpen, onOpenSide, onSelect, onDetails
             onDragStart={(e) => {
               const many = picker?.drag(d);
               e.dataTransfer.setData(DOC_DRAG, JSON.stringify(many ?? asDragged(d)));
+              if (!many) setPaneDrag(e.dataTransfer, { kind: 'doc', id: d.id, name: d.filename }); // into the centre: open it there
               e.dataTransfer.effectAllowed = 'copyMove';
               if (r && !many) r.onDragStart(e); // a single file can also be dropped among its siblings to reorder
             }}

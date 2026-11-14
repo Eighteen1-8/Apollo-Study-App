@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, DocRef, ExportPreview, ImportPreview, ImportResult, inElectron, PackScope, Subject } from '../api';
 import { fmtBytes } from '../hooks';
-import { Modal } from '../components/overlay';
 import { Button } from '../components/ui';
 import { logError } from '../log';
 
@@ -28,7 +27,7 @@ function ExportCard({ subjects, initialSubject }: { subjects: Subject[]; initial
   const [topic, setTopic] = useState<number | null>(null);
   const [docs, setDocs] = useState<DocRef[]>([]);
   const [picked, setPicked] = useState<Set<number>>(new Set());
-  const [ask, setAsk] = useState<ExportPreview | null>(null);
+  const [includeNotes, setIncludeNotes] = useState(true);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -56,14 +55,12 @@ function ExportCard({ subjects, initialSubject }: { subjects: Subject[]; initial
     try {
       const p = await api.exportPreview(s);
       if (!p.documents) { setErr('Nothing to export: none of these files has finished ingesting yet.'); return; }
-      if (p.annotated.length) setAsk(p); // the student's notes: keep them, or export clean copies
-      else await run(p, true);
+      await run(p);
     } catch (e) { setErr(String(e)); }
   };
 
-  const run = async (p: ExportPreview, includeNotes: boolean) => {
+  const run = async (p: ExportPreview) => {
     const s = scope()!;
-    setAsk(null);
     setBusy(true);
     try {
       if (inElectron) {
@@ -138,29 +135,16 @@ function ExportCard({ subjects, initialSubject }: { subjects: Subject[]; initial
         </div>
       )}
       {what === 'subject' && <p className="muted small">Includes every topic and the reference library.</p>}
+      <label className="share-file">
+        <input type="checkbox" checked={includeNotes} onChange={(e) => setIncludeNotes(e.target.checked)} />
+        <span>Include my highlights, notes and drawings on these files</span>
+      </label>
       <div className="share-actions">
         <Button kind="primary" disabled={!scope() || busy} onClick={start}>{busy ? 'Exporting…' : 'Export…'}</Button>
         {what === 'files' && picked.size > 0 && <span className="muted small">{plural(picked.size, 'file')} selected</span>}
       </div>
       {done && <div className="banner banner-ok share-msg">{done}</div>}
       {err && <div className="banner banner-bad share-msg">{err}</div>}
-
-      {ask && (
-        <Modal title="Include your notes?" onClose={() => setAsk(null)}
-          footer={<>
-            <button className="btn" onClick={() => setAsk(null)}>Cancel</button>
-            <button className="btn" onClick={() => run(ask, false)}>Export clean copies</button>
-            <button className="btn btn-primary" onClick={() => run(ask, true)}>Keep my notes</button>
-          </>}>
-          <p>{plural(ask.annotated.length, 'file')} in this export {ask.annotated.length === 1 ? 'has' : 'have'} your own highlights, notes or
-            drawings:</p>
-          <ul className="share-annotated">
-            {ask.annotated.map((a) => <li key={a.id}>{a.filename} <span className="muted">({plural(a.marks, 'mark')})</span></li>)}
-          </ul>
-          <p className="muted small">Clean copies leave them out: the text Apollo searches is rebuilt without them and the changed parts are
-            embedded again for the export (your own copy is not changed).</p>
-        </Modal>
-      )}
     </section>
   );
 }

@@ -3,7 +3,14 @@ Word export.
 
 Notes are rich-text HTML from the notes editor. They are never ingested (they may be wrong): nothing adds them to the
 material, search or the chat's context. Apollo reads one only when the student asks it to check or revise it (a
-review, see review.py) or asks about it in chat (chat tools read_content / revise_content)."""
+review, see review.py) or asks about it in chat (chat tools read_content / revise_content).
+
+A note's `kind` is 'note' (HTML in `html`), 'map' (a mind map / flowchart: `data` is {nodes:[{id,x,y,text,shape,color}],
+edges:[{id,from,to,label}]}) or 'drawing' (`data` is the drawing editor's vector JSON, {items:[...], paper}; a PNG
+snapshot the editor renders is stored for Check with Apollo, see snapshot_path)."""
+import base64
+import binascii
+import io
 import json
 import re
 import time
@@ -13,40 +20,90 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from . import db, docx_export, grants, jobs, notehtml
+from . import config, db, docx_export, grants, jobs, notehtml
 
 router = APIRouter()
 
 REVIEW_TARGETS = ("note", "artifact")
 REVIEWABLE_TYPES = ("notes", "cheatsheet")
+# generated content chat can read (list_content / read_content), as the model is told it; a marking is read only
+ARTIFACT_KINDS = {"notes": "generated notes", "cheatsheet": "generated cheat sheet",
+                  "marking": "Apollo's marking of the student's work (read only)"}
+NOTE_KINDS = ("note", "map", "drawing")
+KIND_NAMES = {"note": "the student's own note", "map": "the student's own mind map", "drawing": "the student's own drawing"}
+DEFAULT_TITLES = {"note": "Untitled note", "map": "Untitled mind map", "drawing": "Untitled drawing"}
+MAX_DATA = 8 << 20  # a map's or drawing's JSON (a long drawing is many points)
+MAX_SNAPSHOT = 12 << 20
 
 
 def _note(nid):
     n = db.q1("SELECT * FROM user_notes WHERE id=? AND deleted_at IS NULL", (nid,))
     if n is None:
         raise HTTPException(404, "Note not found")
+    return note_out(n)
+
+
+def note_out(n) -> dict:
+    """A user_notes row with `data` parsed (None for a rich-text note)."""
+    n = dict(n)
+    try:
+        n["data"] = json.loads(n["data"]) if n.get("data") else None
+    except ValueError:
+        n["data"] = None
     return n
+
+
+def _checked_data(kind: str, data) -> str | None:
+    """The JSON stored for a map or drawing (None for a rich-text note); 400 when it's the wrong shape or too big."""
+    if kind == "note" or data is None:
+        return None
+    if not isinstance(data, dict):
+        raise HTTPException(400, "A map or drawing must be an object")
+    if kind == "map" and not (isinstance(data.get("nodes", []), list) and isinstance(data.get("edges", []), list)):
+        raise HTTPException(400, "A mind map needs lists of boxes and links")
+    if kind == "drawing" and not isinstance(data.get("items", []), list):
+        raise HTTPException(400, "A drawing needs a list of strokes")
+    text = json.dumps(data, separators=(",", ":"))
+    if len(text) > MAX_DATA:
+        raise HTTPException(413, "[APO-APP-400] That is too big to save. Split it into two.")
+    return text
+
+
+def snapshot_path(nid: int) -> Path:
+    """Where a drawing's latest PNG snapshot (made by the editor for Check with Apollo) is kept."""
+    return config.assets_dir() / "notes" / f"{int(nid)}.png"
+
+
+def delete_snapshots(ids) -> None:
+    for i in ids:
+        try:
+            snapshot_path(i).unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------- notes
 
 class NewNote(BaseModel):
-    title: str = "Untitled note"
+    title: str = ""
     topic_id: int | None = None
     html: str = ""
+    kind: str = "note"
+    data: dict | None = None
 
 
 class NotePatch(BaseModel):
     title: str | None = None
     html: str | None = None
+    data: dict | None = None  # a map's or drawing's JSON
     topic_id: int | None = None
     set_topic: bool = False  # topic_id may legitimately be null (= the whole subject)
 
 
 @router.get("/subjects/{sid}/notes")
 def list_notes(sid: int):
-    return db.q("""SELECT n.id, n.subject_id, n.topic_id, n.title, n.created_at, n.updated_at, t.name AS topic_name,
-                          LENGTH(n.html) AS size FROM user_notes n LEFT JOIN topics t ON t.id=n.topic_id
+    return db.q("""SELECT n.id, n.subject_id, n.topic_id, n.title, n.kind, n.created_at, n.updated_at,
+                          t.name AS topic_name, LENGTH(n.html) + COALESCE(LENGTH(n.data), 0) AS size FROM user_notes n LEFT JOIN topics t ON t.id=n.topic_id
                    WHERE n.subject_id=? AND n.deleted_at IS NULL ORDER BY n.updated_at DESC""", (sid,))
 
 
@@ -54,9 +111,14 @@ def list_notes(sid: int):
 def create_note(sid: int, body: NewNote):
     if not db.q1("SELECT id FROM subjects WHERE id=?", (sid,)):
         raise HTTPException(404, "Subject not found")
+    if body.kind not in NOTE_KINDS:
+        raise HTTPException(400, "A note is a note, a mind map or a drawing")
+    data = _checked_data(body.kind, body.data if body.data is not None or body.kind == "note" else {})
     now = time.time()
-    nid = db.ex("INSERT INTO user_notes(subject_id, topic_id, title, html, created_at, updated_at) VALUES (?,?,?,?,?,?)",
-                (sid, body.topic_id, body.title.strip()[:200] or "Untitled note", notehtml.scrub(body.html), now, now))
+    nid = db.ex("INSERT INTO user_notes(subject_id, topic_id, title, html, kind, data, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (sid, body.topic_id, body.title.strip()[:200] or DEFAULT_TITLES[body.kind],
+                 notehtml.scrub(body.html) if body.kind == "note" else "", body.kind, data, now, now))
     return _note(nid)
 
 
@@ -67,12 +129,16 @@ def get_note(nid: int):
 
 @router.patch("/notes/{nid}")
 def patch_note(nid: int, body: NotePatch):
-    _note(nid)
+    n = _note(nid)
     fields: dict = {}
     if body.title is not None:
-        fields["title"] = body.title.strip()[:200] or "Untitled note"
-    if body.html is not None:
+        fields["title"] = body.title.strip()[:200] or DEFAULT_TITLES.get(n["kind"], "Untitled note")
+    if body.html is not None and n["kind"] == "note":
         fields["html"] = notehtml.scrub(body.html)
+    if body.data is not None:
+        if n["kind"] == "note":
+            raise HTTPException(400, "A rich-text note has no map or drawing data")
+        fields["data"] = _checked_data(n["kind"], body.data)
     if body.set_topic:
         fields["topic_id"] = body.topic_id
     if fields:
@@ -95,17 +161,76 @@ def restore_note(nid: int):
     return {"ok": True}
 
 
+class Snapshot(BaseModel):
+    png: str  # base64 PNG (a data: URL prefix is allowed), rendered by the drawing editor
+
+
+@router.post("/notes/{nid}/snapshot")
+def put_snapshot(nid: int, body: Snapshot):
+    """Store the picture of a drawing that Check with Apollo sends to the model (one per drawing, replaced each time)."""
+    n = _note(nid)
+    if n["kind"] != "drawing":
+        raise HTTPException(400, "Only drawings have a picture to check")
+    data, w, h = _png_bytes(body.png)
+    config.write_atomic(snapshot_path(nid), data)
+    return {"ok": True, "width": w, "height": h}
+
+
+def _png_bytes(b64: str) -> tuple[bytes, int, int]:
+    """A base64 PNG (a data: URL prefix is allowed) checked with PIL: (bytes, width, height); 400/413 otherwise."""
+    raw = b64.split(",", 1)[1] if b64.startswith("data:") else b64
+    if len(raw) > MAX_SNAPSHOT * 4 // 3 + 8:
+        raise HTTPException(413, "[APO-APP-400] That picture is too big. Make it smaller.")
+    try:
+        data = base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise HTTPException(400, "That picture couldn't be read.") from e
+    from PIL import Image
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            if im.format != "PNG":
+                raise ValueError(im.format)
+            im.verify()
+            w, h = im.size
+    except Exception as e:
+        raise HTTPException(400, "That picture couldn't be read.") from e
+    if not (0 < w <= 8000 and 0 < h <= 8000):
+        raise HTTPException(400, "That picture is too large.")
+    return data, w, h
+
+
+class PngBody(BaseModel):
+    png: str  # base64 PNG
+    path: str  # where to save it (a save dialog grant)
+
+
+@router.post("/export/png")
+def export_png(body: PngBody):
+    """Save a mind map or drawing the editor rendered as a PNG where the student chose (the desktop app's save dialog)."""
+    data, _, _ = _png_bytes(body.png)
+    out = grants.require(body.path, "write")
+    try:
+        Path(out).write_bytes(data)
+    except PermissionError as e:
+        raise HTTPException(409, f"Couldn't save {Path(out).name}: it's open in another program, or that folder "
+                                 "can't be written to.") from e
+    return {"path": str(out)}
+
+
 # ---------------------------------------------------------------- content Apollo can read and revise (chat tools)
 
 def list_content(subject_id: int) -> list[dict]:
-    """The student's notes and the generated notes / cheat sheets of a subject: what chat can read or revise."""
-    notes = db.q("SELECT id, title, updated_at FROM user_notes WHERE subject_id=? AND deleted_at IS NULL "
+    """The student's notes and the generated notes / cheat sheets / markings of a subject: what chat can read (and,
+    except a marking, check or revise)."""
+    notes = db.q("SELECT id, title, kind, updated_at FROM user_notes WHERE subject_id=? AND deleted_at IS NULL "
                  "ORDER BY updated_at DESC", (subject_id,))
-    arts = db.q("""SELECT id, title, type, updated_at FROM artifacts WHERE subject_id=? AND status='ready'
-                   AND deleted_at IS NULL AND type IN ('notes','cheatsheet') ORDER BY id DESC""", (subject_id,))
-    return ([{"target": "note", "id": n["id"], "title": n["title"], "kind": "the student's own note"} for n in notes]
-            + [{"target": "artifact", "id": a["id"], "title": a["title"],
-                "kind": "generated notes" if a["type"] == "notes" else "generated cheat sheet"} for a in arts])
+    arts = db.q(f"""SELECT id, title, type, updated_at FROM artifacts WHERE subject_id=? AND status='ready'
+                   AND deleted_at IS NULL AND type IN ({','.join('?' * len(ARTIFACT_KINDS))}) ORDER BY id DESC""",
+                (subject_id, *ARTIFACT_KINDS))
+    return ([{"target": "note", "id": n["id"], "title": n["title"], "kind": KIND_NAMES.get(n["kind"], KIND_NAMES["note"]),
+             "note_kind": n["kind"]} for n in notes]
+            + [{"target": "artifact", "id": a["id"], "title": a["title"], "kind": ARTIFACT_KINDS[a["type"]],
+                "type": a["type"]} for a in arts])
 
 
 def _words(s: str) -> set[str]:
@@ -147,8 +272,14 @@ def create_review(subject_id: int | None, body: NewReview, chat_id: int | None =
         raise HTTPException(400, "Unknown review")
     if body.target == "note":
         owner = _note(body.target_id)
+        if owner["kind"] != "note" and body.mode != "check":
+            raise HTTPException(400, "Apollo can check a mind map or drawing, but not rewrite it")
+        if owner["kind"] == "drawing" and not snapshot_path(owner["id"]).is_file():
+            raise HTTPException(400, "Save the drawing's picture first (Check with Apollo does this)")
     else:
         owner = db.q1("SELECT * FROM artifacts WHERE id=?", (body.target_id,))
+        if owner is not None and owner["type"] == "marking":
+            raise HTTPException(400, "Apollo's marking can be read and asked about, but not checked or rewritten")
         if owner is None or owner["status"] != "ready" or owner["type"] not in REVIEWABLE_TYPES:
             raise HTTPException(400, "Only finished notes and cheat sheets can be checked or revised")
     if body.mode == "revise" and not body.instruction.strip():

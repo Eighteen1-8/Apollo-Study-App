@@ -11,18 +11,23 @@ import { confirmDeleteChats, renameChatUndoable } from './chatActions';
 import { levelLabel, ChatMode } from './chat/types';
 import { levelHint } from '../terms';
 import { isAdvanced } from '../theme';
-import { LiveBubble, MessageView } from './chat/messages';
+import { EXPLAIN_PROMPT, LiveBubble, MessageView, ReplyPop } from './chat/messages';
 import { runCommand as runSlashCommand } from './chat/commands';
 import { Composer } from './chat/Composer';
 import Icon from '../components/Icon';
 import ErrorText from '../components/ErrorText';
+import { TourButton, useFirstTime } from '../components/Tour';
+import { appendDraft, registerComposer } from '../composerBridge';
 
 export { levelLabel } from './chat/types';
 export type { ChatMode } from './chat/types';
 type Card = { id: number; chatId: number | null; node: React.ReactNode };
+export type ChatDraft = { text: string; send: boolean; nonce: number; attachments?: DraggedDoc[]; files?: string[] };
+/** What goes with a message instead of the composer's own chips (the study panel's bar has its own). */
+type SendExtra = { attachments?: DraggedDoc[]; files?: string[]; /** instead of the banner's quote ("Explain this") */ quote?: Quote };
 
 export default function ChatView({ subject, launch, floating, collapsed, mode, onMode, sideBySide, onToggleCollapse, onCite, onOpenArtifact,
-  onOpenDoc, onOpenNote, quote, onClearQuote, incoming, onShowArea, openRequest, onActiveChat, draft, closeOnly }: {
+  onOpenDoc, onOpenNote, quote, onClearQuote, onQuote, incoming, onShowArea, openRequest, onActiveChat, draft, closeOnly }: {
   subject: Subject; launch?: Launch; floating: boolean; collapsed: boolean; mode: ChatMode; onMode: (m: ChatMode) => void;
   /** Side by side is the chosen layout (also while full screen, so leaving full screen goes back to it). */
   sideBySide: boolean;
@@ -30,6 +35,8 @@ export default function ChatView({ subject, launch, floating, collapsed, mode, o
   closeOnly?: boolean;
   onToggleCollapse: () => void; onCite: (file: string, label: string) => void; onOpenArtifact: (id: number) => void;
   onOpenDoc: (id: number) => void; quote: (Quote & { nonce: number }) | null; onClearQuote: () => void;
+  /** Reply to a part of one of Apollo's answers (selected, then "Reply"): it becomes the composer's quote. */
+  onQuote: (q: Quote) => void;
   /** Jump to where a screenshot came from. */
   onShowArea: (s: AreaSource) => void;
   /** Files dropped on the "send to chat" bar: read for one message, not ingested. */
@@ -39,8 +46,9 @@ export default function ChatView({ subject, launch, floating, collapsed, mode, o
   openRequest: { id: number | null; nonce: number } | null;
   /** The chat now showing, for the sidebar's history. */
   onActiveChat: (id: number | null) => void;
-  /** Text from the study panel's chat bar: a new chat with it in the composer, or sent straight away (`send`). */
-  draft?: { text: string; send: boolean; nonce: number } | null;
+  /** Text from the study panel's chat bar: a new chat with it in the composer, or sent straight away (`send`), with
+   * the library files dropped on the bar (`attachments`) and files from the computer (`files`, paths). */
+  draft?: ChatDraft | null;
 }) {
   const ov = useOverlay();
   const streams = useChatStreams();
@@ -58,6 +66,7 @@ export default function ChatView({ subject, launch, floating, collapsed, mode, o
   const [finishedTick, setFinishedTick] = useState(0);
   const bottom = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
+  const scroller = useRef<HTMLDivElement>(null);
   const handledLaunch = useRef<number | null>(null);
   const chatRef = useRef<Chat | null>(null);
   chatRef.current = chat;
@@ -197,10 +206,15 @@ export default function ChatView({ subject, launch, floating, collapsed, mode, o
     const typing = !draft.send && draft.nonce - lastDraft.current < 3000;
     lastDraft.current = draft.nonce;
     draftText.current = draft.text;
+    const docs = draft.attachments ?? [];
+    if (!draft.send && docs.length) setAttached((a) => [...a, ...docs.filter((d) => !a.some((x) => x.id === d.id))]);
     if (typing) { setInput(draft.text); return; }
     (async () => {
+      // a slash command picked or typed in the bar runs in the app (in the chat already open), never a new chat
+      if (draft.send && draft.text.trim().startsWith('/')) { await sendText(draft.text); return; }
       const c = await newChat(null);
-      if (draft.send) { await sendText(draft.text, c); return; }
+      if (draft.send) { await sendText(draft.text, c, { attachments: docs, files: draft.files ?? [] }); return; }
+      if (draft.files?.length) addFiles(draft.files);
       setInput(draftText.current); // the latest text: more may have been typed while the chat opened
       setTimeout(() => {
         const t = textarea.current;
@@ -211,7 +225,9 @@ export default function ChatView({ subject, launch, floating, collapsed, mode, o
   const card = (node: React.ReactNode) => setCards((cs) => [...cs, { id: Date.now() + Math.random(), chatId: chatRef.current?.id ?? null, node }]);
 
   const send = () => sendText(input);
-  const sendText = async (raw: string, into?: Chat) => {
+  /** `over`: the files to send instead of the composer's chips (the study panel's bar sends its own; read here, the
+   * chips would be this render's, already stale after the awaits before it). */
+  const sendText = async (raw: string, into?: Chat, over?: SendExtra) => {
     const text = raw.trim();
     if (!text) return;
     if (text.startsWith('/')) {
@@ -221,20 +237,27 @@ export default function ChatView({ subject, launch, floating, collapsed, mode, o
     }
     const c = into ?? await ensureChat();
     if (isLive(c.id)) return;
-    const extra = { attachments: attached.map((d) => d.id), files: tempFiles.map((f) => f.path), quote: quote ? stripNonce(quote) : null };
-    const before = { attached, tempFiles };
+    const docs = over ? over.attachments ?? [] : attached;
+    const paths = over ? over.files ?? [] : tempFiles.map((f) => f.path);
+    const extra = { attachments: docs.map((d) => d.id), files: paths, quote: over?.quote ?? (quote ? stripNonce(quote) : null) };
+    const before = { attached: over ? docs : attached, tempFiles: over ? [] : tempFiles };
     let accepted = false;
-    setInput('');
-    setAttached([]);
-    setTempFiles([]);
+    if (!over?.quote) { // "Explain this" leaves what's being typed in the box alone
+      setInput('');
+      setAttached([]);
+      setTempFiles([]);
+    }
     setError(null);
     try {
       await startReply(c.id, subject.id, reasoning, (on) => api.ask(c.id, text, reasoning, on, extra), (e) => {
-        if (e.type === 'user') { accepted = true; onClearQuote(); }
+        if (e.type === 'user') { accepted = true; if (!over?.quote) onClearQuote(); }
       });
     } catch {
       // refused before it started: give the text back (only if the student is still in that chat)
-      if (!accepted && chatRef.current?.id === c.id) { setInput(text); setAttached(before.attached); setTempFiles(before.tempFiles); }
+      if (!accepted && chatRef.current?.id === c.id && !over?.quote) {
+        setInput(text); setAttached(before.attached); setTempFiles(before.tempFiles);
+        if (over?.files?.length) addFiles(over.files);
+      }
     }
   };
 
@@ -336,10 +359,25 @@ export default function ChatView({ subject, launch, floating, collapsed, mode, o
     setTimeout(() => textarea.current?.focus(), 50);
   };
 
+  // the calculator's "Send to chat" (composerBridge.ts): the text goes in the box, editable, never sent by itself
+  const collapsedRef = useRef(collapsed);
+  collapsedRef.current = collapsed;
+  const toggleRef = useRef(onToggleCollapse);
+  toggleRef.current = onToggleCollapse;
+  useEffect(() => registerComposer((text) => {
+    setInput((cur) => appendDraft(cur, text));
+    if (collapsedRef.current) toggleRef.current();
+    setTimeout(() => {
+      const t = textarea.current;
+      if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
+    }, 60);
+  }), []);
+
   const shown = new Set(messages.map((m) => m.id));
   const liveMessages = (live?.messages ?? []).filter((m) => !shown.has(m.id));
   const myCards = cards.filter((c) => c.chatId === (chat?.id ?? null));
   const msgActions = { busy, onEdit: editMessage, onRollback: rollback, onRegenerate: regenerate };
+  useFirstTime('chat', !collapsed && !!chat);
 
   return (
     <div className={`chat${dropping ? ' chat-dropping' : ''}`}
@@ -357,6 +395,7 @@ export default function ChatView({ subject, launch, floating, collapsed, mode, o
         <button className="icon-btn" data-tip="New chat" onClick={() => newChat(chat?.topic_id ?? null)}><Icon name="add" /></button>
         <span className="spacer" />
         {collapsed && streams.anyLive() && <span className="chat-busy">Apollo is replying…</span>}
+        {!collapsed && <TourButton id="chat" className="head-tour" />}
         {floating && !collapsed && mode !== 'full' && !closeOnly && (
           <button className={`icon-btn head-tool${mode === 'split' ? ' on' : ''}`} aria-pressed={mode === 'split'}
             data-tip={mode === 'split' ? 'Back to a floating chat' : 'Side by side with what’s open (half and half)'} onClick={toggleSplit}>
@@ -376,7 +415,9 @@ export default function ChatView({ subject, launch, floating, collapsed, mode, o
       </div>
 
       <div className="chat-body" aria-hidden={collapsed}>
-          <div className="chat-scroll" data-find="the chat">
+          <div className="chat-scroll" data-find="the chat" ref={scroller}>
+            {!collapsed && <ReplyPop scroller={scroller} onReply={onQuote} subjectId={subject.id}
+              onExplain={(q) => { if (!busy) sendText(EXPLAIN_PROMPT, undefined, { quote: q }); }} />}
             {messages.length === 0 && !live && !myCards.length && (
               <div className="chat-empty">
                 <div className="chat-empty-title">Ask anything about {subject.name}</div>

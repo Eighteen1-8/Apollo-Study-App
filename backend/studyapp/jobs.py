@@ -282,5 +282,9 @@ def pause_state() -> dict:
 
 def start_workers():
     backfill_vision_chunks()
+    try:
+        pipeline.strip_annotation_text()
+    except Exception:  # tried again at the next start; the library works meanwhile (the notes are just extra text)
+        log.exception("couldn't remove folded-in annotations from unit text")
     for lane in LANES:
         threading.Thread(target=_run, args=(lane,), daemon=True, name=f"jobs-{lane}").start()

@@ -21,9 +21,13 @@ contextBridge.exposeInMainWorld('studyApp', {
   showItem: (p) => ipcRenderer.invoke('shell:showItem', p),
   setChrome: (c) => ipcRenderer.send('window:chrome', c),
   setZoom: (f) => ipcRenderer.send('window:zoom', f),
+  // Ctrl + / - / 0 from the View menu: -1, 1 or 0 (theme.ts turns it into the saved UI size)
+  onZoomStep: (cb) => { ipcRenderer.on('zoom:step', (_e, dir) => cb(dir === 1 ? 1 : dir === -1 ? -1 : 0)); },
   printPdf: (opts) => ipcRenderer.invoke('print:pdf', opts),
   capture: (rect) => ipcRenderer.invoke('capture:rect', rect),
   copyImage: (png) => ipcRenderer.invoke('clipboard:image', png),
+  // flash the taskbar button (the study timer finished while the window wasn't in front)
+  flash: () => ipcRenderer.send('window:flash'),
   // spell check. The note editor shows its own right-click menu; Chromium's spelling result for the word under the
   // pointer comes back through menuParams (call it from the contextmenu handler, without cancelling the event).
   spell: {

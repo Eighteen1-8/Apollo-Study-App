@@ -1,6 +1,17 @@
 /* 1 · Base: the original tokens (colours, radii, fonts; 4-themes.css re-tunes them per theme), element defaults, and
    the shared building blocks (buttons, cards, inputs, pills, banners, tables). */
 :root {
+  /* Stacking layers, bottom to top. Every app-level z-index uses one of these (small numbers that only order things
+     inside one component, 1–8, and the backdrop's -1 stay literal): the content's own layers; the sidebar resizer 12;
+     the study intro 14 and sheet 15; the chat shell and jobs popover 20; the chat's split divider 21; the sidebars
+     (minibar), "Ask" pop-ups and model banner 30; the title bar 35; the raised model banner 40; a reply's pop-up 60;
+     the side-bar jobs popover and area-snap outline 70; the full-screen viewer and ambient effect 80; the pet 83;
+     the calculator 84; the find bar 85; dialogs, file drop and screenshot box 90; the timer pill 96; menus 100;
+     tours 180; setup 200; tooltips and toasts 300. */
+  --z-resizer: 12; --z-study-intro: 14; --z-study-sheet: 15; --z-chat: 20; --z-popover: 20; --z-chat-divider: 21;
+  --z-sidebar: 30; --z-ask-pop: 30; --z-banner: 30; --z-titlebar: 35; --z-banner-raised: 40; --z-reply-pop: 60;
+  --z-side-popover: 70; --z-drag-outline: 70; --z-viewer: 80; --z-ambient: 80; --z-pet: 83; --z-calc: 84; --z-find: 85;
+  --z-dialog: 90; --z-timer: 96; --z-menu: 100; --z-tour: 180; --z-setup: 200; --z-tooltip: 300; --z-toast: 300;
   color-scheme: dark; /* native popups (select lists, scrollbars) follow the dark theme */
   --bg: #0e0f13;
   --bg-elev: #15171d;
@@ -61,7 +72,7 @@ p { margin: 0; }
 /* jobs */
 .jobs { position: relative; }
 @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(99, 179, 237, 0.6); } 70% { box-shadow: 0 0 0 7px rgba(99, 179, 237, 0); } 100% { box-shadow: 0 0 0 0 rgba(99, 179, 237, 0); } }
-.jobs-popover { position: absolute; bottom: calc(100% + 8px); left: 0; width: 380px; max-height: 60vh; overflow-y: auto; border: 1px solid var(--border-strong); border-radius: var(--radius); padding: 12px; z-index: 20; }
+.jobs-popover { position: absolute; bottom: calc(100% + 8px); left: 0; width: 380px; max-height: 60vh; overflow-y: auto; border: 1px solid var(--border-strong); border-radius: var(--radius); padding: 12px; z-index: var(--z-popover); }
 .jobs-popover-head { font-weight: 600; margin-bottom: 8px; }
 .job-row { padding: 8px 0; border-top: 1px solid var(--border); }
 .job-row-top { display: flex; align-items: center; gap: 8px; }

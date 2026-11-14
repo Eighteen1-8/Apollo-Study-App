@@ -1,15 +1,15 @@
 /* The annotations rail beside the viewer: every highlight, note, drawing and text box, filtered by kind, with jump-to and export. */
 import { useState } from 'react';
 import { Annotation, AnnotationKind } from '../api';
-import Icon from '../components/Icon';
+import Icon, { IconName } from '../components/Icon';
 
-export const KIND_ICON: Record<AnnotationKind, string> = { highlight: '▮', note: '🗒', ink: '✎', textbox: 'T', region: '▣' };
+export const KIND_ICON: Record<AnnotationKind, IconName> = { highlight: 'highlight', note: 'note', ink: 'pen', textbox: 'textbox', region: 'region' };
 
 export type Filter = 'all' | AnnotationKind;
 
-export function AnnotationRail({ items, unitLabel, onGo, onDelete, needsReingest, busy, onReingest, onExport, onClose }: {
+export function AnnotationRail({ items, unitLabel, onGo, onDelete, onExport, onClose }: {
   items: Annotation[]; unitLabel: (unit: number) => string; onGo: (a: Annotation) => void; onDelete: (a: Annotation) => void;
-  needsReingest: boolean; busy: boolean; onReingest: () => void; onExport: (() => void) | null; onClose: () => void;
+  onExport: (() => void) | null; onClose: () => void;
 }) {
   const [filter, setFilter] = useState<Filter>('all');
   const shown = items.filter((a) => filter === 'all' || a.kind === filter);
@@ -30,16 +30,6 @@ export function AnnotationRail({ items, unitLabel, onGo, onDelete, needsReingest
         <span>Annotations <span className="count-badge">{items.length}</span></span>
         <button className="icon-btn" title="Hide annotations" onClick={onClose}><Icon name="chevronRight" /></button>
       </div>
-      {(needsReingest || busy) && (
-        <div className={`rail-card${busy ? '' : ' warn'}`}>
-          {busy ? <>Re-ingesting with your notes<span className="dots" /></> : (
-            <>
-              <div>Your notes changed since Apollo last read this file.</div>
-              <button className="btn btn-sm btn-primary" onClick={onReingest}>Re-ingest with notes</button>
-            </>
-          )}
-        </div>
-      )}
       {onExport && items.length > 0 && <button className="btn btn-sm rail-export" onClick={onExport}>Export annotated PDF…</button>}
       <div className="rail-filters">
         {(['all', 'highlight', 'note', 'textbox', 'ink'] as Filter[]).map((f) => (
@@ -61,7 +51,7 @@ export function AnnotationRail({ items, unitLabel, onGo, onDelete, needsReingest
               <div key={a.id} className="rail-item" onClick={() => onGo(a)} title="Go to this annotation">
                 <span className={`rail-icon k-${a.kind}`}
                   style={{ color: a.kind === 'highlight' || a.kind === 'note' ? undefined : a.data.color ?? a.data.strokes?.[0]?.color,
-                    background: a.kind === 'highlight' ? a.data.color : undefined }}>{KIND_ICON[a.kind]}</span>
+                    background: a.kind === 'highlight' ? a.data.color : undefined }}><Icon name={KIND_ICON[a.kind]} size={13} /></span>
                 <span className="rail-text">{snippet(a)}</span>
                 {a.kind === 'note' && a.data.hidden && <span className="rail-hidden" title="Hidden note">hidden</span>}
                 <button className="x-btn rail-x" title="Delete" onClick={(e) => { e.stopPropagation(); onDelete(a); }}><Icon name="close" size={14} /></button>

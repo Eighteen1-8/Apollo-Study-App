@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { api, AreaSource, ArtifactType, DocRef, Quote, Subject, ToolName } from '../api';
 import type { Route } from '../App';
 import { usePoll } from '../hooks';
@@ -8,19 +8,22 @@ import { useOverlay } from '../components/overlay';
 import { Empty } from '../components/ui';
 import SideResizer, { SideLimits, SidePanel } from '../components/SideResizer';
 import UploadDialog from '../components/UploadDialog';
-import ChatView from './ChatView';
+import ChatView, { ChatDraft } from './ChatView';
+import type { DraggedDoc } from '../components/FileList';
 import DocumentView from './DocumentView';
-import LibraryPanel from './LibraryPanel';
+import LibraryPanel, { PANE_TYPES } from './LibraryPanel';
 import ResourcePanel from './ResourcePanel';
 import SourceView from './SourceView';
 import ArtifactViewer, { ArtifactPage } from './ArtifactViewer';
-import NoteEditor from './NoteEditor';
+import NotePane from './notes/NotePane'; // a note, mind map or drawing, in its editor
 import ErrorBoundary from '../components/ErrorBoundary';
 import { motionMs, useAppearance } from '../theme';
 import { getPref, setPref } from '../prefs';
 import { isApplying, undoable } from '../undo';
 import { currentView, registerWorkspace, showView, ViewSnap } from '../viewHistory';
-import { SplitPane, snapOf, View, viewKey, viewReducer } from './subject/viewState';
+import { besideWhere, DropWhere, dropZones, SplitPane, snapOf, View, viewKey, viewReducer } from './subject/viewState';
+import { DraggedPane, PaneDropZones } from './subject/PaneDrop';
+import { registerNoteOpener } from '../noteInsert';
 import { useChatDock } from './subject/useChatDock';
 import GettingStarted from './subject/GettingStarted';
 import AddFilesDialog from '../components/AddFiles';
@@ -29,18 +32,22 @@ import { useTerms } from '../terms';
 import Icon from '../components/Icon';
 import StudyPanel from './subject/StudyPanel';
 import MakeContent, { MakeStart } from './subject/MakeContent';
+import { SubjectLinksContext } from '../components/subjectLinks';
+import RenderNote from '../components/RenderNote';
 
 type RouteSubject = Extract<Route, { name: 'subject' }>;
 type Upload = { title: string; target: { topic_id?: number; subject_id?: number }; mode: 'auto' | 'all'; paths: string[] };
 export type { SplitPane } from './subject/viewState';
 
-export const CREATE_ITEMS: { tool: ToolName; label: string }[] = [
+/** `chat: false`: not a chat tool (marking needs the student's files), so only the Make content steps offer it. */
+export const CREATE_ITEMS: { tool: ToolName; label: string; chat?: false }[] = [
   { tool: 'create_flashcards', label: 'Flashcards' },
   { tool: 'create_quiz', label: 'Quiz' },
   { tool: 'create_exam', label: 'Exam (from a practice exam)' },
   { tool: 'create_notes', label: 'Full notes' },
   { tool: 'create_cheatsheet', label: 'Cheat sheet' },
   { tool: 'create_mindmap', label: 'Mind map' },
+  { tool: 'create_marking', label: 'Marking (of your own work)', chat: false },
 ];
 
 /** Normalise filenames for citation matching (Qwen sometimes drops the extension or changes case). */
@@ -85,6 +92,10 @@ export default function SubjectView({ route, subjects, go, onChange }: {
     page: r.view?.page ?? null, split: r.view?.split ?? null, chatFull: false,
   }));
   const { doc, page, split } = view;
+  // "Add to notes" with no note open: the note picked (or made) opens beside what's showing (noteInsert.ts)
+  const viewNow = useRef(view);
+  viewNow.current = view;
+  useEffect(() => registerNoteOpener((id) => dispatch({ type: 'place', pane: { kind: 'note', id }, where: besideWhere(viewNow.current) })), []);
   // content is open (a file, notes, generated content, the chat full screen): the background effect fades to 10%
   const contentOpen = !!(doc || page || split || view.chatFull);
   useEffect(() => {
@@ -118,7 +129,7 @@ export default function SubjectView({ route, subjects, go, onChange }: {
   const [studying, setStudying] = useState(false);
   const [making, setMaking] = useState<MakeStart | null>(null);
   const [makeShown, setMakeShown] = useState<MakeStart | null>(null); // kept while the sheet slides away
-  const [draft, setDraft] = useState<{ text: string; send: boolean; nonce: number } | null>(null);
+  const [draft, setDraft] = useState<ChatDraft | null>(null);
   const sheetOpen = (studying && showCloud) || !!making;
   // Start studying: the cloud dims, a line ("Let's get started.") shows in the middle, then the panel fades in
   const [intro, setIntro] = useState<string | null>(null);
@@ -171,14 +182,24 @@ export default function SubjectView({ route, subjects, go, onChange }: {
     window.addEventListener('keydown', k);
     return () => window.removeEventListener('keydown', k);
   }, [sheetOpen, closeSheet]);
-  /** The study panel's chat bar (Enter) or a suggestion: the chat grows out of the box to fill the centre and sends it. */
-  const askFromSheet = useCallback((text: string, send: boolean, from?: DOMRect) => {
-    if (text) setDraft({ text, send, nonce: Date.now() });
+  /** The chat grows out of the study panel's chat bar (`from`: the bar's box) to fill the centre, over the panel, and
+   * becomes a normal chat that closes back to the panel. */
+  const growFromSheet = useCallback((from?: DOMRect | null) => {
     setFromSheet(true);
     setExpandFrom(from ?? null);
     setChatFull(true);
     setChatCollapsed(false);
   }, [setChatFull]); // eslint-disable-line react-hooks/exhaustive-deps
+  /** The study panel's chat bar (Enter) or a suggestion: the chat grows out of the box and sends it, with the library
+   * files dropped on the bar. */
+  const askFromSheet = useCallback((text: string, send: boolean, from?: DOMRect, attachments?: DraggedDoc[]) => {
+    if (text || attachments?.length) setDraft({ text, send, nonce: Date.now(), attachments });
+    growFromSheet(from);
+  }, [growFromSheet]);
+  // the study panel is showing (and not Make content): a chat opened from anywhere grows out of its bar
+  const sheetStudy = useRef({ on: false, chatOpen: false });
+  sheetStudy.current = { on: studying && showCloud && !making, chatOpen: fromSheet && !chatCollapsed };
+  const sheetBar = () => center.current?.querySelector('.study-ask-row textarea')?.getBoundingClientRect() ?? null;
   // the growing: the shell jumps to its full size at once and is revealed from the box's outline outwards
   useLayoutEffect(() => {
     const el = shell.current;
@@ -232,20 +253,24 @@ export default function SubjectView({ route, subjects, go, onChange }: {
   const openDoc = useCallback((id: number, focus?: string, details = false) => dispatch({ type: 'doc', id, focus, details }), []);
 
   /** Notes, cheat sheets and mind maps open in the centre like a document; flashcards, quizzes and exams stay full screen. */
-  const openArtifact = useCallback(async (id: number) => {
-    const a = await api.artifact(id);
-    if (a.type === 'notes' || a.type === 'cheatsheet' || a.type === 'mindmap') dispatch({ type: 'page', kind: 'artifact', id });
+  const openArtifact = useCallback(async (id: number, known?: ArtifactType) => {
+    // the library knows the type; otherwise just its state is fetched (deleted: shown by the viewer, not thrown here)
+    const type = known ?? await api.artifactSummary(id).then((a) => a.type).catch(() => undefined);
+    if (type && PANE_TYPES.includes(type)) dispatch({ type: 'page', kind: 'artifact', id });
     else setViewing(id);
   }, []);
 
   /** The student's own notes open in the centre, in the editor. */
   const openNote = useCallback((id: number) => dispatch({ type: 'page', kind: 'note', id }), []);
 
-  /** A chat picked in the left sidebar (null: a new one) opens in the chat panel. */
+  /** A chat picked in the left sidebar, the palette or the study panel's Continue (null: a new one) opens in the chat
+   * panel; over the study panel it grows out of the panel's chat bar to full screen, like a question asked there. */
   const openChat = useCallback((id: number | null) => {
     setChatReq({ id, nonce: Date.now() });
-    setChatCollapsed(false);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    const s = sheetStudy.current;
+    if (s.on && !s.chatOpen) growFromSheet(sheetBar());
+    else setChatCollapsed(false);
+  }, [growFromSheet]); // eslint-disable-line react-hooks/exhaustive-deps
   const attach = useCallback((paths: string[]) => { setIncoming({ paths, nonce: Date.now() }); setChatCollapsed(false); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** A screenshot in the chat: open its document at the area it came from and outline it briefly. */
@@ -257,6 +282,8 @@ export default function SubjectView({ route, subjects, go, onChange }: {
     const d = list.find((x) => norm(x.filename) === f) ?? list.find((x) => norm(x.filename).startsWith(f) || f.startsWith(norm(x.filename)));
     if (d) openDoc(d.id, label);
   }, [docs.data, openDoc]);
+  // citations in Apollo's comments and a marking's earlier versions, wherever they're rendered (subjectLinks.ts)
+  const links = useMemo(() => ({ cite: openCitation, openArtifact: (id: number) => { openArtifact(id); } }), [openCitation, openArtifact]);
 
   const askAbout = useCallback((q: Quote) => {
     setQuote({ ...q, nonce: Date.now() });
@@ -281,11 +308,18 @@ export default function SubjectView({ route, subjects, go, onChange }: {
 
   if (!subject) return <div className="page"><Empty title="Subject not found" /></div>;
 
+  /** Every way into Make content: the chat is minimised first (it sits above the sheet), as its own minimise does,
+   * so the steps are never hidden under it. */
+  const startMaking = (m: MakeStart) => {
+    if (fromSheet) { setFromSheet(false); setChatFull(false); }
+    setChatCollapsed(true);
+    setMaking(m);
+  };
   /** A Create menu or button: the Make content steps, with that type (and topic) already picked. */
   const create = (tool: ToolName, topicId: number | null) =>
-    setMaking({ type: tool.replace('create_', '') as ArtifactType, topicId, nonce: Date.now() });
+    startMaking({ type: tool.replace('create_', '') as ArtifactType, topicId, nonce: Date.now() });
   const makeFromDoc = (id: number) =>
-    setMaking({ doc: { id, name: docs.data?.find((d) => d.id === id)?.filename ?? 'This file' }, nonce: Date.now() });
+    startMaking({ doc: { id, name: docs.data?.find((d) => d.id === id)?.filename ?? 'This file' }, nonce: Date.now() });
   const shownMake = making ?? makeShown;
 
   const dropToTopic = async (paths: string[]) => {
@@ -314,14 +348,22 @@ export default function SubjectView({ route, subjects, go, onChange }: {
 
   /** Show something beside what's open. With nothing open it just opens; flashcards, quizzes and exams (full
    * screen) can't go in a pane. */
-  const openSplit = async (kind: SplitPane['kind'], id: number) => {
+  const openSplit = async (kind: SplitPane['kind'], id: number, known?: ArtifactType) => {
     if (kind === 'artifact') {
-      const a = await api.artifact(id);
-      if (a.type !== 'notes' && a.type !== 'cheatsheet' && a.type !== 'mindmap') return setViewing(id);
+      const type = known ?? await api.artifactSummary(id).then((a) => a.type).catch(() => undefined);
+      if (!type || !PANE_TYPES.includes(type)) return setViewing(id);
     }
     const primary = !!doc || page !== null;
-    if (!primary) return kind === 'doc' ? openDoc(id) : kind === 'note' ? openNote(id) : openArtifact(id);
+    if (!primary) return kind === 'doc' ? openDoc(id) : kind === 'note' ? openNote(id) : openArtifact(id, known);
     dispatch({ type: 'split', pane: { kind, id } });
+  };
+  /** A sidebar row dropped on one of the centre's drop zones (subject/PaneDrop.tsx). */
+  const placePane = async (p: DraggedPane, where: DropWhere) => {
+    if (p.kind === 'artifact') {
+      const type = p.type ?? await api.artifactSummary(p.id).then((a) => a.type).catch(() => undefined);
+      if (!type || !PANE_TYPES.includes(type)) return setViewing(p.id);
+    }
+    dispatch({ type: 'place', pane: { kind: p.kind, id: p.id }, where });
   };
   const swapPanes = () => dispatch({ type: 'swap' });
   const closeSplit = () => dispatch({ type: 'closeSplit' });
@@ -355,10 +397,11 @@ export default function SubjectView({ route, subjects, go, onChange }: {
   const docsChanged = () => { docs.reload(); onChange(); };
 
   return (
+    <SubjectLinksContext.Provider value={links}>
     <div ref={workspace} className={`workspace${sizing ? ' sizing' : ''}${sides.left.open ? '' : ' left-folded'}${sides.right.open ? '' : ' right-folded'}`}
       style={{ '--left-w': `${sides.left.open ? sides.left.width : 0}px`, '--right-w': `${sides.right.open ? sides.right.width : 0}px` } as React.CSSProperties}>
       <ErrorBoundary name="Generated content" compact><LibraryPanel subject={subject} onOpen={openArtifact}
-        onOpenSplit={(id) => openSplit('artifact', id)} onCreate={(tool, topicId) => create(tool, topicId)}
+        onOpenSplit={(id, type) => openSplit('artifact', id, type)} onCreate={(tool, topicId) => create(tool, topicId)}
         chats={{ activeId: activeChat, onOpen: openChat, onNew: () => openChat(null) }} /></ErrorBoundary>
       <SideResizer {...sideProps('left')} />
       <SideResizer {...sideProps('right')} />
@@ -380,7 +423,7 @@ export default function SubjectView({ route, subjects, go, onChange }: {
                 <div className="doc-pane">
                   <ErrorBoundary name="These notes" resetKey={`${page.kind}${page.id}`} onClose={closeDoc}>
                     {page.kind === 'note'
-                      ? <NoteEditor key={`n${page.id}`} id={page.id} subject={subject} onClose={closeDoc} onAsk={askAbout} onAttach={attach} />
+                      ? <NotePane key={`n${page.id}`} id={page.id} subject={subject} onClose={closeDoc} onAsk={askAbout} onAttach={attach} />
                       : <ArtifactPage key={`a${page.id}`} id={page.id} onClose={closeDoc} onCite={openCitation} onAsk={askAbout} onAttach={attach} />}
                   </ErrorBoundary>
                 </div>
@@ -396,6 +439,7 @@ export default function SubjectView({ route, subjects, go, onChange }: {
                       onDetails={() => dispatch({ type: 'details', on: true })} onAsk={askAbout}
                       onAttach={attach} onMake={() => makeFromDoc(doc.id)} />
                   )}
+                  {!doc.details && <RenderNote id={doc.id} onRendered={() => openDoc(doc.id, doc.focus)} />}
                 </ErrorBoundary></div>
               )}
             </div>
@@ -411,18 +455,22 @@ export default function SubjectView({ route, subjects, go, onChange }: {
                   <div className="doc-pane">
                     <ErrorBoundary name="This pane" resetKey={split.nonce} onClose={closeSplit}>
                       {split.kind === 'note'
-                        ? <NoteEditor key={`sn${split.id}`} id={split.id} subject={subject} onClose={closeSplit} onAsk={askAbout} onAttach={attach} />
+                        ? <NotePane key={`sn${split.id}`} id={split.id} subject={subject} onClose={closeSplit} onAsk={askAbout} onAttach={attach} />
                         : split.kind === 'artifact'
                           ? <ArtifactPage key={`sa${split.id}`} id={split.id} onClose={closeSplit} onCite={openCitation} onAsk={askAbout} onAttach={attach} />
                           : <SourceView key={split.nonce} id={split.id} onClose={closeSplit} onAsk={askAbout} onAttach={attach}
                             onDetails={() => openDoc(split.id, undefined, true)} />}
+                      {split.kind === 'doc' && <RenderNote id={split.id} onRendered={() => dispatch({ type: 'split', pane: { kind: 'doc', id: split.id } })} />}
                     </ErrorBoundary>
                   </div>
                 </div>
               </>
             )}
+            {!sheetOpen && <PaneDropZones host={center} zones={dropZones(view)} onDrop={placePane} />}
           </div>
         )}
+        {/* not over the study panel or Make content: their own boxes take dropped files */}
+        {!doc && page === null && !sheetOpen && <PaneDropZones host={center} zones={['open']} onDrop={placePane} />}
         {showCloud && (
           <>
             <div className={`start-studying${sheetOpen || intro || explore ? ' away' : ''}`} aria-hidden={explore || sheetOpen}>
@@ -437,7 +485,7 @@ export default function SubjectView({ route, subjects, go, onChange }: {
           </>
         )}
         {showCloud && <div className={`study-intro${intro ? ' on' : ''}`} aria-live="polite">{intro && <span key={intro}>{intro}</span>}</div>}
-        <div className={`study-sheet${sheetOpen ? ' open' : ''}`} aria-hidden={!sheetOpen}>
+        <div className={`study-sheet${sheetOpen ? ' open' : ''}${doc || page !== null ? ' over-content' : ''}`} aria-hidden={!sheetOpen}>
           <button className="sheet-handle" onClick={closeSheet} title={making && studying && showCloud ? 'Back to studying' : 'Back to the map (Esc)'}
             aria-label="Hide this panel"><Icon name="chevronDown" size={20} /></button>
           <div className="sheet-scroll">
@@ -447,8 +495,8 @@ export default function SubjectView({ route, subjects, go, onChange }: {
               </ErrorBoundary>
             ) : showCloud && (
               <ErrorBoundary name="The study panel" compact>
-                <StudyPanel subject={subject} open={sheetOpen} onAsk={askFromSheet} onOpenChat={(id) => { openChat(id); setFromSheet(true); setChatFull(true); }} onOpenArtifact={openArtifact}
-                  onMake={(type) => setMaking({ type, topicId: null, nonce: Date.now() })} />
+                <StudyPanel subject={subject} open={sheetOpen} onAsk={askFromSheet} onOpenChat={openChat} onOpenArtifact={openArtifact}
+                  onMake={(type) => startMaking({ type, topicId: null, nonce: Date.now() })} />
               </ErrorBoundary>
             )}
           </div>
@@ -476,7 +524,7 @@ export default function SubjectView({ route, subjects, go, onChange }: {
               setChatCollapsed(!chatCollapsed);
             }} draft={draft}
             onCite={openCitation} onOpenArtifact={openArtifact} onOpenDoc={(id) => openDoc(id)} onShowArea={showArea} onOpenNote={openNote}
-            quote={quote} onClearQuote={() => setQuote(null)} incoming={incoming} openRequest={chatReq} onActiveChat={setActiveChat} /></ErrorBoundary>
+            quote={quote} onClearQuote={() => setQuote(null)} onQuote={askAbout} incoming={incoming} openRequest={chatReq} onActiveChat={setActiveChat} /></ErrorBoundary>
         </div>
       </section>
 
@@ -491,7 +539,7 @@ export default function SubjectView({ route, subjects, go, onChange }: {
 
       {fileDrag && (
         <FileDropOverlay topicCount={subject.topics.length} singleTopic={subject.topics.length === 1 ? subject.topics[0].name : undefined}
-          onReference={(paths) => paths.length && setUpload({ title: `Add to the ${subject.name} reference library`, target: { subject_id: subject.id }, mode: 'all', paths })}
+          onReference={(paths) => paths.length && setUpload({ title: `Add to the ${subject.name} reference library`, target: { subject_id: subject.id }, mode: 'auto', paths })}
           onTopic={dropToTopic}
           onChat={(paths) => { if (paths.length) { setIncoming({ paths, nonce: Date.now() }); setChatCollapsed(false); } }} />
       )}
@@ -506,7 +554,7 @@ export default function SubjectView({ route, subjects, go, onChange }: {
             onChange();
             setUpload({ title: `Add files to ${t.name}`, target: { topic_id: t.id }, mode: 'auto', paths: [] });
           }}
-          onReference={() => { setAdding(false); setUpload({ title: `Add to ${subject.name}: ${tr('references').toLowerCase()}`, target: { subject_id: subject.id }, mode: 'all', paths: [] }); }}
+          onReference={() => { setAdding(false); setUpload({ title: `Add to ${subject.name}: ${tr('references').toLowerCase()}`, target: { subject_id: subject.id }, mode: 'auto', paths: [] }); }}
           onChat={async () => {
             setAdding(false);
             const p = await window.studyApp?.openFiles({ multi: true });
@@ -522,6 +570,7 @@ export default function SubjectView({ route, subjects, go, onChange }: {
           defaultTopic={docs.data?.find((d) => d.kind === 'topic')?.topic_id ?? subject.topics[0].id} />
       )}
     </div>
+    </SubjectLinksContext.Provider>
   );
 }
 

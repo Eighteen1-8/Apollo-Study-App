@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from studyapp import config, db, llm, pipeline
 from studyapp.api import app
 from studyapp.chunker import chunk_units
+from studyapp.parsers import approx_tokens
 
 client = TestClient(app)
 
@@ -48,9 +49,6 @@ def library(embeds):
         with db.tx() as c:
             for i, (text, h) in enumerate(units):
                 original = pipeline.dedupe.find_original(c, scope, h)
-                if notes and i == 0:
-                    text = f"{text}\n\n{pipeline.ANNOTATIONS_HEADER}\n- Note: {notes}"
-                    original = None
                 c.execute("INSERT INTO units(document_id, idx, kind, label, text, content_hash, duplicate_of, token_count, needs_vision, "
                           "vision_status, vision_notes, vision_relevant, vision_image) VALUES (?,?,'page',?,?,?,?,20,1,'done',?,1,?)",
                           (did, i, f"Page {i + 1}", text, h, original, f"A diagram on {name} page {i + 1}.", f"{did}/vision_0.png"))
@@ -120,18 +118,83 @@ def test_round_trip_with_notes(library, embeds, tmp_path):
     assert again["imported"] == 0 and len(again["skipped"]) == 3
 
 
-def test_export_without_notes_embeds_clean_copies(library, embeds, tmp_path):
+def test_export_without_notes_leaves_out_the_marks_only(library, embeds, tmp_path):
+    """The student's marks are never in the unit text, so leaving them out changes no text and embeds nothing."""
     pack = tmp_path / "clean.zip"
     n = len(embeds)
-    client.post("/export", json={"topic_id": library["tid"], "include_notes": False, "path": str(pack)})
-    assert embeds[n:] and all(pipeline.ANNOTATIONS_HEADER not in t for t in embeds[n:])
+    r = client.post("/export", json={"topic_id": library["tid"], "include_notes": False, "path": str(pack)})
+    assert r.status_code == 200, r.text
+    assert len(embeds) == n
     with zipfile.ZipFile(pack) as z:
         m = json.loads(z.read("manifest.json"))
         assert len(m["documents"]) == 2 and not m["notes_included"]
         data = json.loads(z.read("data/d1.json"))
         assert not data["annotations"]
-        assert all(pipeline.ANNOTATIONS_HEADER not in u["text"] for u in data["units"])
-        assert all(pipeline.ANNOTATIONS_HEADER not in c["text"] for c in data["chunks"])
+        assert data["units"][0]["text"] == "Strong acids ionise completely in water."
+
+
+def test_old_pack_with_folded_notes_imports_clean(library, embeds, tmp_path):
+    """Packs from before notes were taken out of the material: the notes are cut from the text and the chunks rebuilt."""
+    pack, old = tmp_path / "new.zip", tmp_path / "old.zip"
+    client.post("/export", json={"document_ids": [library["docs"][0]], "path": str(pack)})
+    folded = f"\n\n{pipeline.ANNOTATIONS_HEADER}\n- Note: remember the minus sign"
+    with zipfile.ZipFile(pack) as src, zipfile.ZipFile(old, "w") as dst:
+        for item in src.infolist():
+            raw = src.read(item.filename)
+            if item.filename == "data/d1.json":
+                data = json.loads(raw)
+                data["units"][0]["text"] += folded
+                for c in data["chunks"]:
+                    if c["source"] == "text":
+                        c["text"] += folded  # as the old ingest chunked it
+                raw = json.dumps(data).encode()
+            dst.writestr(item, raw)
+    r = client.post("/import", json={"path": str(old), "subject_name": "Chemistry old"}).json()
+    (doc,) = _subject_docs(r["subject_id"])
+    assert db.q1("SELECT text FROM units WHERE document_id=? AND idx=0", (doc["id"],))["text"] == \
+        "Strong acids ionise completely in water."
+    assert all(pipeline.ANNOTATIONS_HEADER not in c["text"] for c in db.q("SELECT text FROM chunks WHERE document_id=?", (doc["id"],)))
+
+
+def test_startup_strips_folded_notes_once(library, embeds):
+    """Files re-ingested "with my notes" by older versions: the start-up clean-up gives back what a plain ingest makes."""
+    d1, d2, d3 = library["docs"]
+    plain = {d: db.q("SELECT idx, text, duplicate_of FROM units WHERE document_id=? ORDER BY idx", (d,)) for d in (d1, d2)}
+    plain_chunks = {d: [c["text"] for c in db.q("SELECT text FROM chunks WHERE document_id=? AND source='text' ORDER BY unit_start", (d,))]
+                    for d in (d1, d2)}
+    d3_chunks = db.q("SELECT id, embedding FROM chunks WHERE document_id=?", (d3,))
+    # What the old ingest did to bases.pdf: its first page (a duplicate of acids.pdf's) annotated, so kept with the notes
+    # appended, never deduped, notes counted in its tokens, chunks made from that text.
+    u = db.q1("SELECT * FROM units WHERE document_id=? AND idx=0", (d2,))
+    folded = f"{u['text']}\n\n{pipeline.ANNOTATIONS_HEADER}\n- Highlighted: \"ionise\"\n- Note: strong vs weak"
+    db.ex("UPDATE units SET text=?, token_count=?, duplicate_of=NULL WHERE id=?", (folded, 40, u["id"]))
+    with db.tx() as c:
+        c.execute("DELETE FROM chunks_fts WHERE rowid IN (SELECT id FROM chunks WHERE document_id=? AND source='text')", (d2,))
+        c.execute("DELETE FROM chunks WHERE document_id=? AND source='text'", (d2,))
+        for ch in chunk_units(db.q("SELECT idx, kind, label, text FROM units WHERE document_id=? ORDER BY idx", (d2,)), 600, 5):
+            cid = c.execute("INSERT INTO chunks(document_id, unit_start, unit_end, label, text, token_count) VALUES (?,?,?,?,?,?)",
+                            (d2, ch["unit_start"], ch["unit_end"], ch["label"], ch["text"], ch["token_count"])).lastrowid
+            c.execute("INSERT INTO chunks_fts(rowid, text) VALUES (?, ?)", (cid, ch["text"]))
+    pipeline.embed_chunks(d2)
+    db.ex("DELETE FROM settings WHERE key=?", (pipeline.STRIPPED_SETTING,))
+    db.ex("DELETE FROM jobs")
+
+    pipeline.strip_annotation_text()
+    for d in (d1, d2):
+        assert db.q("SELECT idx, text, duplicate_of FROM units WHERE document_id=? ORDER BY idx", (d,)) == plain[d]
+        assert [c["text"] for c in db.q("SELECT text FROM chunks WHERE document_id=? AND source='text' ORDER BY unit_start",
+                                        (d,))] == plain_chunks[d]
+    assert db.q1("SELECT token_count FROM units WHERE id=?", (u["id"],))["token_count"] == approx_tokens(u["text"])
+    assert db.q("SELECT id, embedding FROM chunks WHERE document_id=?", (d3,)) == d3_chunks  # other files untouched
+    assert not db.q1("SELECT 1 FROM chunks WHERE text LIKE ?", (f"%{pipeline.ANNOTATIONS_HEADER}%",))
+    assert db.q1("SELECT 1 FROM jobs WHERE type='embed' AND document_id=?", (d2,))  # its new chunk text needs a vector
+    assert db.q1("SELECT duplicate_units FROM documents WHERE id=?", (d2,))["duplicate_units"] == 1
+    assert db.setting(pipeline.STRIPPED_SETTING)
+
+    # once only: later text (however it looks) is left alone
+    db.ex("UPDATE units SET text=? WHERE id=?", (folded, u["id"]))
+    pipeline.strip_annotation_text()
+    assert db.q1("SELECT text FROM units WHERE id=?", (u["id"],))["text"] == folded
 
 
 def test_single_file_carries_content_it_shared(library, embeds, tmp_path):

@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { moved } from '../../src/components/reorder';
 import { score } from '../../src/components/fuzzy';
-import { matchCommands, COMMANDS } from '../../src/components/slashCommands';
+import { matchCommands, COMMANDS, runsAtOnce, slashMatches } from '../../src/components/slashCommands';
 import { markHighlight } from '../../src/components/highlights';
+import { calcCommand, graphArg, graphError, plotBlock, resultText, withGraphFn } from '../../src/components/calcText';
 import { blockCuts, renderMarkdown, repairTables } from '../../src/components/Markdown';
 import { dustPerNode } from '../../src/components/EmbeddingCloud';
 
@@ -39,6 +40,56 @@ describe('slash commands', () => {
     expect(matchCommands('st').map((c) => c.name)).toEqual(['stats', 'stop']);
     expect(matchCommands('').length).toBe(COMMANDS.length);
     expect(matchCommands('ats').map((c) => c.name)).toEqual(['stats']);
+  });
+  it('suggests only while a command name is being typed (the composer and the study bar)', () => {
+    expect(slashMatches('/st').map((c) => c.name)).toEqual(['stats', 'stop']);
+    expect(slashMatches('/').length).toBe(COMMANDS.length);
+    expect(slashMatches('/stats chat')).toEqual([]); // arguments being typed
+    expect(slashMatches('what is /st')).toEqual([]);
+  });
+  it('runs a command at once only when it needs nothing more', () => {
+    const byName = (n: string) => COMMANDS.find((c) => c.name === n)!;
+    expect(runsAtOnce(byName('new'))).toBe(true); // no arguments
+    expect(runsAtOnce(byName('stats'))).toBe(true); // optional ones
+    expect(runsAtOnce(byName('todo'))).toBe(false); // needs text
+    expect(runsAtOnce(byName('effort'))).toBe(false);
+    expect(runsAtOnce(byName('calc'))).toBe(true); // opens the calculator
+    expect(runsAtOnce(byName('graph'))).toBe(false); // needs a function
+  });
+  it('offers the calculator commands', () => {
+    expect(slashMatches('/ca').map((c) => c.name)).toEqual(['calc']);
+    expect(slashMatches('/gr').map((c) => c.name)).toEqual(['graph']);
+    expect(slashMatches('/calc 2+2')).toEqual([]);
+    expect(matchCommands('c').map((c) => c.name)).toContain('calc');
+  });
+});
+
+describe('calculator text for the chat', () => {
+  it('writes a result and a graph Apollo can read', () => {
+    expect(resultText(' 2sin(30) ', 1)).toBe('2sin(30) = 1');
+    const block = plotBlock(['sin(x)', '', 'x^', 'x^2'], [-10, 10]);
+    expect(block.startsWith('```plot\n') && block.endsWith('\n```')).toBe(true);
+    const spec = JSON.parse(block.slice(8, -4));
+    expect(spec.functions.map((f: { expr: string }) => f.expr)).toEqual(['sin(x)', 'x^2']); // only drawable rows
+    expect(spec.x).toEqual([-10, 10]);
+    expect(spec.y).toBeUndefined();
+    expect(JSON.parse(plotBlock(['x'], [0, 1], [0.123456789, 2]).slice(8, -4)).y).toEqual([0.123457, 2]); // a moved view
+  });
+  it('reads /graph and /calc', () => {
+    expect(graphArg('y = x^2')).toBe('x^2');
+    expect(graphArg('f(x)= sin x')).toBe('sin x');
+    expect(graphError('x^2 - 3')).toBeNull();
+    expect(graphError('')).toMatch(/after the command/);
+    expect(graphError('x^')).toMatch(/missing/);
+    expect(calcCommand('2sin(30) + 5!', { deg: true, ans: 0 })).toEqual({ value: 121 });
+    expect(calcCommand('ans * 2', { deg: true, ans: 21 })).toEqual({ value: 42 });
+    expect('error' in calcCommand('1/0', { deg: true, ans: 0 })).toBe(true);
+  });
+  it('adds a function to the graph rows', () => {
+    expect(withGraphFn(['sin(x)', ''], 'x^2', 6)).toEqual(['sin(x)', 'x^2']);
+    expect(withGraphFn(['sin(x)'], 'sin(x)', 6)).toEqual(['sin(x)']);
+    expect(withGraphFn(['a', 'b'], 'x', 3)).toEqual(['a', 'b', 'x']);
+    expect(withGraphFn(['a', 'b', 'c'], 'x', 3)).toEqual(['a', 'b', 'x']);
   });
 });
 

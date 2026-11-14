@@ -20,7 +20,7 @@ export default function GettingStarted({ subject, onNewTopic, onAddFiles, onOpen
     },
     {
       done: false, title: 'Study with Apollo',
-      body: 'Ask questions about your material, or have Apollo make flashcards, quizzes, practice exams, notes, cheat sheets and mind maps.',
+      body: 'Ask questions about your material, or have Apollo make flashcards, quizzes, practice exams, notes, cheat sheets and mind maps. It can mark your own work too.',
       action: <button className="btn btn-sm" onClick={onOpenChat}>Open the chat</button>,
     },
   ];

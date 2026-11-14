@@ -45,6 +45,7 @@ These live in the app's own browser profile, not in the database, so they don't 
 - **Notes:** the toolbar's last text and highlight colours (`noteTextColor`, `noteHighlight`)
 - **Generated list:** folded topic groups per subject (`libCollapsed:<subject id>`)
 - **Document viewer:** minimap and annotations rail shown or hidden (`minimap`, `annoRail`)
+- **Exams:** answers typed into an exam and not submitted yet (`examDraft:<content id>`)
 
 The order you dragged things into and the folders inside topics are *not* in this list: they're in the database, so
 they move with it.

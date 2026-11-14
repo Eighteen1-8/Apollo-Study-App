@@ -15,14 +15,18 @@ declare global {
       /** Present when the window has no native title bar (the app draws it; see Titlebar). */
       titlebar?: boolean;
       setChrome?: (c: { color: string; symbol: string; bg: string; dark: boolean }) => void;
-      /** Page zoom for the Text size setting (Electron's zoom factor). */
+      /** Page zoom for the UI size setting (Electron's zoom factor, 0.8–1.6). */
       setZoom?: (f: number) => void;
+      /** Ctrl + / - / 0 from Electron's View menu (theme.ts saves the new UI size). */
+      onZoomStep?: (cb: (dir: -1 | 0 | 1) => void) => void;
       /** Print the element marked #print-root to a PDF the student saves (exportDoc.ts). null: cancelled. */
       printPdf?: (opts: { defaultName: string }) => Promise<string | null>;
       /** A PNG (base64) of an area of the window, in CSS pixels. */
       capture?: (rect: { x: number; y: number; width: number; height: number }) => Promise<string>;
       /** Put a PNG (base64) on the clipboard. */
       copyImage?: (png: string) => Promise<void>;
+      /** Flash the taskbar button until the window is focused (the study timer finished). */
+      flash?: () => void;
       /** Spell check (bundled dictionaries; electron main.cjs setupSpelling). */
       spell?: {
         /** Call from a contextmenu handler that does NOT cancel the event: Chromium's spelling result for the word under
@@ -94,7 +98,8 @@ export interface Doc {
   filename: string; ext: string; size: number; status: string; error: string | null; vision_mode: VisionMode;
   unit_count: number; token_count: number; chunk_count: number; duplicate_units: number; stripped_lines: number;
   vision_total: number; vision_done: number; created_at: number;
-  annotated_at?: number | null; annotations_ingested?: number | null;
+  /** Office files: why no exact PDF copy could be made ("plain message [APO-FILE-309]"), so the viewer shows a simpler layout. */
+  render_error?: string | null;
 }
 export interface Unit {
   id: number; idx: number; kind: string; label: string; text: string; duplicate_of: number | null;
@@ -117,6 +122,8 @@ export interface MaintDoc {
   vision_total: number; vision_done: number; vision_failed: number; flags: number; reviewing: boolean;
   /** Read by an older version of the parser (it may be missing text a newer one finds). */
   old_parser: boolean;
+  /** Why the viewer shows a simpler layout for this Office file (no exact PDF copy), or null. */
+  render_error: string | null;
 }
 export interface MaintOverview {
   data_dir: string; db_path: string; log_path: string; embed_model: string;
@@ -155,10 +162,13 @@ export interface Backup { name: string; kind: 'daily' | 'before-update' | 'befor
 export interface Backups { backups: Backup[]; pending_restore: string | null; folder: string; keep: Record<string, number> }
 
 /** chat / define / quiz_review: interactive model work, shown while it runs (backend jobs.track). */
-export type JobType = 'ingest' | 'vision' | 'embed' | 'audit' | 'generate' | 'mark' | 'review' | 'chat' | 'define' | 'quiz_review';
+export type JobType = 'ingest' | 'vision' | 'embed' | 'audit' | 'generate' | 'mark' | 'review' | 'questions' | 'chat' | 'define' | 'quiz_review';
 export interface Job {
-  id: number; type: JobType; document_id: number; filename: string | null; status: string;
-  progress: number; message: string; error: string | null;
+  /** document_id: the file (ingest, embed, vision, audit), else null; ref_id: the artifact (generate), attempt (mark),
+   * review (review) or subject (questions). filename: what the job is about, for the list. */
+  id: number; type: JobType; document_id: number | null; ref_id: number | null; filename: string | null; status: string;
+  progress: number; message: string; error: string | null; label: string | null; priority: number; cancel: number;
+  created_at: number; updated_at: number; queued_at: number | null;
 }
 export interface SearchResult {
   chunk_id: number; document_id: number; filename: string; doc_kind: string; label: string; text: string;
@@ -240,14 +250,15 @@ export const api = {
   exportUrl: (id: number) => authUrl(`${BASE}/documents/${id}/export`),
   thumbUrl: (id: number, page: number, w = 120) => authUrl(`${BASE}/documents/${id}/thumb/${page}?w=${w}`),
   outline: (id: number) => req<OutlineItem[]>('GET', `/documents/${id}/outline`),
+  /** A file's pages/slides/sections, light (no text), for choosing some of them in Make content. */
+  documentUnits: (id: number) => req<DocUnits>('GET', `/documents/${id}/units`),
   snapshot: (id: number, unit: number, rect: [number, number, number, number]) =>
     req<{ path: string; asset: string; name: string }>('POST', `/documents/${id}/snapshot`, { unit, rect }),
-  annotations: (docId: number) => req<{ items: Annotation[]; needs_reingest: boolean; doc_status: string }>('GET', `/documents/${docId}/annotations`),
+  annotations: (docId: number) => req<{ items: Annotation[] }>('GET', `/documents/${docId}/annotations`),
   createAnnotation: (docId: number, body: { unit: number; kind: AnnotationKind; anchor?: TextAnchor; data?: AnnotationData }) =>
     req<Annotation>('POST', `/documents/${docId}/annotations`, body),
   updateAnnotation: (id: number, body: { unit?: number; anchor?: TextAnchor; data?: AnnotationData }) => req<Annotation>('PATCH', `/annotations/${id}`, body),
   deleteAnnotation: (id: number) => req('DELETE', `/annotations/${id}`),
-  reingestAnnotations: (docId: number) => req('POST', `/documents/${docId}/reingest-annotations`),
   define: (docId: number, body: { text: string; before: string; after: string; label: string }) =>
     req<{ definition: string }>('POST', `/documents/${docId}/define`, body),
   inspectChatFiles: (paths: string[]) => req<ChatFileCheck[]>('POST', '/chat-files/inspect', { paths }),
@@ -317,13 +328,17 @@ export const api = {
   orderFolders: (topicId: number, ids: string[]) => req<{ ok: boolean }>('PUT', `/topics/${topicId}/folders/order`, { ids: ids.map(Number) }),
 
   notes: (subjectId: number) => req<NoteSummary[]>('GET', `/subjects/${subjectId}/notes`),
-  createNote: (subjectId: number, body: { title?: string; topic_id?: number | null; html?: string } = {}) =>
+  createNote: (subjectId: number, body: { title?: string; topic_id?: number | null; html?: string; kind?: NoteKind; data?: object } = {}) =>
     req<Note>('POST', `/subjects/${subjectId}/notes`, body),
   note: (id: number) => req<Note>('GET', `/notes/${id}`),
-  saveNote: (id: number, body: { title?: string; html?: string; topic_id?: number | null; set_topic?: boolean }) =>
+  saveNote: (id: number, body: { title?: string; html?: string; data?: object; topic_id?: number | null; set_topic?: boolean }) =>
     req<Note>('PATCH', `/notes/${id}`, body),
   deleteNote: (id: number) => req('DELETE', `/notes/${id}`),
   restoreNote: (id: number) => req('POST', `/notes/${id}/restore`),
+  /** A drawing's picture (base64 PNG) for Check with Apollo. */
+  noteSnapshot: (id: number, png: string) => req<{ ok: boolean; width: number; height: number }>('POST', `/notes/${id}/snapshot`, { png }),
+  /** Save a PNG (a mind map or drawing) where the student chose in the save dialog. */
+  exportPng: (png: string, path: string) => req<{ path: string }>('POST', '/export/png', { png, path }),
   /** Apollo checks a note / generated notes (or a highlighted passage of one) against the material, or revises it. */
   startReview: (body: { target: ReviewTarget; target_id: number; mode: 'check' | 'revise'; quote?: string; section?: number | null; instruction?: string }) =>
     req<Review>('POST', '/reviews', body),
@@ -372,15 +387,28 @@ export const api = {
   /** Make content from the Make content steps: a topic, the whole subject (topic_id null) or some files; extra files
    * (read for this request only, never ingested) with instructions for them. */
   createContent: (subjectId: number, body: { type: ArtifactType; topic_id: number | null; document_ids?: number[];
-    args: Record<string, unknown>; extra_paths?: string[]; instructions?: string }) =>
+    args: Record<string, unknown>; extra_paths?: string[]; instructions?: string;
+    /** Chosen pages/slides: {document id: [unit idx, …]}. */
+    units?: Record<number, number[]> }) =>
     req<{ id: number; type: ArtifactType; title: string; status: string }>('POST', `/subjects/${subjectId}/artifacts`, body),
   artifact: (id: number) => req<Artifact>('GET', `/artifacts/${id}`),
-  retryArtifact: (id: number) => req('POST', `/artifacts/${id}/retry`),
+  /** Just its state, no content (a chat's progress card). */
+  artifactSummary: (id: number) => req<ArtifactSummary>('GET', `/artifacts/${id}/summary`),
+  /** Regenerate; content already being made keeps its job. */
+  /** Regenerate / Retry: continues from finished parts after a failure or cancel; ready content (or `fresh`) starts over. */
+  retryArtifact: (id: number, fresh?: boolean) => req<{ job_id: number }>('POST', `/artifacts/${id}/retry${fresh ? '?fresh=true' : ''}`),
+  /** Mark a new version of the same work: new files, the rest as before unless given. */
+  newMarkingVersion: (id: number, body: { work_paths: string[]; rubric_path?: string | null; drop_rubric?: boolean; out_of?: number | null; instructions?: string }) =>
+    req<{ id: number; type: ArtifactType; title: string; status: string }>('POST', `/artifacts/${id}/new-version`, body),
+  /** Try making the exact PDF copy of a Word/PowerPoint file again. */
+  renderState: (docId: number) => req<{ office: boolean; pdf: boolean; render_error: string | null }>('GET', `/documents/${docId}/render`),
+  retryRender: (docId: number) => req<{ ok: boolean; render_error: string | null }>('POST', `/documents/${docId}/render`),
   cancelArtifact: (id: number) => req('POST', `/artifacts/${id}/cancel`),
   submitAttempt: (artifactId: number, answers: Record<string, string>) => req<Attempt>('POST', `/artifacts/${artifactId}/attempts`, { answers }),
   attempt: (id: number) => req<Attempt>('GET', `/attempts/${id}`),
 
-  setIcon: (id: number, body: { color?: string; icon_text?: string; icon_emoji?: string; icon_name?: string; clear_image?: boolean; image_path?: string }) =>
+  setIcon: (id: number, body: { color?: string; icon_text?: string; icon_emoji?: string; icon_name?: string; clear_image?: boolean; image_path?: string;
+    /** base64 PNG, cropped and scaled in the app (ImageCrop) */ image_png?: string }) =>
     req('PATCH', `/subjects/${id}/icon`, body),
   allDocuments: (subjectId: number) => req<DocRef[]>('GET', `/subjects/${subjectId}/all-documents`),
   library: (subjectId: number) => req<LibraryItem[]>('GET', `/subjects/${subjectId}/library`),
@@ -467,13 +495,26 @@ export function saveNoteOnExit(id: number, html: string) {
   } catch { /* too large for keepalive */ }
 }
 
+/** The same for a mind map's or drawing's data (only small ones fit in keepalive; the editors save as they go). */
+export function saveNoteDataOnExit(id: number, data: object) {
+  try {
+    fetch(`${BASE}/notes/${id}`, { method: 'PATCH', keepalive: true, headers: { ...AUTH, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data }) }).catch(() => { /* the page is gone */ });
+  } catch { /* too large for keepalive */ }
+}
+
 export type ToolName = 'add_todos' | 'review_content' | 'create_flashcards' | 'create_quiz' | 'create_exam' | 'create_notes'
-  | 'create_cheatsheet' | 'create_mindmap';
-export type ArtifactType = 'flashcards' | 'quiz' | 'exam' | 'notes' | 'cheatsheet' | 'mindmap';
+  | 'create_cheatsheet' | 'create_mindmap'
+  /** Not a chat tool (it needs the student's files): only the Make content steps make it. */
+  | 'create_marking';
+export type ArtifactType = 'flashcards' | 'quiz' | 'exam' | 'notes' | 'cheatsheet' | 'mindmap' | 'marking';
 
 /** The student's own note (rich text). Never ingested into the material. */
-export interface NoteSummary { id: number; subject_id: number; topic_id: number | null; topic_name: string | null; title: string; created_at: number; updated_at: number; size: number }
-export interface Note { id: number; subject_id: number; topic_id: number | null; title: string; html: string; created_at: number; updated_at: number }
+/** The student's own notes: rich text ('note'), a mind map / flowchart ('map') or a drawing ('drawing'). */
+export type NoteKind = 'note' | 'map' | 'drawing';
+export interface NoteSummary { id: number; subject_id: number; topic_id: number | null; topic_name: string | null; title: string; kind: NoteKind; created_at: number; updated_at: number; size: number }
+/** `data`: a map's {nodes, edges} or a drawing's {items, paper, description} (null for a rich-text note). */
+export interface Note { id: number; subject_id: number; topic_id: number | null; title: string; html: string; kind: NoteKind; data: Record<string, unknown> | null; created_at: number; updated_at: number }
 export type ReviewTarget = 'note' | 'artifact';
 export interface ReviewIssue { quote: string; problem: string; fix: string; source: string }
 export interface Review {
@@ -502,6 +543,8 @@ export interface Message {
     searched_other_topics?: string[]; figures?: Record<string, FigureRef>;
     /** review_content (Apollo checking or revising a note, asked in chat) */
     review_id?: number; mode?: 'check' | 'revise'; title?: string; target?: ReviewTarget; target_id?: number; instruction?: string; error?: string;
+    /** A create form narrowed to one file's pages by the model (args.units): that file's name; or why it couldn't be. */
+    file?: string | null; notice?: string;
     /** The student stopped the reply: content is what had been written. */
     stopped?: boolean;
     usage?: { prompt?: number; completion?: number; reasoning?: number; cost?: number; seconds?: number; model?: string; provider?: string;
@@ -529,7 +572,7 @@ export interface PaletteData {
   topics: { id: number; subject_id: number; name: string }[];
   documents: { id: number; subject_id: number; topic_id: number | null; kind: 'topic' | 'reference'; filename: string }[];
   artifacts: { id: number; subject_id: number; topic_id: number | null; type: ArtifactType; title: string }[];
-  notes: { id: number; subject_id: number; topic_id: number | null; title: string }[];
+  notes: { id: number; subject_id: number; topic_id: number | null; title: string; kind: NoteKind }[];
   chats: { id: number; subject_id: number; topic_id: number | null; title: string; updated_at: number }[];
 }
 
@@ -539,20 +582,46 @@ export interface ExamQuestion {
   rubric: RubricPoint[]; stimulus: string; source: string;
   subquestions: { prompt: string; marks: number; options?: string[]; answer_index?: number | null; model_answer: string; rubric: RubricPoint[] }[];
 }
+/** A quiz question: multiple choice (4 options) or true/false (options ["True", "False"]); older ones have no type. */
+export interface QuizQuestion { type?: 'mcq' | 'tf'; question: string; options: string[]; answer_index: number; explanation: string; source: string }
 export interface ArtifactContent {
   cards?: { front: string; back: string; source: string }[];
-  questions?: { question: string; options: string[]; answer_index: number; explanation: string; source: string }[];
+  questions?: QuizQuestion[];
   /** Notes / cheat sheets: `html` (component-based, newer) or `markdown` (older), plus resolved figure tags. */
   sections?: { title: string; topic?: string; markdown?: string; html?: string; figures?: Record<string, FigureRef> }[];
   parts?: { name: string; instructions: string; type: string; questions: ExamQuestion[] }[];
   total_marks?: number; time_minutes?: number | null; difficulty?: string; practice_exam?: string; warning?: string | null;
   blueprint?: { title: string; instructions: string; difficulty_profile: string };
   mindmap?: MindNode;
+  marking?: MarkingResult;
+}
+/** One question or criterion of a marking: feedback, corrections and the student's words it is about (with the page). */
+export interface MarkingCriterion {
+  label: string; awarded: number; max: number; feedback: string; corrections: string[];
+  quotes: { text: string; page: number | null }[]; pages: number[];
+  /** A new version of earlier work: this criterion's mark in the previous marking (null when it wasn't there). */
+  previous?: { awarded: number; max: number } | null;
+}
+/** An earlier version of the same work (newest first). */
+export interface MarkingVersion { id: number; title: string; score: number | null; out_of: number | null; created_at: number; status: string }
+/** Apollo's marking of the student's own work (marking.py). `score` is out of `out_of` (scaled from the criteria's
+ * marks when the student gave a different total). Pages are numbered from 1 across all files; a page with `asset`
+ * is a picture, one with `text` a file shown as text. */
+export interface MarkingResult {
+  score: number; out_of: number; scaled: boolean; raw: { awarded: number; available: number };
+  criteria: MarkingCriterion[]; overall: string; strengths: string[]; improvements: string[];
+  pages: { file: string; n: number; label: string; asset?: string; text?: string }[];
+  files: string[]; rubric: string | null; derived: boolean; material: string | null;
+  /** Mark a new version: the marking it compares with, the earlier versions, and what changed. */
+  previous?: { id: number; title: string; score: number; out_of: number; created_at: number };
+  history?: MarkingVersion[]; improved?: string[]; still_to_do?: string[];
 }
 export interface Artifact extends ArtifactSummary {
   subject_id: number; topic_id: number | null; params: Record<string, unknown>; content: ArtifactContent | null;
   attempts: { id: number; kind: 'exam' | 'quiz'; status: string; score: number | null; total: number | null; created_at: number }[];
   ratings: Record<string, 'confident' | 'struggling'>;
+  /** Finished parts are saved (after a failure or cancel): Retry continues from them. */
+  resumable?: boolean;
 }
 /** A [[figure: …]] tag resolved to a crop of the student's material (or not found). */
 export interface FigureRef { asset?: string; file: string; label: string; caption: string; doc_id?: number; unit?: number; page?: number; whole?: boolean; missing?: boolean }
@@ -569,7 +638,7 @@ export interface TextAnchor { start?: number; end?: number; text?: string; rects
 export interface AnnotationData {
   color?: string; text?: string; title?: string; definition?: boolean; pending?: boolean; hidden?: boolean;
   x?: number; y?: number; w?: number; h?: number; size?: number; strokes?: Stroke[];
-  /** 'pdf': made on a Word file's exact PDF copy, so unit is a page (ingest maps it back to a section). */
+  /** 'pdf': made on a Word file's exact PDF copy, so unit is a page, not a section. */
   space?: 'pdf';
   /** A note about a boxed area of the page (anchor.rects[0]) rather than about text. */
   area?: boolean;
@@ -581,7 +650,14 @@ export interface Annotation {
 
 /** Text highlighted in a document (or in notes / generated content: no document_id), with the sentence before and
  * after it (what Qwen sees). */
-export interface Quote { document_id: number | null; filename: string; label: string; text: string; before: string; after: string }
+export interface Quote {
+  /** 'passage' (the default): text highlighted in a file, notes or generated content; 'reply': part of one of Apollo's
+   * replies the student is replying to (filename and label empty). */
+  kind?: 'passage' | 'reply';
+  /** kind 'reply': the reply it came from (its bubble-quote scrolls back to it). */
+  message_id?: number | null;
+  document_id: number | null; filename: string; label: string; text: string; before: string; after: string;
+}
 
 export interface SlideItem {
   x: number; y: number; w: number; h: number; rot: number;
@@ -602,6 +678,9 @@ export type DocLayout =
   | { kind: 'pdf'; source: 'pdf' | 'pptx' | 'docx'; url: string; unit_pos?: Record<string, [number, number]> }
   | { kind: 'image' | 'text' };
 export interface OutlineItem { level: number; title: string; unit: number; y: number }
+/** A file's units for choosing pages: `page` is its page in the viewer's PDF (null: no PDF copy, labels only). */
+export interface DocUnit { idx: number; kind: string; label: string; token_count: number; empty: boolean; duplicate_label: string | null; page: number | null }
+export interface DocUnits { id: number; filename: string; ext: string; pdf: boolean; units: DocUnit[] }
 export interface DocRef { id: number; filename: string; kind: 'topic' | 'reference'; topic_id: number | null; ext: string; topic_name: string | null }
 export interface LibraryItem {
   id: number; topic_id: number | null; topic_name: string | null; chat_id: number | null; type: ArtifactType; title: string;
@@ -615,8 +694,10 @@ export interface Todo {
   id: number; subject_id: number; topic_id: number | null; topic_name?: string | null; text: string; note: string;
   source: string; done: number; created_at: number;
 }
+/** An exam attempt being marked (a 'mark' job) or marked. status: marking | marked | failed | cancelled; a failed
+ * one's message holds the error ("plain message [APO-…]"). */
 export interface Attempt {
-  id: number; artifact_id: number; status: string; answers: Record<string, string>; score: number | null; total: number | null;
-  progress: number; message: string;
+  id: number; artifact_id: number; kind: 'exam' | 'quiz'; status: string; answers: Record<string, string>; score: number | null; total: number | null;
+  progress: number; message: string; created_at: number; updated_at: number;
   result: Record<string, { label: string; marks_awarded: number; max: number; feedback: string; missing_points: string[]; correct?: boolean }> | null;
 }

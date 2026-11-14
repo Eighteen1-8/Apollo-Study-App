@@ -7,7 +7,7 @@
    Display only: nothing here feeds retrieval. */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, EmbeddingMap } from '../api';
-import { cloudDrift, cloudFps, isAdvanced, REF_COLOR, reducedMotion, topicColor } from '../theme';
+import { cloudDrift, cloudFps, isAdvanced, REF_COLOR, reducedMotion, topicColor, useAppearance } from '../theme';
 import { logError } from '../log';
 import { onChange } from '../events';
 import { term } from '../terms';
@@ -267,7 +267,7 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
     ro.observe(el);
 
     const still = reducedMotion();
-    const drift = !still && cloudDrift();
+    let drift = !still && cloudDrift(); // read again every frame, so the Settings switch applies at once
     // dense libraries would saturate to white under additive blending: dim dust most, nodes a little
     const dens = Math.min(1, Math.sqrt(350 / Math.max(1, real)));
     // c*/zoom/rad chase their t* targets, so a focus change glides the camera onto the files it keeps
@@ -358,6 +358,7 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
       const fps = cloudFps();
       if (fps && t - last < 1000 / fps - 2) { raf = requestAnimationFrame(frame); return; }
       const dt = Math.min(MAX_STEP, t - last); last = t;
+      drift = !still && cloudDrift();
       if (focusRef.current !== shownFocus) retarget(focusRef.current);
       if (!dragging) {
         cam.idle += dt;
@@ -534,6 +535,9 @@ export default function EmbeddingCloud({ subjectId, topics, focus = null, onFocu
   }, [scene]);
   // a focus, legend hover or outside highlight changes what's drawn: ask the sleeping loop for a frame
   useEffect(() => { wakeRef.current(); }, [focus, hoverGroup, highlight]);
+  // drift switched on in Settings: the sleeping loop starts again (each frame reads the setting)
+  const driftOn = useAppearance()[0].cloudDrift;
+  useEffect(() => { wakeRef.current(); }, [driftOn]);
 
   /** Legend: subjects on the home page, topics (and textbooks) in a subject, with chunk counts. */
   const legend = useMemo(() => {

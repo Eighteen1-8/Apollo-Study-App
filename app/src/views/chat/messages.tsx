@@ -1,14 +1,20 @@
 /* The chat's messages: saved ones (MessageView), the reply being written (LiveBubble) and their parts. */
 import { useEffect, useState } from 'react';
-import { api, AreaSource, Message, Review, Subject } from '../../api';
+import { createPortal } from 'react-dom';
+import { api, AreaSource, Message, Quote, Review, Subject } from '../../api';
 import Markdown, { RESOLVED, StreamingMarkdown } from '../../components/Markdown';
 import { Progress } from '../../components/ui';
 import { onChange } from '../../events';
 import { useLiveReply } from '../../chatStreams';
+import { findAll, paint, quoteParts, selectionIn } from '../../components/textRange';
+import { motionMs } from '../../theme';
 
 import { levelLabel } from './types';
 import { ArtifactCard, ToolForm } from './ToolForm';
 import Icon from '../../components/Icon';
+import { useOverlay } from '../../components/overlay';
+import { addToNotes, pointAt } from '../../components/addToNotes';
+import { quoteHtml } from '../../noteInsert';
 
 /** The reply being written: the only part of the chat that re-renders as text streams in (`useLiveReply`). */
 export function LiveBubble({ chatId, onCite, onGrow }: { chatId: number; onCite: (file: string, label: string) => void; onGrow: () => void }) {
@@ -25,6 +31,86 @@ export function LiveBubble({ chatId, onCite, onGrow }: { chatId: number; onCite:
       {live.text && live.status && <div className="typing small">{live.status}<span className="dots" /></div>}
     </div>
   );
+}
+
+/** The question "Explain this" sends about the selected part of an answer (as a reply quote). */
+export const EXPLAIN_PROMPT = 'Explain this part again more simply, step by step, with an example if it helps.';
+
+/** Selecting text in one of Apollo's replies shows a small popup above it: "Reply" puts that part in the composer's
+ * banner (a quote of kind 'reply'), so the next question is about just that part; "Explain this" sends such a reply
+ * at once (`onExplain`); "Add to my notes" puts it in the student's note as a quote (noteInsert.ts). */
+export function ReplyPop({ scroller, onReply, onExplain, subjectId }: {
+  scroller: React.RefObject<HTMLElement>; onReply: (q: Quote) => void; onExplain?: (q: Quote) => void; subjectId?: number;
+}) {
+  const ov = useOverlay();
+  const [at, setAt] = useState<{ x: number; y: number; below: boolean; q: Quote } | null>(null);
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    const check = () => {
+      const r = selectionIn(el);
+      const node = r?.commonAncestorContainer;
+      const host = (node?.nodeType === Node.ELEMENT_NODE ? node as Element : node?.parentElement)?.closest('.msg-assistant[data-msg-id]');
+      if (!r || !host) { setAt(null); return; }
+      const box = r.getBoundingClientRect();
+      const parts = quoteParts(host, r);
+      const below = box.top < 80;
+      setAt({ x: Math.min(window.innerWidth - 70, Math.max(70, box.left + box.width / 2)), y: below ? box.bottom : box.top, below,
+        q: { kind: 'reply', message_id: Number(host.getAttribute('data-msg-id')), document_id: null, filename: '', label: '',
+          text: parts.text.slice(0, 1500), before: '', after: '' } });
+    };
+    const later = () => setTimeout(check, 0);
+    const hide = () => setAt(null);
+    const collapsed = () => { if (window.getSelection()?.isCollapsed) setAt(null); };
+    el.addEventListener('mouseup', later);
+    el.addEventListener('keyup', later);
+    el.addEventListener('scroll', hide);
+    document.addEventListener('selectionchange', collapsed);
+    return () => {
+      el.removeEventListener('mouseup', later);
+      el.removeEventListener('keyup', later);
+      el.removeEventListener('scroll', hide);
+      document.removeEventListener('selectionchange', collapsed);
+    };
+  }, [scroller]);
+  if (!at) return null;
+  const done = () => { setAt(null); window.getSelection()?.removeAllRanges(); };
+  return createPortal(
+    <div className={`ask-pop reply-pop${at.below ? ' below' : ''}`} style={{ left: at.x, top: at.y }} onMouseDown={(e) => e.preventDefault()}>
+      <button className="ask-main" onClick={() => { onReply(at.q); done(); }}>
+        <span className="ask-spark"><Icon name="reply" size={15} /></span> Reply
+      </button>
+      {onExplain && (
+        <button className="ask-main" onClick={() => { onExplain(at.q); done(); }}>
+          <span className="ask-spark"><Icon name="ask" size={15} /></span> Explain this
+        </button>
+      )}
+      {subjectId != null && (
+        <button className="ask-main" onClick={(e) => {
+          const text = at.q.text;
+          const point = pointAt(e.currentTarget);
+          done();
+          addToNotes(() => quoteHtml(text, "Apollo's answer"), { subjectId, ov, at: point });
+        }}>
+          <span className="ask-spark"><Icon name="insert" size={15} /></span> Add to my notes
+        </button>
+      )}
+    </div>,
+    document.body,
+  );
+}
+
+/** A sent message's "replying to" quote: scroll back to the reply it came from and light up the quoted part. */
+function showReplied(from: Element, q: Quote) {
+  const list = from.closest('.chat-scroll');
+  const target = list?.querySelector(`.msg-assistant[data-msg-id="${q.message_id}"]`);
+  if (!list || !target) return;
+  const top = list.scrollTop + target.getBoundingClientRect().top - list.getBoundingClientRect().top - 40;
+  list.scrollTo({ top, behavior: motionMs(1) ? 'smooth' : 'auto' });
+  const words = q.text.split(/\s+/).slice(0, 12).join(' ');
+  const hits = findAll(target, words, 1);
+  paint('reply-quote', hits, 'chat');
+  setTimeout(() => paint('reply-quote', [], 'chat'), 2600);
 }
 
 function ReasoningBlock({ text, live, seconds, started, level }: {
@@ -82,17 +168,22 @@ export function MessageView({ m, subject, chatTopic, onReplace, onOpenArtifact, 
     }
     return (
       <div className="msg msg-user">
-        {q && (
+        {q && (q.kind === 'reply' ? (
+          <button className="bubble-quote" title="Show it in Apollo's answer" onClick={(e) => showReplied(e.currentTarget, q)}>
+            <span className="bubble-quote-src">Replying to Apollo's answer</span>
+            <span className="bubble-quote-text">“{q.text}”</span>
+          </button>
+        ) : (
           <button className="bubble-quote" title="Show in the document" onClick={() => onCite(q.filename, q.label)}>
             <span className="bubble-quote-src">{q.filename}{q.label && ` · ${q.label.split(' · ')[0]}`}</span>
             <span className="bubble-quote-text">“{q.text}”</span>
           </button>
-        )}
+        ))}
         {m.meta.files?.length ? (
           <div className="attach-row attach-row-sent">
             {m.meta.files.map((f, i) => (f.source ? (
               <button key={i} className="attach-chip attach-temp" title="Show where this screenshot came from" onClick={() => onShowArea(f.source!)}>
-                <span className="attach-icon"><Icon name="image" size={13} /></span><span className="attach-name">{f.name}</span><span className="attach-tag">↗ source</span>
+                <span className="attach-icon"><Icon name="image" size={13} /></span><span className="attach-name">{f.name}</span><span className="attach-tag">source</span>
               </button>
             ) : (
               <span key={i} className="attach-chip attach-temp" title="Sent with this message only">
@@ -114,7 +205,7 @@ export function MessageView({ m, subject, chatTopic, onReplace, onOpenArtifact, 
         {!actions.busy && (
           <div className="msg-actions">
             <button className="msg-act" title="Edit and resend" onClick={() => setEditing(m.content)}><Icon name="edit" size={13} /> Edit</button>
-            <button className="msg-act" title="Remove this message and everything after it" onClick={() => actions.onRollback(m)}>↶ Undo from here</button>
+            <button className="msg-act" title="Remove this message and everything after it" onClick={() => actions.onRollback(m)}><Icon name="undo" size={13} /> Undo from here</button>
           </div>
         )}
       </div>
@@ -122,16 +213,16 @@ export function MessageView({ m, subject, chatTopic, onReplace, onOpenArtifact, 
   }
   if (m.role === 'assistant') {
     return (
-      <div className="msg msg-assistant">
+      <div className="msg msg-assistant" data-msg-id={m.id}>
         {m.meta.reasoning && <ReasoningBlock text={m.meta.reasoning} seconds={m.meta.reasoning_seconds} level={m.meta.reasoning_level} />}
         {m.meta.searched_other_topics?.length ? (
-          <div className="searched-note">⌕ Searched your other topics for {m.meta.searched_other_topics.map((s) => `“${s}”`).join(', ')}</div>
+          <div className="searched-note"><Icon name="search" size={12} /> Searched your other topics for {m.meta.searched_other_topics.map((s) => `“${s}”`).join(', ')}</div>
         ) : null}
         <Markdown text={m.content} onCite={onCite} figures={m.meta.figures ?? RESOLVED} />
-        {m.meta.stopped && <div className="msg-stopped">■ Stopped</div>}
+        {m.meta.stopped && <div className="msg-stopped">Stopped</div>}
         {!actions.busy && (
           <div className="msg-actions">
-            <button className="msg-act" title="Write a new answer" onClick={() => actions.onRegenerate(m)}>↻ Regenerate</button>
+            <button className="msg-act" title="Write a new answer" onClick={() => actions.onRegenerate(m)}><Icon name="reset" size={13} /> Regenerate</button>
             <button className="msg-act" title="Copy the answer" onClick={() => {
               navigator.clipboard.writeText(m.content);
               setCopied(true);

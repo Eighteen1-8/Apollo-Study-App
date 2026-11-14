@@ -10,17 +10,19 @@ import { AnnotationRail } from './AnnotationRail';
 import { matchUnit } from './DocumentView';
 import { Minimap, OutlinePanel } from './navigate';
 import { logError } from '../log';
-import { onChange } from '../events';
 import { sectionAt, quoteFromRange } from './source/selection';
 import { PdfView, SlidesView, DocxView, TextView } from './source/layouts';
 import { getPref, setPref } from '../prefs';
 import Icon, { IconName } from '../components/Icon';
 import { openFind } from '../components/FindBar';
+import { toggleCalculator, useCalculatorOpen } from '../components/Calculator';
+import { TourButton, useFirstTime } from '../components/Tour';
+import { addToNotes, pointAt, snapshotDataUrl } from '../components/addToNotes';
+import { AREA_DRAG, AreaDrag, imageHtml, quoteHtml, setQuoteDrag, sourceLine, useNoteTarget } from '../noteInsert';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
 const ZOOMS = [0.5, 0.67, 0.8, 1, 1.25, 1.5, 2];
-const BUSY = ['queued', 'parsing', 'embedding'];
 
 const TOOLS: { tool: Tool; name: string; label: string; icon: IconName }[] = [
   { tool: 'select', name: 'Select', label: 'Select text (V)', icon: 'select' },
@@ -54,7 +56,6 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
   const [zoom, setZoom] = useState(1);
   const [askAt, setAskAt] = useState<{ x: number; y: number; below: boolean } | null>(null);
   const [items, setItems] = useState<Annotation[]>([]);
-  const [flags, setFlags] = useState({ needs_reingest: false, doc_status: '' });
   const [tool, setTool] = useState<Tool>('select');
   const [hlColor, setHlColor] = useState(HIGHLIGHT_COLORS[0]);
   const [inkColor, setInkColor] = useState(INK_COLORS[0]);
@@ -67,19 +68,15 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
   const root = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const scrolled = useRef(false);
+  // the student's note open beside this file, if any: where "Add to notes" goes (noteInsert.ts)
+  const noteTarget = useNoteTarget();
   const pendingPatch = useRef(new Map<number, { data?: AnnotationData; anchor?: TextAnchor; timer?: ReturnType<typeof setTimeout> }>());
 
   useEffect(() => {
     Promise.all([api.document(id), api.documentLayout(id), api.annotations(id)])
-      .then(([d, l, a]) => { setDoc(d); setLayout(l); setItems(a.items); setFlags(a); })
+      .then(([d, l, a]) => { setDoc(d); setLayout(l); setItems(a.items); })
       .catch((e) => setError(String(e)));
   }, [id]);
-
-  const refreshFlags = useCallback(() => {
-    api.annotations(id).then((a) => setFlags({ needs_reingest: a.needs_reingest, doc_status: a.doc_status })).catch((e) => logError('annotations', e, 'warning'));
-  }, [id]);
-  const busy = BUSY.includes(flags.doc_status);
-  useEffect(() => (busy ? onChange(['documents'], refreshFlags) : undefined), [busy, refreshFlags]);
 
   // ---- annotation store (optimistic; text edits are saved after a short pause)
   const [area, setArea] = useState<Area | null>(null);
@@ -91,15 +88,27 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
     if (!a) return;
     ov.menu(e, [
       { label: 'Send to chat as a screenshot', onClick: () => sendArea(a) },
+      { label: noteTarget ? `Add to “${noteTarget.title?.() ?? 'my note'}”` : 'Add to my notes…', onClick: () => areaToNotes(a, e) },
       { label: 'Add a note for this area', onClick: () => noteArea(a) },
       { label: 'Clear selection', separatorBefore: true, onClick: () => setAreaBoth(null) },
     ]);
   };
   const areaMenuRef = useRef(areaMenu);
   areaMenuRef.current = areaMenu;
+  // the area box can be dragged into a note (it takes the screenshot when dropped: NoteEditor)
+  const areaDrag = (e: React.DragEvent, a: Area) => {
+    if (!doc) return;
+    const payload: AreaDrag = { document_id: doc.id, unit: a.unit, rect: a.rect, source: sourceLine(doc.filename, unitLabel(a.unit)) };
+    e.dataTransfer.setData(AREA_DRAG, JSON.stringify(payload));
+    e.dataTransfer.setData('text/plain', payload.source);
+    e.dataTransfer.effectAllowed = 'copy';
+  };
+  const areaDragRef = useRef(areaDrag);
+  areaDragRef.current = areaDrag;
 
   const anno: AnnoApi = useMemo(() => ({
     area, setArea: (a: Area | null) => setAreaBoth(a), areaMenu: (e, a) => areaMenuRef.current(e, a ?? undefined), pulse: pulsing,
+    areaDrag: (e: React.DragEvent, a: Area) => areaDragRef.current(e, a),
     items, tool, setTool, hlColor, inkColor, editing, flashId,
     fixed: layout?.kind === 'pdf' || layout?.kind === 'slides',
     create: async (unit: number, kind: AnnotationKind, anchor: TextAnchor, data: AnnotationData) => {
@@ -107,7 +116,6 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
       const a = await api.createAnnotation(id, { unit, kind, anchor, data });
       setItems((xs) => [...xs, a]);
       if (kind === 'textbox' || (kind === 'note' && !data.pending)) setEditing(a.id);
-      refreshFlags();
       return a;
     },
     update: (aid: number, patch: { data?: AnnotationData; anchor?: TextAnchor }) => {
@@ -117,7 +125,7 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
       const next: typeof p = { data: { ...p.data, ...patch.data }, anchor: patch.anchor ?? p.anchor };
       next.timer = setTimeout(() => {
         pendingPatch.current.delete(aid);
-        api.updateAnnotation(aid, { data: next.data, anchor: next.anchor }).then(refreshFlags).catch((e) => logError('saving an annotation', e));
+        api.updateAnnotation(aid, { data: next.data, anchor: next.anchor }).catch((e) => logError('saving an annotation', e));
       }, 400);
       pendingPatch.current.set(aid, next);
     },
@@ -125,9 +133,9 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
       clearTimeout(pendingPatch.current.get(aid)?.timer);
       pendingPatch.current.delete(aid);
       setItems((xs) => xs.filter((a) => a.id !== aid));
-      api.deleteAnnotation(aid).then(refreshFlags).catch((e) => logError('deleting an annotation', e));
+      api.deleteAnnotation(aid).catch((e) => logError('deleting an annotation', e));
     },
-  }), [id, items, tool, hlColor, inkColor, editing, flashId, layout, refreshFlags, area, pulsing]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [id, items, tool, hlColor, inkColor, editing, flashId, layout, area, pulsing]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Save anything still waiting when the document closes.
   useEffect(() => () => {
@@ -234,6 +242,20 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
     document.addEventListener('selectionchange', onChange);
     return () => document.removeEventListener('selectionchange', onChange);
   }, []);
+  // Escape dismisses the popup over a selection (and only that)
+  const asking = !!askAt;
+  useEffect(() => {
+    if (!asking) return;
+    const k = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || document.querySelector('.ctx-menu, .modal-backdrop')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      window.getSelection()?.removeAllRanges();
+      setAskAt(null);
+    };
+    window.addEventListener('keydown', k, true);
+    return () => window.removeEventListener('keydown', k, true);
+  }, [asking]);
 
   const currentQuote = (r: Range | null = selectionRange()): Quote | null => {
     if (!r || !doc || !scroller.current) return null;
@@ -298,6 +320,37 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
     if (!q) return;
     clearSelection();
     onAsk(q);
+  };
+
+  // ---- "Add to notes": the selection as a quote block with its source line ("Lecture 3.pdf · Page 4"), into the note
+  // open beside this file (or a recent one / a new one, opened beside it); also by dragging the selection into the note
+  const noteQuote = (r: Range | null = selectionRange()) => {
+    if (!r || !doc || !scroller.current) return null;
+    const q = quoteFromRange(r, scroller.current);
+    return q.text.trim() ? { text: q.text, source: sourceLine(doc.filename, q.unit ? unitLabel(q.unit) : null) } : null;
+  };
+  // the popup's own buttons can take the focus (and the selection) away: keep what it was about
+  const lastNoteQuote = useRef<{ text: string; source: string } | null>(null);
+  useEffect(() => { if (askAt) lastNoteQuote.current = noteQuote(); }, [askAt]); // eslint-disable-line react-hooks/exhaustive-deps
+  const selToNotes = (at: Parameters<typeof ov.menu>[0], r: Range | null = selectionRange()) => {
+    const nq = noteQuote(r) ?? lastNoteQuote.current;
+    if (!nq || !doc) return;
+    clearSelection();
+    addToNotes(() => quoteHtml(nq.text, nq.source), { subjectId: doc.subject_id, ov, at });
+  };
+  const areaToNotes = (a: Area, at: Parameters<typeof ov.menu>[0]) => {
+    if (!doc) return;
+    setAreaBoth(null);
+    const source = sourceLine(doc.filename, unitLabel(a.unit));
+    addToNotes(async () => imageHtml(await snapshotDataUrl({ document_id: doc.id, unit: a.unit, rect: a.rect }), source),
+      { subjectId: doc.subject_id, ov, at });
+  };
+  /** Dragging the selected text (natively, or by the popup's grip: pdf.js text can be awkward to grab) carries the
+   * quote with its source line; a note puts it where it's dropped. */
+  const dragQuote = (e: React.DragEvent) => {
+    if ((e.target as Element).closest?.('.anno-temp-area')) return; // the area box sets its own
+    const nq = noteQuote() ?? (askAt ? lastNoteQuote.current : null);
+    if (nq) setQuoteDrag(e.dataTransfer, nq.text, nq.source);
   };
 
   const onMouseUp = () => setTimeout(() => {
@@ -394,6 +447,7 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
         { label: 'Ask Apollo about this', onClick: () => ask(r) },
         { label: 'Highlight', onClick: () => highlight(r) },
         { label: 'Add note', onClick: () => addNote(r) },
+        { label: noteTarget ? `Add to “${noteTarget.title?.() ?? 'my note'}”` : 'Add to my notes…', onClick: () => selToNotes(e, r) },
         { label: 'Copy', onClick: () => navigator.clipboard.writeText(q.text) },
       );
     }
@@ -410,7 +464,6 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
         onClick: () => anno.remove(a.id) });
     });
     menu.push({ label: 'View ingested details', onClick: onDetails, separatorBefore: menu.length > 0 });
-    if (flags.needs_reingest) menu.push({ label: 'Re-ingest with my notes', onClick: reingest });
     if (canExport && items.length) {
       menu.push({ label: 'Export annotated PDF…', onClick: exportPdf });
     }
@@ -449,15 +502,12 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
   useEffect(() => { api.outline(id).then(setOutline).catch(() => setOutline([])); }, [id, layout]);
   const toggleMinimap = () => setMinimap((v) => { setPref('minimap', v ? 'off' : 'on'); return !v; });
 
-  const reingest = async () => {
-    await api.reingestAnnotations(id);
-    setFlags((f) => ({ ...f, doc_status: 'queued' }));
-  };
-
   const zoomBy = (dir: number) => setZoom((z) => ZOOMS[Math.min(ZOOMS.length - 1, Math.max(0, ZOOMS.indexOf(z) + dir))]);
   const toggleRail = () => setRail((v) => { setPref('annoRail', v ? 'off' : 'on'); return !v; });
   const unitName = layout?.kind === 'pdf' ? (layout.source === 'pptx' ? 'Slide' : 'Page') : layout?.kind === 'slides' ? 'Slide' : 'Section';
   const palette = tool === 'highlight' ? HIGHLIGHT_COLORS : tool === 'pen' || tool === 'textbox' ? INK_COLORS : null;
+  const calcOpen = useCalculatorOpen();
+  useFirstTime('viewer', !!layout);
 
   return (
     <AnnoContext.Provider value={anno}>
@@ -481,6 +531,7 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
               <Icon name="create" size={14} /> Make content from this file
             </button>
           )}
+          <TourButton id="viewer" />
           <button className="close-x" title="Close the file" onClick={onClose}><Icon name="close" size={18} /></button>
         </header>
         <div className="source-tools" role="toolbar" aria-label="File tools">
@@ -518,7 +569,11 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
           <button className={`tool-btn labelled rail-toggle${rail ? ' on' : ''}`} data-tip={rail ? 'Hide the list of your highlights and notes' : 'Show the list of your highlights and notes'}
             aria-pressed={rail} onClick={toggleRail}>
             <Icon name="show" size={16} /><span>My notes</span>
-            {items.length > 0 && <span className="rail-dot">{items.length}</span>}{flags.needs_reingest && <span className="reingest-dot" />}
+            {items.length > 0 && <span className="rail-dot">{items.length}</span>}
+          </button>
+          <button className={`tool-btn labelled tool-calc${calcOpen ? ' on' : ''}`} data-tip={calcOpen ? 'Close the calculator' : 'Calculator and graphs'}
+            aria-pressed={calcOpen} onClick={toggleCalculator}>
+            <Icon name="calculator" size={16} /><span>Calculator</span>
           </button>
           <span className="spacer" />
           {layout && layout.kind !== 'image' && layout.kind !== 'text' && (
@@ -534,7 +589,7 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
           <div className="source-main">
           <div className="source-scroll" ref={scroller} data-find={doc?.filename ?? 'this document'} style={{ '--zoom': zoom } as React.CSSProperties}
             onMouseUp={onMouseUp} onKeyUp={placeAsk} onScroll={() => { if (askAt) placeAsk(); trackPage(); }} onContextMenu={contextMenu}
-            onPointerDown={startSnap}>
+            onPointerDown={startSnap} onDragStart={dragQuote}>
             {error && <Empty title="Couldn't open this file">{error}</Empty>}
             {doc && layout && (
               layout.kind === 'pdf' ? <PdfView url={authUrl(BASE + layout.url)} zoom={zoom} onReady={ready} slides={layout.source === 'pptx'} />
@@ -557,7 +612,6 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
           </div>
           {rail && (
             <AnnotationRail items={items} unitLabel={(u) => unitLabel(u)} onGo={goTo} onDelete={(a) => anno.remove(a.id)}
-              needsReingest={flags.needs_reingest} busy={busy} onReingest={reingest}
               onExport={canExport ? exportPdf : null} onClose={toggleRail} />
           )}
         </div>
@@ -570,6 +624,14 @@ export default function SourceView({ id, focus, pulse, onClose, onDetails, onAsk
           <div className={`ask-pop${askAt.below ? ' below' : ''}`} style={{ left: askAt.x, top: askAt.y }} onMouseDown={(e) => e.preventDefault()}>
             <button className="ask-main" onClick={() => define()}><span className="ask-spark">Aa</span> Define this</button>
             <button className="ask-main" onClick={() => ask()}><span className="ask-spark"><Icon name="ask" size={15} /></span> Ask Apollo about this</button>
+            <div className="ask-note-row">
+              <button className="ask-main ask-to-note" onClick={(e) => selToNotes(pointAt(e.currentTarget))}
+                data-tip={noteTarget ? `Into “${noteTarget.title?.() ?? 'your note'}”, where its cursor is` : 'Pick one of your notes, or start a new one beside this file'}>
+                <span className="ask-spark"><Icon name="insert" size={15} /></span> Add to notes
+              </button>
+              <span className="ask-drag" draggable title="Drag into a note" aria-label="Drag the selection into a note" role="button"
+                onDragStart={dragQuote}><Icon name="grip" size={14} /></span>
+            </div>
             <div className="ask-row">
               {HIGHLIGHT_COLORS.map((c) => (
                 <button key={c} className="swatch" style={{ background: c }} title="Highlight" onClick={() => { setHlColor(c); highlight(undefined, c); }} />

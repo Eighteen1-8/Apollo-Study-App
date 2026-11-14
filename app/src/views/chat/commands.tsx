@@ -6,6 +6,9 @@ import { renameChatUndoable } from '../chatActions';
 import { COMMANDS, StatsCard } from '../../components/slashCommands';
 import { levelLabel } from './types';
 import ShortcutsList from '../../components/Shortcuts';
+import { calcFromChat, graphInCalculator, openCalculator } from '../../components/Calculator';
+import { graphArg, graphError } from '../../components/calcText';
+import { formatNumber } from '../../components/mathExpr';
 
 /** What a slash command can see and do in the chat (ChatView passes its own state and actions). */
 export interface CommandContext {
@@ -52,9 +55,10 @@ export async function runCommand(text: string, ctx: CommandContext) {
     }
     case 'create': {
       const [what = '', ...focus] = arg.split(/\s+/);
-      const tool = CREATE_ITEMS.find((c) => c.tool.replace('create_', '') === what.toLowerCase().replace(/s$/, '') ||
+      const chatItems = CREATE_ITEMS.filter((c) => c.chat !== false);
+      const tool = chatItems.find((c) => c.tool.replace('create_', '') === what.toLowerCase().replace(/s$/, '') ||
         c.tool === `create_${what.toLowerCase()}` || c.label.toLowerCase().startsWith(what.toLowerCase()) && what)?.tool;
-      if (!tool) { card(<div className="msg-note small">Create what? /create {CREATE_ITEMS.map((c) => c.tool.replace('create_', '')).join(' | ')} [focus]</div>); break; }
+      if (!tool) { card(<div className="msg-note small">Create what? /create {chatItems.map((c) => c.tool.replace('create_', '')).join(' | ')} [focus]</div>); break; }
       await quick(tool, focus.length ? { focus: focus.join(' ') } : {});
       break;
     }
@@ -92,5 +96,23 @@ export async function runCommand(text: string, ctx: CommandContext) {
       break;
     }
     case 'stop': if (chat && busy) stopReply(chat.id); break;
+    case 'calc': {
+      if (!arg) { openCalculator(); break; }
+      const r = calcFromChat(arg);
+      card('error' in r
+        ? <div className="msg-note small">Can’t work out <b>{arg}</b>: {r.error}</div>
+        : <div className="cmd-card cmd-calc"><div className="cmd-card-title">Calculator</div>
+          <div><span className="muted">{arg} =</span> <b>{formatNumber(r.value)}</b></div>
+          <div className="muted small">Worked out here, not by Apollo{/sin|cos|tan|sec|csc|cot/i.test(arg) ? ' (angles as set in the calculator)' : ''}.</div></div>);
+      break;
+    }
+    case 'graph': {
+      const fn = graphArg(arg);
+      const bad = graphError(fn);
+      if (bad) { card(<div className="msg-note small">Can’t draw {fn ? <b>{fn}</b> : 'that'}: {bad}</div>); break; }
+      graphInCalculator(fn);
+      card(<div className="msg-note small">Drawing <b>y = {fn}</b> in the calculator.</div>);
+      break;
+    }
   }
 }

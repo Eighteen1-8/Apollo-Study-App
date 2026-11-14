@@ -1,8 +1,9 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Annotation, AnnotationData, AnnotationKind, Stroke, TextAnchor } from '../api';
+import { Annotation, AnnotationData, AnnotationKind, TextAnchor } from '../api';
 import { useOverlay } from '../components/overlay';
 import { MathText } from '../components/ui';
-import { Px, anchorPx, nearStroke, NOTE_W } from './annotate-geometry';
+import { Px, anchorPx, NOTE_W } from './annotate-geometry';
+import { nearStroke, NotePad, strokePath } from '../components/ink';
 import Icon from '../components/Icon';
 
 /**
@@ -38,6 +39,8 @@ export interface AnnoApi {
   areaMenu: (e: { clientX: number; clientY: number; preventDefault: () => void; stopPropagation: () => void }, a?: Area) => void;
   /** An area to point out briefly (where a screenshot in the chat came from). */
   pulse: Area | null;
+  /** Dragging the area box (into a note: noteInsert.AREA_DRAG). */
+  areaDrag?: (e: React.DragEvent, a: Area) => void;
 }
 
 export const AnnoContext = createContext<AnnoApi | null>(null);
@@ -45,20 +48,18 @@ const useAnno = () => useContext(AnnoContext)!;
 
 // ---------------------------------------------------------------- text anchoring
 
-const strokePath = (s: Stroke, w: number, h: number) => {
-  const p = s.points;
-  let d = `M${p[0] * w},${p[1] * h}`;
-  for (let i = 2; i < p.length; i += 2) d += ` L${p[i] * w},${p[i + 1] * h}`;
-  return d;
-};
-
 export function UnitOverlay({ unit }: { unit: number }) {
   const ctx = useAnno();
   const ov = useOverlay();
   const ref = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [boxes, setBoxes] = useState<Record<number, Px[]>>({});
-  const [live, setLive] = useState<number[] | null>(null);
+  // The stroke being drawn: points in a ref, drawn by appending to the polyline's own point list (no re-render, no
+  // rebuilt path per move, so a long stroke stays smooth). penDown only shows the polyline.
+  const live = useRef<number[] | null>(null);
+  const livePoly = useRef<SVGPolylineElement>(null);
+  const [penDown, setPenDown] = useState(false);
+  const erased = useRef(new Set<number>()); // annotations already removed during this eraser drag (one DELETE each)
   const [drawing, setDrawing] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const mine = ctx.items.filter((a) => a.unit === unit);
 
@@ -87,17 +88,34 @@ export function UnitOverlay({ unit }: { unit: number }) {
   const erase = (e: React.PointerEvent) => {
     const p = at(e);
     for (const a of mine) {
-      if (a.kind === 'ink' && (a.data.strokes ?? []).some((s) => nearStroke(s, p.px, p.py, size.w, size.h, 8))) ctx.remove(a.id);
+      if (a.kind !== 'ink' || erased.current.has(a.id)) continue;
+      if ((a.data.strokes ?? []).some((s) => nearStroke(s, p.px, p.py, size.w, size.h, 8))) {
+        erased.current.add(a.id);  // still in `mine` until the list re-renders: never removed twice
+        ctx.remove(a.id);
+      }
     }
+  };
+  const addLive = (px: number, py: number) => {
+    const el = livePoly.current;
+    const svg = el?.ownerSVGElement;
+    if (!el || !svg) return;
+    const pt = svg.createSVGPoint();
+    pt.x = px;
+    pt.y = py;
+    el.points.appendItem(pt);
   };
   const down = async (e: React.PointerEvent) => {
     if (e.button !== 0) return;
     const p = at(e);
     if (ctx.tool === 'pen') {
       (e.target as Element).setPointerCapture(e.pointerId);
-      setLive([p.x, p.y]);
+      live.current = [p.x, p.y];
+      livePoly.current?.points.clear();
+      addLive(p.px, p.py);
+      setPenDown(true);
     } else if (ctx.tool === 'eraser') {
       (e.target as Element).setPointerCapture(e.pointerId);
+      erased.current = new Set();
       erase(e);
     } else if (ctx.tool === 'textbox') {
       ctx.setTool('select');
@@ -113,9 +131,15 @@ export function UnitOverlay({ unit }: { unit: number }) {
     }
   };
   const move = (e: React.PointerEvent) => {
-    if (ctx.tool === 'pen' && live) {
-      const p = at(e);
-      setLive((l) => l && [...l, p.x, p.y]);
+    if (ctx.tool === 'pen' && live.current) {
+      // every point the pointer passed through since the last event (pens report many per frame)
+      const r = ref.current!.getBoundingClientRect();
+      const evs = e.nativeEvent.getCoalescedEvents?.() ?? [];
+      for (const ev of evs.length ? evs : [e.nativeEvent]) {
+        const px = ev.clientX - r.left, py = ev.clientY - r.top;
+        live.current.push(px / r.width, py / r.height);
+        addLive(px, py);
+      }
     } else if (ctx.tool === 'eraser' && e.buttons === 1) erase(e);
     else if (ctx.tool === 'area' && drawing) {
       const p = at(e);
@@ -135,9 +159,11 @@ export function UnitOverlay({ unit }: { unit: number }) {
       }
       return;
     }
-    if (ctx.tool === 'pen' && live) {
-      if (live.length >= 4) ctx.create(unit, 'ink', {}, { strokes: [{ color: ctx.inkColor, width: 2.4 / size.w, points: live.map((v) => Math.round(v * 10000) / 10000) }] });
-      setLive(null);
+    if (ctx.tool === 'pen' && live.current) {
+      const pts = live.current;
+      live.current = null;
+      if (pts.length >= 4) ctx.create(unit, 'ink', {}, { strokes: [{ color: ctx.inkColor, width: 2.4 / size.w, points: pts.map((v) => Math.round(v * 10000) / 10000) }] });
+      setPenDown(false);
     }
   };
 
@@ -188,9 +214,9 @@ export function UnitOverlay({ unit }: { unit: number }) {
             <path key={`${a.id}-${i}`} data-anno={a.id} className={ctx.flashId === a.id ? 'flash' : ''} d={strokePath(s, size.w, size.h)}
               stroke={s.color} strokeWidth={Math.max(s.width * size.w, 1)} />
           )))}
-          {live && live.length >= 2 && (
-            <path d={strokePath({ color: ctx.inkColor, width: 0, points: live }, size.w, size.h)} stroke={ctx.inkColor} strokeWidth={2.4} />
-          )}
+          {/* always mounted, so the first point lands in it; hidden between strokes */}
+          <polyline ref={livePoly} className="anno-live" visibility={penDown ? 'visible' : 'hidden'} fill="none" stroke={ctx.inkColor}
+            strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       )}
 
@@ -208,8 +234,9 @@ export function UnitOverlay({ unit }: { unit: number }) {
           width: ctx.pulse.rect[2] * size.w, height: ctx.pulse.rect[3] * size.h }} />
       )}
       {ctx.area?.unit === unit && size.w > 0 && (
-        <div className="anno-temp-area" title="Right-click for options"
+        <div className="anno-temp-area" title={ctx.areaDrag ? 'Right-click for options, or drag it into a note' : 'Right-click for options'}
           style={{ left: ctx.area.rect[0] * size.w, top: ctx.area.rect[1] * size.h, width: ctx.area.rect[2] * size.w, height: ctx.area.rect[3] * size.h }}
+          draggable={!!ctx.areaDrag} onDragStart={(e) => { e.stopPropagation(); if (ctx.area) ctx.areaDrag?.(e, ctx.area); }}
           onContextMenu={(e) => { e.stopPropagation(); ctx.areaMenu(e); }} onMouseDown={(e) => e.stopPropagation()} />
       )}
       {drawing && (
@@ -218,7 +245,7 @@ export function UnitOverlay({ unit }: { unit: number }) {
       )}
 
       {capture && (
-        <div className={`anno-capture tool-${ctx.tool}`} onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={() => { setDrawing(null); setLive(null); }} />
+        <div className={`anno-capture tool-${ctx.tool}`} onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={() => { setDrawing(null); live.current = null; setPenDown(false); }} />
       )}
     </div>
   );
@@ -347,7 +374,8 @@ function NoteBox({ a, size, onMenu }: { a: Annotation; size: { w: number; h: num
       <div className="note-head" onPointerDown={start} title="Drag to move">
         <span className="note-title">{a.data.definition ? <>Definition · <b>{a.data.title}</b></> : a.anchor.text ? 'Note' : 'Note'}</span>
         <button className={`note-btn${drawing ? ' on' : ''}`} title={drawing ? 'Stop drawing' : 'Draw in this note'}
-          onPointerDown={(e) => e.stopPropagation()} onClick={() => setDrawing(!drawing)}>✎</button>
+          aria-label={drawing ? 'Stop drawing' : 'Draw in this note'}
+          onPointerDown={(e) => e.stopPropagation()} onClick={() => setDrawing(!drawing)}><Icon name="pen" size={14} /></button>
         <button className="note-btn" title="Hide note" onPointerDown={(e) => e.stopPropagation()}
           onClick={() => ctx.update(a.id, { data: { hidden: true } })}><Icon name="close" size={14} /></button>
       </div>
@@ -362,36 +390,10 @@ function NoteBox({ a, size, onMenu }: { a: Annotation; size: { w: number; h: num
           </div>
         )}
       {(drawing || strokes.length > 0) && (
-        <NotePad strokes={strokes} active={drawing} color={ctx.inkColor}
+        <NotePad strokes={strokes} active={drawing} color={ctx.inkColor} width={NOTE_W - 2}
           onChange={(s) => ctx.update(a.id, { data: { strokes: s } })} />
       )}
     </div>
-  );
-}
-
-/** A small drawing area inside a note; strokes are fractions of the pad. */
-function NotePad({ strokes, active, color, onChange }: { strokes: Stroke[]; active: boolean; color: string; onChange: (s: Stroke[]) => void }) {
-  const ref = useRef<SVGSVGElement>(null);
-  const [live, setLive] = useState<number[] | null>(null);
-  const W = NOTE_W - 2;
-  const H = 120;
-  const at = (e: React.PointerEvent) => {
-    const r = ref.current!.getBoundingClientRect();
-    return [Math.round(((e.clientX - r.left) / r.width) * 1000) / 1000, Math.round(((e.clientY - r.top) / r.height) * 1000) / 1000];
-  };
-  return (
-    <svg ref={ref} className={`note-pad${active ? ' active' : ''}`} width={W} height={H}
-      onPointerDown={(e) => { if (!active) return; e.stopPropagation(); (e.target as Element).setPointerCapture(e.pointerId); setLive(at(e)); }}
-      onPointerMove={(e) => live && setLive([...live, ...at(e)])}
-      onPointerUp={() => { if (live && live.length >= 4) onChange([...strokes, { color, width: 2 / W, points: live }]); setLive(null); }}>
-      {[...strokes, ...(live ? [{ color, width: 2 / W, points: live }] : [])].map((s, i) => (
-        <path key={i} d={strokePath(s, W, H)} stroke={s.color} strokeWidth={Math.max(s.width * W, 1)} />
-      ))}
-      {active && strokes.length > 0 && (
-        <text x={W - 6} y={H - 6} textAnchor="end" className="note-pad-clear" onPointerDown={(e) => e.stopPropagation()}
-          onClick={() => onChange([])}>clear</text>
-      )}
-    </svg>
   );
 }
 

@@ -4,11 +4,17 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../api';
-import type { MenuItem } from './overlay';
+import { useOverlay, type MenuItem } from './overlay';
+import { addToNotes, pointAt } from './addToNotes';
+import { imageHtml } from '../noteInsert';
 
 type Box = { x: number; y: number; w: number; h: number };
 
-export function useAreaShot(name: string, onAttach: (paths: string[]) => void, onError: (msg: string) => void) {
+/** `notes`: the screenshot can also go into the student's notes ("Add to my notes", noteInsert.ts), with `source` as
+ * its source line. */
+export function useAreaShot(name: string, onAttach: (paths: string[]) => void, onError: (msg: string) => void,
+  notes?: { subjectId: number; source: string }) {
+  const ov = useOverlay();
   const [drag, setDrag] = useState<Box | null>(null);
   const [box, setBox] = useState<Box | null>(null);
   const fresh = useRef<Box | null>(null); // the box the next context menu is about
@@ -68,6 +74,10 @@ export function useAreaShot(name: string, onAttach: (paths: string[]) => void, o
         const saved = await api.saveChatImage(png, `${name} selection`);
         onAttach([saved.path]);
       }) },
+      ...(notes ? [{ label: 'Add to my notes…', disabled: !can, onClick: () => {
+        addToNotes(async () => imageHtml(`data:image/png;base64,${await capture(b)}`, notes.source),
+          { subjectId: notes.subjectId, ov, at: pointAt(null, b.x + b.w, b.y + b.h) });
+      } }] : []),
       { label: 'Copy screenshot', disabled: !can, onClick: run(async () => { await window.studyApp!.copyImage!(await capture(b)); }) },
       ...(can ? [] : [{ label: 'Screenshots work in the desktop app', disabled: true, onClick: () => {} }]),
       { label: 'Clear selection', separatorBefore: true, onClick: () => setBox(null) },

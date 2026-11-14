@@ -24,7 +24,7 @@ from . import config, db, errors, grants, jobs, llm, pipeline, render, search, v
 from .annotations import router as annotations_router
 from .chat_api import router as chat_router
 from .maintenance import router as maintenance_router
-from .notes_api import router as notes_router
+from .notes_api import delete_snapshots, router as notes_router
 from .packages import router as packages_router
 from .events import router as events_router
 from .projection import router as projection_router
@@ -181,7 +181,9 @@ def put_settings(values: dict):
 # Numbers the app divides by, sizes buffers with or sends to a model server: (lowest, highest) allowed.
 SETTING_RANGES = {"llm_context": (1024, 4_000_000), "openrouter_context": (1024, 4_000_000), "llm_concurrency": (1, 64),
                   "openrouter_concurrency": (1, 64), "embed_batch": (1, 512), "chunk_target_tokens": (50, 8000),
-                  "chunk_max_slides": (1, 100), "chat_file_word_limit": (100, 500_000)}
+                  "chunk_max_slides": (1, 100), "chat_file_word_limit": (100, 500_000),
+                  # the chat tutor's dials: one per level in chat_prompt.STYLE
+                  "chat_assistive": (0, 2), "chat_concise": (0, 3), "chat_interactive": (0, 2)}
 
 
 def _checked_settings(values: dict) -> dict:
@@ -333,7 +335,13 @@ def _subject_row(sid: int) -> dict:
 def delete_subject(sid: int):
     for d in db.q("SELECT id FROM documents WHERE subject_id=?", (sid,)):
         _delete_document(d["id"], relink=False)  # everything goes: nothing left to relink
+    drawings = [r["id"] for r in db.q("SELECT id FROM user_notes WHERE subject_id=? AND kind='drawing'", (sid,))]
+    markings = [r["id"] for r in db.q("SELECT id FROM artifacts WHERE subject_id=? AND type='marking'", (sid,))]
     db.ex("DELETE FROM subjects WHERE id=?", (sid,))
+    delete_snapshots(drawings)
+    from .marking import remove_files  # the copied work of each marking
+    for aid in markings:
+        remove_files(aid)
     return {"ok": True}
 
 
@@ -688,6 +696,28 @@ def document_layout(did: int):
     return {"kind": "text"}
 
 
+@app.get("/documents/{did}/render")
+def render_state(did: int):
+    """Whether an Office file has its exact PDF copy, and if not why (the viewer's "simplified layout" note)."""
+    d = _404(db.q1("SELECT id, ext, sha256, render_error FROM documents WHERE id=?", (did,)))
+    office = d["ext"] in render.OFFICE_EXTS
+    pdf = office and (render.renders_dir() / f"{d['sha256']}.pdf").exists()
+    return {"office": office, "pdf": pdf, "render_error": d["render_error"] if office and not pdf else None}
+
+
+@app.post("/documents/{did}/render")
+def retry_render(did: int):
+    """Try making the exact PDF copy of an Office file again (after APO-FILE-309/310). Waits for the conversion."""
+    d = _404(db.q1("SELECT * FROM documents WHERE id=?", (did,)))
+    if d["ext"] not in render.OFFICE_EXTS:
+        raise HTTPException(400, "Only Word and PowerPoint files need a copy made.")
+    ok = render.retry(d) is not None
+    if ok:
+        render.unit_positions(d, db.q("SELECT idx, text FROM units WHERE document_id=? ORDER BY idx", (did,)))
+    row = db.q1("SELECT render_error FROM documents WHERE id=?", (did,))
+    return {"ok": ok, "render_error": row["render_error"] if row else None}
+
+
 @app.get("/documents/{did}/view.pdf")
 def document_view_pdf(did: int):
     d = _404(db.q1("SELECT * FROM documents WHERE id=?", (did,)))
@@ -820,6 +850,31 @@ def run_vision(did: int, body: VisionBody):
     if db.q1("SELECT 1 FROM units WHERE document_id=? AND vision_status IN ('pending','failed')", (did,)):
         return {"job_id": jobs.enqueue("vision", did)}
     return {"job_id": None}
+
+
+@app.get("/documents/{did}/units")
+def document_units(did: int):
+    """A light list of a file's pages/slides/sections for choosing some of them (Make content → Advanced): no text.
+    `page` is the page of the viewer's PDF to show as its thumbnail (None: no PDF copy, labels only)."""
+    d = _404(db.q1("SELECT * FROM documents WHERE id=? AND kind<>'trash'", (did,)))
+    pdf_path = render.viewer_pdf(d, convert=False)
+    has_pdf = bool(pdf_path and pdf_path.is_file())
+    pos = render.unit_positions(d) if has_pdf and d["ext"] == ".docx" else {}
+    units = db.q("SELECT id, idx, kind, label, token_count, duplicate_of, length(trim(text)) > 0 AS has_text, vision_status "
+                 "FROM units WHERE document_id=? ORDER BY idx", (did,))
+    dups = {}
+    if any(u["duplicate_of"] for u in units):
+        ids = {u["duplicate_of"] for u in units if u["duplicate_of"]}
+        for r in db.q(f"SELECT u.id, u.label, d.filename FROM units u JOIN documents d ON d.id=u.document_id "
+                      f"WHERE u.id IN ({','.join('?' * len(ids))})", tuple(ids)):
+            dups[r["id"]] = f"{r['filename']} · {r['label']}"
+    out = []
+    for u in units:
+        page = (pos.get(u["idx"], [None])[0] if d["ext"] == ".docx" else u["idx"]) if has_pdf else None
+        out.append({"idx": u["idx"], "kind": u["kind"], "label": u["label"], "token_count": u["token_count"],
+                    "empty": not u["has_text"] and u["vision_status"] != "done" and not u["duplicate_of"],
+                    "duplicate_label": dups.get(u["duplicate_of"]), "page": page})
+    return {"id": did, "filename": d["filename"], "ext": d["ext"], "pdf": has_pdf, "units": out}
 
 
 @app.get("/documents/{did}/units/{idx}/preview")

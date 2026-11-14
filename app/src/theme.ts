@@ -9,26 +9,35 @@ export const MOTIONS: { id: Motion; label: string; rate: number }[] = [
   { id: 'off', label: 'Off', rate: 1 }, { id: 'fast', label: 'Fast', rate: 1.6 }, { id: 'normal', label: 'Normal', rate: 1 }, { id: 'gentle', label: 'Gentle', rate: 0.65 },
 ];
 
-/** `advanced`: advanced mode (technical terms, every power-user control and setting); off by default, so a new
- * student sees plain words and guided steps. */
-export type TextSize = 'normal' | 'large' | 'xl';
-/** How much bigger everything is drawn at each text size (the window's zoom). */
-export const TEXT_SIZES: { id: TextSize; label: string; zoom: number }[] = [
-  { id: 'normal', label: 'Normal', zoom: 1 }, { id: 'large', label: 'Large', zoom: 1.12 }, { id: 'xl', label: 'Extra large', zoom: 1.25 },
-];
+/** UI size: how big everything is drawn, in percent (the window's zoom). Settings → Appearance and Ctrl +/-/0 both
+ * change it (Electron routes the shortcuts here, `zoom:step`), so it is always saved. Electron accepts 80–160%. */
+export const UI_SCALE = { min: 80, max: 160, step: 5, normal: 100 } as const;
+export const clampScale = (v: number) => Math.min(UI_SCALE.max, Math.max(UI_SCALE.min, Math.round(Number.isFinite(v) ? v : 100)));
+/** The UI size one step up (1) or down (-1) from `v`, on the 5% grid; 0 resets to 100%. */
+export function scaleStep(v: number, dir: -1 | 0 | 1) {
+  if (!dir) return UI_SCALE.normal;
+  const grid = dir > 0 ? Math.floor(v / UI_SCALE.step) + 1 : Math.ceil(v / UI_SCALE.step) - 1;
+  return clampScale(grid * UI_SCALE.step);
+}
+/** The sizes the older three-step text size setting used. */
+const OLD_TEXT_SIZES: Record<string, number> = { normal: 100, large: 112, xl: 125 };
 /** A light animated layer over the whole app (components/Ambient.tsx); it fades almost away while content is open. */
 export type Effect = 'none' | 'snow' | 'meteors' | 'fireflies';
 export type EffectAmount = 'light' | 'medium' | 'heavy';
 export const EFFECTS: { id: Effect; label: string; help: string }[] = [
   { id: 'none', label: 'None', help: 'No background effect.' },
   { id: 'snow', label: 'Snow', help: 'Small flakes drifting slowly down.' },
-  { id: 'meteors', label: 'Meteors', help: 'A faint shooting star now and then.' },
+  { id: 'meteors', label: 'Meteors', help: 'Shooting stars: now and then when light, a steady stream with showers when heavy.' },
   { id: 'fireflies', label: 'Fireflies', help: 'Soft glowing specks wandering and pulsing.' },
 ];
 export const EFFECT_AMOUNTS: { id: EffectAmount; label: string }[] = [
   { id: 'light', label: 'Light' }, { id: 'medium', label: 'Medium' }, { id: 'heavy', label: 'Heavy' },
 ];
-export interface Appearance { theme: ThemeId; accent: string | null; motion: Motion; cloud: boolean; cloudDrift: boolean; cloudFps: number; advanced: boolean; textSize: TextSize; effect: Effect; effectAmount: EffectAmount }
+/** `advanced`: advanced mode (technical terms, every power-user control and setting); off by default, so a new
+ * student sees plain words and guided steps. `uiScale`: the UI size in percent (UI_SCALE). `version`: which one-time
+ * migrations of saved settings have run (`load`). `pet`: the small cat that shows what Apollo is doing
+ * (components/Pet.tsx); off unless turned on. */
+export interface Appearance { theme: ThemeId; accent: string | null; motion: Motion; cloud: boolean; cloudDrift: boolean; cloudFps: number; advanced: boolean; uiScale: number; effect: Effect; effectAmount: EffectAmount; pet: boolean; version: number }
 
 /** Named after elements (the ids are the older names, kept so a saved choice still applies). */
 export const THEMES: { id: ThemeId; name: string; blurb: string; swatch: [string, string, string]; light?: boolean }[] = [
@@ -53,19 +62,37 @@ export function topicColor(topics: { id: number }[], id: number) {
 export const REF_COLOR = '#d9c9a3';
 
 const KEY = 'apollo.appearance';
-const DEFAULT: Appearance = { theme: 'midnight', accent: null, motion: 'normal', cloud: true, cloudDrift: true, cloudFps: 60, advanced: false, textSize: 'normal', effect: 'none', effectAmount: 'light' };
+const VERSION = 1;
+const DEFAULT: Appearance = { theme: 'midnight', accent: null, motion: 'normal', cloud: true, cloudDrift: true, cloudFps: 0, advanced: false, uiScale: 100, effect: 'none', effectAmount: 'light', pet: false, version: VERSION };
+
+/** Saved settings brought up to date (exported for tests). */
+export function migrateAppearance(saved: Record<string, unknown>): Appearance {
+  const a = { ...DEFAULT, ...saved } as Appearance & { textSize?: string };
+  if (!(Number(saved.version) >= 1)) {
+    // version 1: the frame rate's default became the display's own; 60 was the old default, not a choice
+    if (a.cloudFps === 60) a.cloudFps = 0;
+  }
+  // the three-step text size became a percentage
+  if (saved.uiScale === undefined && typeof a.textSize === 'string') a.uiScale = OLD_TEXT_SIZES[a.textSize] ?? 100;
+  delete a.textSize;
+  a.uiScale = clampScale(Number(a.uiScale));
+  a.version = VERSION;
+  return a;
+}
 
 function load(): Appearance {
   try {
     const raw = localStorage.getItem(KEY);
     if (raw) {
-      const a = { ...DEFAULT, ...JSON.parse(raw) };
+      const a = migrateAppearance(JSON.parse(raw));
       // before the animation speeds: 'full' and 'reduced'
       if ((a.motion as string) === 'full') a.motion = 'normal';
       if ((a.motion as string) === 'reduced') a.motion = 'off';
       if (!MOTIONS.some((m) => m.id === a.motion)) a.motion = 'normal';
       if (!EFFECTS.some((e) => e.id === a.effect)) a.effect = 'none';
       if (!EFFECT_AMOUNTS.some((e) => e.id === a.effectAmount)) a.effectAmount = 'light';
+      a.pet = a.pet === true;
+      localStorage.setItem(KEY, JSON.stringify(a)); // the migrations run once
       return a;
     }
   } catch { /* storage unavailable: defaults */ }
@@ -86,7 +113,7 @@ export function applyAppearance(a: Appearance = current) {
   rate = MOTIONS.find((m) => m.id === a.motion)?.rate ?? 1;
   root.style.setProperty('--motion-scale', String(1 / rate));
   root.dataset.mode = a.advanced ? 'advanced' : 'standard';
-  const zoom = TEXT_SIZES.find((t) => t.id === a.textSize)?.zoom ?? 1;
+  const zoom = clampScale(a.uiScale) / 100;
   // Electron zooms the page itself; a plain browser (the dev UI) gets CSS zoom instead
   if (window.studyApp?.setZoom) window.studyApp.setZoom(zoom);
   else root.style.zoom = zoom === 1 ? '' : String(zoom);
@@ -120,6 +147,9 @@ export function useAppearance(): [Appearance, (patch: Partial<Appearance>) => vo
   }, []);
   return [a, setAppearance];
 }
+
+// Ctrl + / Ctrl - / Ctrl 0 (Electron's View menu sends them here, so the size is saved and Settings shows it)
+if (typeof window !== 'undefined') window.studyApp?.onZoomStep?.((dir) => setAppearance({ uiScale: scaleStep(current.uiScale, dir) }));
 
 /** True when animations should be minimal (the setting, or the OS preference). */
 export function reducedMotion() {

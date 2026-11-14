@@ -1,4 +1,4 @@
-/* Export notes, cheat sheets and exams to Word or PDF.
+/* Export notes, cheat sheets, exams and markings to Word or PDF.
    PDF: the content is rendered into #print-root (print styles hide the rest of the app and use light colours) and
    Electron prints the window, so maths, figures and graphs look exactly as in the app. Word: the backend builds a
    .docx from simpler HTML (maths as LaTeX text, which Word can't take as KaTeX). */
@@ -69,10 +69,37 @@ export function examHtml(content: ArtifactContent, word: boolean, answers: boole
   return out.join('\n');
 }
 
-/** The export HTML for an artifact (notes, cheat sheet or exam). */
+/** A marking of the student's work: the score, the overall comment, then each question or criterion's feedback. */
+export function markingHtml(content: ArtifactContent, word: boolean): string {
+  const m = content.marking;
+  if (!m) return '';
+  const fmt = (n: number) => String(Math.round(n * 100) / 100);
+  const cites = (t: string) => t.replace(/\[\[([^\]]+)\]\]/g, '($1)'); // [[file · Slide 4]] citations as plain text
+  const out = [`<p><b>Score: ${fmt(m.score)} / ${fmt(m.out_of)}</b>${m.scaled ? ` <i>(${fmt(m.raw.awarded)} / ${fmt(m.raw.available)} on the criteria)</i>` : ''}</p>`];
+  const meta = [`Work: ${m.files.join(', ')}`, m.rubric ? `Marking guide: ${m.rubric}` : 'Criteria worked out by Apollo (no marking guide)',
+    m.material ? `Checked against: ${m.material}` : ''].filter(Boolean);
+  out.push(`<p><i>${esc(meta.join(' · '))}</i></p>`);
+  if (m.previous) out.push(`<p><i>${esc(`A new version: the previous one scored ${fmt(m.previous.score)} / ${fmt(m.previous.out_of)}.`)}</i></p>`);
+  if (m.overall) out.push(md(cites(m.overall), word));
+  const list = (title: string, xs: string[]) => (xs.length ? `<h2>${esc(title)}</h2><ul>${xs.map((x) => `<li>${mdInline(cites(x), word)}</li>`).join('')}</ul>` : '');
+  out.push(list('Strengths', m.strengths), list('To improve', m.improvements),
+    list('Better than last time', m.improved ?? []), list('Still to do from last time', m.still_to_do ?? []));
+  out.push('<h2>Feedback</h2>');
+  for (const c of m.criteria) {
+    const was = c.previous ? ` <i>(was ${fmt(c.previous.awarded)} / ${fmt(c.previous.max)})</i>` : '';
+    out.push(`<h3>${esc(c.label)} <span class="marks">[${fmt(c.awarded)} / ${fmt(c.max)}]</span>${was}</h3>`);
+    for (const q of c.quotes) out.push(`<blockquote>${mdInline(q.text, word)}${q.page ? ` <i>(page ${q.page})</i>` : ''}</blockquote>`);
+    if (c.feedback) out.push(md(cites(c.feedback), word));
+    if (c.corrections.length) out.push(`<p><b>Corrections</b></p><ul>${c.corrections.map((x) => `<li>${mdInline(cites(x), word)}</li>`).join('')}</ul>`);
+  }
+  return out.join('\n');
+}
+
+/** The export HTML for an artifact (notes, cheat sheet, exam or marking). */
 export function artifactHtml(a: Artifact, word: boolean, answers = false): string {
   if (!a.content) return '';
-  return a.type === 'exam' ? examHtml(a.content, word, answers) : sectionsHtml(a.content, word);
+  return a.type === 'exam' ? examHtml(a.content, word, answers) : a.type === 'marking' ? markingHtml(a.content, word)
+    : sectionsHtml(a.content, word);
 }
 
 async function toPdf(title: string, html: string) {

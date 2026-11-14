@@ -24,7 +24,17 @@ class Yield(Exception):
 
 
 KEEP_VISION = 1  # ingest job ref_id: re-ingest, keeping this file's finished vision notes
-ANNOTATIONS_HEADER = "[Student's annotations]"  # starts the block annotation_blocks() appends to a unit's text
+# Older versions could fold the student's annotations into a unit's text ("re-ingest with my notes"), as a block
+# starting with this line after a blank line. That is gone: strip_annotation_text() removes such blocks once at start-up
+# and packages._strip_notes removes them from old study packs.
+ANNOTATIONS_HEADER = "[Student's annotations]"
+
+
+def without_annotations(text: str) -> str:
+    """A unit's text as a plain ingest stores it: ingest used to write f"{text}\\n\\n{block}".strip(), and parsers
+    return stripped text, so cutting at the block and stripping the end gives the original back exactly."""
+    i = text.find(ANNOTATIONS_HEADER)
+    return text if i < 0 else text[:i].rstrip()
 
 
 def doc_path(doc):
@@ -67,35 +77,6 @@ def clear_document(doc_id):
     shutil.rmtree(config.assets_dir() / str(doc_id), ignore_errors=True)
 
 
-def annotation_blocks(doc_id, positions: dict[int, list[float]] | None = None) -> dict[int, str]:
-    """The student's highlights, notes and text boxes per unit, as text appended to that unit's material.
-    Annotations made on a Word file's exact PDF copy (data.space == 'pdf') sit on a page; `positions` maps them back
-    to the section they fall in."""
-    lines: dict[int, list[str]] = {}
-    for a in db.q("SELECT unit, kind, anchor, data FROM annotations WHERE document_id=? AND kind IN "
-                  "('highlight','note','textbox') ORDER BY unit, id", (doc_id,)):
-        anchor, data = json.loads(a["anchor"]), json.loads(a["data"])
-        unit = a["unit"]
-        if data.get("space") == "pdf" and positions is not None:
-            y = anchor["rects"][0][1] if anchor.get("rects") else data.get("y", 0)
-            unit = render.unit_at(positions, a["unit"], y)
-            if unit is None:
-                continue
-        quoted = " ".join((anchor.get("text") or "").split())
-        text = (data.get("text") or "").strip()
-        if a["kind"] == "highlight" and quoted:
-            line = f'- Highlighted: "{quoted}"'
-        elif a["kind"] == "note" and text:
-            line = (f'- Definition of "{quoted}": {text}' if data.get("definition") and quoted
-                    else f'- Note on "{quoted}": {text}' if quoted else f"- Note: {text}")
-        elif a["kind"] == "textbox" and text:
-            line = f"- Written on the page: {text}"
-        else:
-            continue
-        lines.setdefault(unit, []).append(line)
-    return {u: f"{ANNOTATIONS_HEADER}\n" + "\n".join(ls) for u, ls in lines.items()}
-
-
 def _set_doc(doc_id, **kw):
     kw["updated_at"] = time.time()
     db.ex(f"UPDATE documents SET {', '.join(f'{k}=?' for k in kw)} WHERE id=?", (*kw.values(), doc_id))
@@ -112,7 +93,7 @@ def ingest(doc_id, job, keep_vision=False):
         job.update(0.1, "Resuming: embedding")
         embed_chunks(doc_id, job, start=0.1)
         pending = max(0, (doc["vision_total"] or 0) - (doc["vision_done"] or 0))
-        _set_doc(doc_id, status="vision" if pending else "ready", annotations_ingested=doc["annotated_at"])
+        _set_doc(doc_id, status="vision" if pending else "ready")
         return pending
     s = db.get_settings()
     # Same file, same unit index, same exact content: the vision input is unchanged, so its notes still hold.
@@ -131,29 +112,21 @@ def ingest(doc_id, job, keep_vision=False):
         locked = "password" in str(e).lower() or "encrypt" in str(e).lower()
         raise errors.AppError("APO-FILE-305" if locked else "APO-FILE-304", f"{doc['filename']}: {type(e).__name__}: {e}") from e
     job.check()
-    positions = None
     if doc["ext"] in render.OFFICE_EXTS:
         job.update(0.05, "Making an exact copy for the viewer")
         render.rendered_pdf(doc)  # cached by file hash; no-op without Office/LibreOffice
-        positions = render.unit_positions(doc, units)
+        render.unit_positions(doc, units)
         job.check()
-    annotated_at = doc["annotated_at"]
-    student_notes = annotation_blocks(doc_id, positions)
 
     # Exact dedupe + vision selection, unit by unit (so within-document repeats are caught too).
     scope = scope_doc_ids(doc)
     dupes, vision_total, vision_done, kept = 0, 0, 0, []
     with db.tx() as c:
         for u in units:
-            # The hash is of the file's own content; the student's notes are added after it, and an annotated unit
-            # is never dropped as a duplicate (that would drop the notes too).
             chash = dedupe.content_hash(u["text"], u["image_hashes"])
-            notes = student_notes.get(u["idx"])
             original = None
-            if s["dedupe_units"] and not notes and dedupe.is_dedupable(u["text"], u["image_hashes"]):
+            if s["dedupe_units"] and dedupe.is_dedupable(u["text"], u["image_hashes"]):
                 original = dedupe.find_original(c, scope, chash)
-            if notes:
-                u["text"] = f"{u['text']}\n\n{notes}".strip()
             vision = original is None and _selected_for_vision(u, doc["vision_mode"], doc["ext"])
             prev = kept_vision.get((u["idx"], chash)) if vision else None
             vision_total += vision
@@ -188,7 +161,7 @@ def ingest(doc_id, job, keep_vision=False):
     index_vision(doc_id, embed=False)
     embed_chunks(doc_id, job, start=0.1)
     pending = vision_total - vision_done
-    _set_doc(doc_id, status="vision" if pending else "ready", annotations_ingested=annotated_at)
+    _set_doc(doc_id, status="vision" if pending else "ready")
     return pending
 
 
@@ -278,7 +251,7 @@ def relink(doc_ids: list[int], rebuild=()) -> list[int]:
         with db.tx() as c:
             for u in db.q("SELECT * FROM units WHERE document_id=? ORDER BY idx", (did,)):
                 original = None
-                if dedupe_on and ANNOTATIONS_HEADER not in u["text"] and (u["text"].strip() or json.loads(u["images"])):
+                if dedupe_on and (u["text"].strip() or json.loads(u["images"])):
                     # earlier documents in the scope, or earlier units of this one (what ingest would have seen)
                     row = c.execute(f"SELECT id FROM units WHERE content_hash=? AND duplicate_of IS NULL AND "
                                     f"({earlier}(document_id=? AND idx<?)) ORDER BY document_id, idx LIMIT 1",
@@ -323,6 +296,39 @@ def relink(doc_ids: list[int], rebuild=()) -> list[int]:
                  (did, llm.embed_model())):
             need_embed.append(did)
     return need_embed
+
+
+STRIPPED_SETTING = "annotation_text_stripped"  # settings key: strip_annotation_text() has run on this database
+
+
+def strip_annotation_text():
+    """Once per database (start-up): take the student's annotations back out of unit text that an older "re-ingest with
+    my notes" folded them into, so the material is exactly what a plain ingest gives. Ingest hashed the file's own
+    content (content_hash is still right) but never deduped an annotated unit and counted the notes' tokens: the text and
+    token count are restored here, and pipeline.relink works out the duplicate links again over every file of the
+    affected scopes, rebuilding only the chunks of documents that changed (unchanged chunk text keeps its vector)."""
+    from . import jobs
+    if db.setting(STRIPPED_SETTING):
+        return
+    rows = db.q("SELECT id, document_id, text FROM units WHERE instr(text, ?) > 0", (ANNOTATIONS_HEADER,))
+    affected = sorted({r["document_id"] for r in rows})
+    if rows:
+        with db.tx() as c:
+            for r in rows:
+                text = without_annotations(r["text"])
+                c.execute("UPDATE units SET text=?, token_count=? WHERE id=?", (text, approx_tokens(text), r["id"]))
+        ids = set(affected)
+        for did in affected:  # later files may have deduped against a unit that now becomes a duplicate itself
+            doc = db.q1("SELECT * FROM documents WHERE id=?", (did,))
+            if doc and doc["kind"] in ("topic", "reference"):
+                ids.update(r["id"] for r in db.q(
+                    "SELECT id FROM documents WHERE subject_id=? AND kind='reference'" if doc["kind"] == "reference"
+                    else "SELECT id FROM documents WHERE topic_id=? AND kind='topic'",
+                    (doc["subject_id"] if doc["kind"] == "reference" else doc["topic_id"],)))
+        for did in relink(sorted(ids), rebuild=affected):
+            jobs.enqueue("embed", did)
+        log.info("removed folded-in annotations from %d units in %d documents", len(rows), len(affected))
+    db.ex("INSERT OR REPLACE INTO settings(key, value) VALUES (?, 'true')", (STRIPPED_SETTING,))
 
 
 def embed_chunks(doc_id, job=None, start=0.0) -> int:
@@ -405,7 +411,7 @@ def run_vision(doc_id, job):
                 (config.assets_dir() / str(doc_id)).mkdir(parents=True, exist_ok=True)
                 config.write_atomic(config.assets_dir() / asset, images[0])
             content = [{"type": "text", "text": f"Source: {doc['filename']}, {u['label']}\n\nExtracted text:\n{u['text'] or '(none)'}"}]
-            content += [llm.image_part(img, "image/png" if img[:4] == b"\x89PNG" else "image/jpeg") for img in images]
+            content += [llm.image_part(img) for img in images]  # type read from the bytes; WEBP/GIF/BMP/TIFF sent as PNG
             msgs = [{"role": "system", "content": VISION_SYSTEM}, {"role": "user", "content": content}]
             res = llm.chat(msgs, max_tokens=8000, reasoning=reasoning, temperature=0.2)
             notes = clean_vision_output(res["content"])

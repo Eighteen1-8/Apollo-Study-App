@@ -1,13 +1,15 @@
 /* Apollo's comments on a note or generated notes / cheat sheet: checks (is it correct?) and revisions (change it as
    asked), started from a right-click on highlighted text, the page's header, or the chat (review_content). A check
    lists each wrong passage with its fix; a revision shows what Apollo would write and changes nothing until applied
-   (and can be undone). */
+   (and can be undone). A check's comments are short, and each cites the slide or page it relies on as a link that
+   opens it (the subject's citation handler, from props or subjectLinks). */
 import { useState } from 'react';
 import { api, Review, ReviewIssue, ReviewTarget } from '../api';
 import { usePoll } from '../hooks';
 import Markdown from './Markdown';
 import { Progress } from './ui';
 import Icon from './Icon';
+import { useSubjectLinks } from './subjectLinks';
 
 const VERDICT: Record<string, { label: string; cls: string }> = {
   correct: { label: 'Looks correct', cls: 'ok' },
@@ -21,14 +23,23 @@ export function useReviews(target: ReviewTarget, id: number) {
   return usePoll(() => api.reviews(target, id), 800, [target, id], ['reviews']);
 }
 
-export default function Reviews({ target, id, list, onApplied, onFix, onClose }: {
+export default function Reviews({ target, id, list, onApplied, onFix, onClose, checkOnly, onIssue, emptyText, onCite }: {
   target: ReviewTarget; id: number; list: Review[];
   /** After a revision is applied or undone: reload the content. */
   onApplied: () => void;
   /** Put a check's fix into the text (the student's own note); returns false when the passage isn't there any more. */
   onFix?: (issue: ReviewIssue) => boolean | Promise<boolean>;
   onClose: () => void;
+  /** Mind maps and drawings: checks only, no fix or revision buttons. */
+  checkOnly?: boolean;
+  /** Clicking an issue (a map shows the box or link it quotes). */
+  onIssue?: (issue: ReviewIssue) => void;
+  emptyText?: string;
+  /** Open a cited file at its page (else the subject's, via subjectLinks). */
+  onCite?: (file: string, label: string) => void;
 }) {
+  const links = useSubjectLinks();
+  const cite = onCite ?? links.cite;
   return (
     <aside className="reviews" aria-label="Apollo's comments">
       <div className="reviews-head">
@@ -38,17 +49,18 @@ export default function Reviews({ target, id, list, onApplied, onFix, onClose }:
       <div className="reviews-scroll">
         {list.length === 0 && (
           <div className="muted small reviews-empty">
-            Highlight text and right-click it to have Apollo check it against your material, or to ask for a change.
+            {emptyText ?? 'Highlight text and right-click it to have Apollo check it against your material, or to ask for a change.'}
           </div>
         )}
-        {list.map((r) => <ReviewCard key={r.id} r={r} target={target} id={id} onApplied={onApplied} onFix={onFix} />)}
+        {list.map((r) => <ReviewCard key={r.id} r={r} target={target} id={id} onApplied={onApplied} onFix={onFix} checkOnly={checkOnly} onIssue={onIssue} onCite={cite} />)}
       </div>
     </aside>
   );
 }
 
-function ReviewCard({ r, target, id, onApplied, onFix }: {
+function ReviewCard({ r, target, id, onApplied, onFix, checkOnly, onIssue, onCite }: {
   r: Review; target: ReviewTarget; id: number; onApplied: () => void; onFix?: (issue: ReviewIssue) => boolean | Promise<boolean>;
+  checkOnly?: boolean; onIssue?: (issue: ReviewIssue) => void; onCite?: (file: string, label: string) => void;
 }) {
   const [preview, setPreview] = useState(false);
   const [fixed, setFixed] = useState<Set<number>>(new Set());
@@ -90,18 +102,21 @@ function ReviewCard({ r, target, id, onApplied, onFix }: {
       {r.status === 'failed' && <div className="small bad">{r.error}</div>}
       {r.status === 'ready' && r.mode === 'check' && res && (
         <>
-          {res.summary && <Markdown className="review-text" text={res.summary} />}
+          {res.summary && <Markdown className="review-text" text={res.summary} onCite={onCite} />}
           {(res.issues ?? []).map((iss, i) => (
-            <div key={i} className="review-issue">
+            <div key={i} className={`review-issue${onIssue ? ' review-issue-link' : ''}`} onClick={onIssue ? () => onIssue(iss) : undefined}
+              title={onIssue ? 'Show it' : undefined}>
               <div className="review-wrong">“{iss.quote}”</div>
-              <Markdown className="review-text" text={iss.problem} />
-              <div className="review-fix"><b>Fix:</b> <Markdown className="review-text inline" text={iss.fix} /></div>
-              {iss.source && <div className="src-note">{iss.source}</div>}
-              <div className="review-actions">
+              <Markdown className="review-text" text={iss.problem} onCite={onCite} />
+              <div className="review-fix"><b>Fix:</b> <Markdown className="review-text inline" text={iss.fix} onCite={onCite} /></div>
+              {iss.source && (/\[\[/.test(iss.source)
+                ? <div className="review-src" onClick={(e) => e.stopPropagation()}><Markdown className="review-text inline" text={iss.source} onCite={onCite} /></div>
+                : <div className="src-note">{iss.source}</div>)}
+              {!checkOnly && <div className="review-actions">
                 {fixed.has(i)
                   ? <span className="small ok">{onFix ? '✓ Fixed' : '✓ Revision started'}</span>
                   : <button className="btn btn-sm" onClick={() => fix(iss, i)}>{onFix ? 'Apply fix' : 'Fix with Apollo'}</button>}
-              </div>
+              </div>}
             </div>
           ))}
         </>

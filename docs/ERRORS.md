@@ -534,17 +534,34 @@ Generated from `backend/studyapp/errors.py` (`python -m studyapp.errors`); edit 
 
 **Shown as:** Apollo couldn't make an exact copy of this file to show it, so a simpler view is used.
 
-**Meaning:** render.py couldn't export the .pptx/.docx to PDF with Microsoft Office (COM) or LibreOffice; the viewer falls back to its HTML layout.
+**Meaning:** render.py couldn't export the .pptx/.docx to PDF with Microsoft Office (COM, office_export.ps1) or LibreOffice: no PDF was written, the converter raised, or it ran past render.TIMEOUT. The viewer falls back to its HTML layout; the reason is kept in documents.render_error (Maintenance → Files, advanced mode).
 
 **HTTP status:** 500
 
 **Likely causes:**
-- Office isn't installed or is busy with a dialog
-- LibreOffice isn't installed
+- Office is busy with a dialog (activation, protected view, repair)
+- the file is damaged or password-protected
+- a very large deck that takes longer than the timeout
 
 **How to fix:**
-- close open Office dialogs and reopen the file
-- install LibreOffice
+- close open Office dialogs, then Try again in the viewer
+- open and re-save the file in Office
+- install LibreOffice as a second converter
+
+### APO-FILE-310 · No Office converter
+
+**Shown as:** Neither Microsoft Office nor LibreOffice is installed, so a simpler view is used.
+
+**Meaning:** render.py found no converter for .pptx/.docx: the PowerPoint.Application / Word.Application COM class isn't registered and soffice.exe isn't on PATH or in Program Files. The viewer uses its HTML layout (viewer.py) and slide images for vision come from parsers.compose_slide.
+
+**HTTP status:** 500
+
+**Likely causes:**
+- Office isn't installed (or is a click-to-run install without COM registration)
+- LibreOffice isn't installed, or is installed somewhere unusual
+
+**How to fix:**
+- install Microsoft Office or LibreOffice, then use Try again in the viewer or Maintenance
 
 ## Making study material
 
@@ -592,6 +609,38 @@ Generated from `backend/studyapp/errors.py` (`python -m studyapp.errors`); edit 
 
 **How to fix:**
 - retry; change or remove the focus
+
+### APO-GEN-404 · Too much to mark
+
+**Shown as:** That's too much work to mark at once. Mark fewer pages or files at a time.
+
+**Meaning:** marking.py: the work has more than marking.MAX_PAGES pages in total, or its text is too long for the model's context window together with the rubric and material.
+
+**HTTP status:** 400
+
+**Likely causes:**
+- a long PDF or several files added together
+- a small context window setting
+
+**How to fix:**
+- mark one file or part of it at a time
+- check against nothing (no material) to leave more room
+
+### APO-GEN-410 · Model can't see pictures
+
+**Shown as:** Apollo's language model can't look at pictures, so it can't check a drawing. Use a model with vision, or describe the drawing in a note instead.
+
+**Meaning:** The chat model rejected a request containing an image (no vision / multimodal input), e.g. checking one of the student's drawings.
+
+**HTTP status:** 400
+
+**Likely causes:**
+- a text-only model is selected
+- the local server was started without its vision projector
+
+**How to fix:**
+- pick a model with vision in Settings (OpenRouter lists which ones see images)
+- start the local server with vision enabled
 
 ## Saved data
 
