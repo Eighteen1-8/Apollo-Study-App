@@ -33,6 +33,24 @@ ${norm}`).digest('hex');
 // Windows on top of it in the theme's colours. The renderer reports the colours on every theme change and the last
 // ones are kept so the next launch opens in them.
 const TITLEBAR_H = 34;
+const APP_ID = 'com.apollo.study';
+const ICON_PATH = path.join(__dirname, '..', 'assets', 'icon.ico');
+
+// The taskbar draws a window's button from the shortcut Windows matches to its app ID, not from the window icon (which
+// only Alt+Tab and the title bar use). The portable build unpacks to a new temp folder on every launch, so a pinned or
+// Start menu shortcut to the unpacked exe breaks the next time and the button goes blank. Giving the window its own
+// icon and relaunch command keeps the taskbar right whatever shortcuts exist. The shell can't read inside the asar,
+// so a packaged build points at the exe's embedded icon.
+function setTaskbarDetails(win) {
+  if (process.platform !== 'win32') return;
+  const launcher = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+  win.setAppDetails({
+    appId: APP_ID,
+    appIconPath: app.isPackaged ? process.execPath : ICON_PATH,
+    appIconIndex: 0,
+    ...(app.isPackaged ? { relaunchCommand: `"${launcher}"`, relaunchDisplayName: 'Apollo Study' } : {}),
+  });
+}
 const chromeFile = () => path.join(app.getPath('userData'), 'window-chrome.json');
 function loadChrome() {
   try { return { color: '#080a10', symbol: '#9ca4ba', bg: '#0b0d14', dark: true, ...JSON.parse(fs.readFileSync(chromeFile(), 'utf8')) }; }
@@ -251,7 +269,7 @@ async function createWindow() {
     ...state.bounds,
     minWidth: 960,
     minHeight: 640,
-    icon: path.join(__dirname, '..', 'assets', 'icon.ico'),
+    icon: ICON_PATH,
     backgroundColor: chrome.bg,
     title: 'Apollo Study',
     titleBarStyle: 'hidden',
@@ -264,6 +282,7 @@ async function createWindow() {
       sandbox: true, // the preload only uses contextBridge/ipcRenderer/webUtils; it gets the backend over ipc
     },
   });
+  setTaskbarDetails(win);
   if (state.maximized) win.maximize();
   trackBounds(win);
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -419,7 +438,7 @@ app.on('second-instance', () => {
 
 app.whenReady().then(async () => {
   if (!firstInstance) return;
-  app.setAppUserModelId('com.apollo.study'); // needed for Windows notifications later
+  app.setAppUserModelId(APP_ID); // needed for Windows notifications later
   // The menu bar is hidden; this keeps its shortcuts. Select all and Find are left to the page, which limits them to
   // the document, notes or chat being read instead of the whole window.
   Menu.setApplicationMenu(Menu.buildFromTemplate([
