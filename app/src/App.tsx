@@ -3,6 +3,7 @@ import { api, hasToken, ToolName } from './api';
 import { usePoll } from './hooks';
 import { OverlayProvider } from './components/overlay';
 import Minibar from './components/Minibar';
+import Ambient from './components/Ambient';
 import TooltipLayer from './components/Tooltip';
 import FindLayer from './components/FindBar';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -115,6 +116,7 @@ export default function App() {
           {backendUp && setupDone && <ModelCheck />}
           <ErrorBoundary name="This page" resetKey={JSON.stringify(route)}>{view}</ErrorBoundary>
         </main>
+        <Ambient />
         <TooltipLayer />
         <FindLayer />
         <ToastLayer />

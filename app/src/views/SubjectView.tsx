@@ -85,6 +85,12 @@ export default function SubjectView({ route, subjects, go, onChange }: {
     page: r.view?.page ?? null, split: r.view?.split ?? null, chatFull: false,
   }));
   const { doc, page, split } = view;
+  // content is open (a file, notes, generated content, the chat full screen): the background effect fades to 10%
+  const contentOpen = !!(doc || page || split || view.chatFull);
+  useEffect(() => {
+    document.documentElement.toggleAttribute('data-studying', contentOpen);
+    return () => document.documentElement.removeAttribute('data-studying');
+  }, [contentOpen]);
   const [focus, setFocus] = useState<CloudFocus>(null);
   const [quote, setQuote] = useState<(Quote & { nonce: number }) | null>(null);
   const [viewing, setViewing] = useState<number | null>(null);

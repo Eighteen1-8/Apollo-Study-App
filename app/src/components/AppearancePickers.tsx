@@ -1,6 +1,34 @@
 /* The theme cards and the animation-speed buttons: Settings → Appearance and the first-run setup use the same ones.
    Both apply at once (theme.ts saves them on this computer). */
-import { MOTIONS, THEMES, useAppearance } from '../theme';
+import { EFFECT_AMOUNTS, EFFECTS, MOTIONS, THEMES, useAppearance } from '../theme';
+
+/** The background effect (components/Ambient.tsx) and how much of it. */
+export function EffectSeg() {
+  const [a, set] = useAppearance();
+  const help = EFFECTS.find((e) => e.id === a.effect)?.help;
+  return (
+    <>
+      <div className="seg" role="radiogroup" aria-label="Background effect">
+        {EFFECTS.map((e) => (
+          <button key={e.id} role="radio" aria-checked={a.effect === e.id} className={a.effect === e.id ? 'active' : ''}
+            onClick={() => set({ effect: e.id })}>{e.label}</button>
+        ))}
+      </div>
+      {a.effect !== 'none' && (
+        <div className="seg effect-amount" role="radiogroup" aria-label="How much">
+          {EFFECT_AMOUNTS.map((m) => (
+            <button key={m.id} role="radio" aria-checked={a.effectAmount === m.id} className={a.effectAmount === m.id ? 'active' : ''}
+              onClick={() => set({ effectAmount: m.id })}>{m.label}</button>
+          ))}
+        </div>
+      )}
+      <span className="field-help">
+        {a.motion === 'off' ? 'Animations are off, so no effect is shown.'
+          : `${help}${a.effect === 'none' ? '' : ' It fades almost away while a file, notes or other content is open, so it never gets in the way.'}`}
+      </span>
+    </>
+  );
+}
 
 export function ThemeGrid() {
   const [a, set] = useAppearance();

@@ -9,6 +9,7 @@ import { MotionSeg, ThemeGrid } from './AppearancePickers';
 import { setPref } from '../prefs';
 import { logError } from '../log';
 import Icon from './Icon';
+import { createSubject } from './actions';
 import { errorText } from '../errors';
 import ErrorText from './ErrorText';
 
@@ -104,7 +105,7 @@ export default function SetupWizard({ subjectsCount, onFinished }: {
     if (!name) return;
     setBusy(true); setErr(null);
     try {
-      const sub = await api.createSubject(name);
+      const sub = await createSubject(name, 0);
       if (topic.trim()) await api.createTopic(sub.id, topic.trim());
       await finish(sub.id);
     } catch (e) {

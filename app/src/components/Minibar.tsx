@@ -1,14 +1,14 @@
 import { useState } from 'react';
 import { openErrorHelp } from './ErrorText';
-import { api, inElectron, Subject } from '../api';
+import { api, Subject } from '../api';
 import type { Route } from '../App';
 import logo from '../../assets/icon.svg';
 import { useLibraryActions } from './actions';
 import JobsPanel from './JobsPanel';
 import { Modal, useOverlay } from './overlay';
 import StaleBadge from './StaleBadge';
-import SubjectIcon, { PALETTE } from './SubjectIcon';
-import IconPicker from './IconPicker';
+import SubjectIcon from './SubjectIcon';
+import SubjectLook from './SubjectLook';
 import { useReorder } from './reorder';
 import { useChatStreams } from '../chatStreams';
 import { redo, undo, useUndo } from '../undo';
@@ -27,8 +27,7 @@ export default function Minibar({ subjects, route, go, onChange, online }: {
 }) {
   const ov = useOverlay();
   const act = useLibraryActions(subjects, go, onChange);
-  const [colorFor, setColorFor] = useState<Subject | null>(null);
-  const [iconFor, setIconFor] = useState<Subject | null>(null);
+  const [lookFor, setLookFor] = useState<Subject | null>(null);
   const active = route.name === 'subject' ? route.id : null;
   const reorder = useReorder('subjects', subjects.map((s) => s.id), async (ids) => { await api.orderSubjects(ids); onChange(); }, 'reorder subjects');
   const streams = useChatStreams();
@@ -46,17 +45,7 @@ export default function Minibar({ subjects, route, go, onChange, online }: {
     ] : []),
     { label: 'Export / share…', separatorBefore: !advanced, onClick: () => go({ name: 'settings', tab: 'share', subjectId: s.id }) },
     { label: 'Rename…', onClick: () => act.renameSubject(s), separatorBefore: true },
-    { label: 'Change colour…', onClick: () => setColorFor(s) },
-    { label: 'Change letters…', onClick: async () => {
-      const t = await ov.prompt({ title: 'Icon letters', label: 'Up to 3 characters', initial: s.icon_text ?? '', placeholder: 'PH' });
-      if (t) { await api.setIcon(s.id, { icon_text: t }); onChange(); }
-    } },
-    { label: 'Choose an icon…', onClick: () => setIconFor(s) },
-    { label: 'Upload an image…', disabled: !inElectron, onClick: async () => {
-      const p = await window.studyApp!.openFiles({ multi: false });
-      if (p[0]) { await api.setIcon(s.id, { image_path: p[0] }); onChange(); }
-    } },
-    { label: 'Reset icon', onClick: async () => { await api.setIcon(s.id, { icon_text: '', icon_emoji: '', icon_name: '', clear_image: true }); onChange(); } },
+    { label: 'Icon and colour…', onClick: () => setLookFor(s) },
     { label: 'Delete subject', danger: true, separatorBefore: true, onClick: () => act.deleteSubject(s) },
   ]);
 
@@ -133,32 +122,8 @@ export default function Minibar({ subjects, route, go, onChange, online }: {
           <ShortcutsList />
         </Modal>
       )}
-      {iconFor && <IconPicker subject={iconFor} onClose={() => setIconFor(null)}
-        onPick={async (k) => { await api.setIcon(iconFor.id, { icon_name: k }); onChange(); }} />}
-      {colorFor && <ColorDialog subject={colorFor} onClose={() => setColorFor(null)}
-        onPick={async (c) => { await api.setIcon(colorFor.id, { color: c }); onChange(); }} />}
+      {lookFor && <SubjectLook subject={lookFor} onClose={() => setLookFor(null)} onChange={onChange} />}
     </nav>
-  );
-}
-
-function ColorDialog({ subject, onPick, onClose }: { subject: Subject; onPick: (c: string) => Promise<void>; onClose: () => void }) {
-  const [c, setC] = useState(subject.color);
-  return (
-    <Modal title={`Colour for ${subject.name}`} onClose={onClose}
-      footer={<>
-        <button className="btn" onClick={onClose}>Cancel</button>
-        <button className="btn btn-primary" onClick={async () => { await onPick(c); onClose(); }}>Save</button>
-      </>}>
-      <div className="color-preview"><SubjectIcon s={{ ...subject, color: c }} size={64} /></div>
-      <div className="swatches">
-        {PALETTE.map((p) => (
-          <button key={p} className={`swatch${p === c ? ' active' : ''}`} style={{ background: p }} onClick={() => setC(p)} />
-        ))}
-        <label className="swatch swatch-custom" title="Custom colour">
-          <input type="color" value={c} onChange={(e) => setC(e.target.value)} />+
-        </label>
-      </div>
-    </Modal>
   );
 }
 

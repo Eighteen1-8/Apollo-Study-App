@@ -16,7 +16,19 @@ export type TextSize = 'normal' | 'large' | 'xl';
 export const TEXT_SIZES: { id: TextSize; label: string; zoom: number }[] = [
   { id: 'normal', label: 'Normal', zoom: 1 }, { id: 'large', label: 'Large', zoom: 1.12 }, { id: 'xl', label: 'Extra large', zoom: 1.25 },
 ];
-export interface Appearance { theme: ThemeId; accent: string | null; motion: Motion; cloud: boolean; cloudDrift: boolean; cloudFps: number; advanced: boolean; textSize: TextSize }
+/** A light animated layer over the whole app (components/Ambient.tsx); it fades almost away while content is open. */
+export type Effect = 'none' | 'snow' | 'meteors' | 'fireflies';
+export type EffectAmount = 'light' | 'medium' | 'heavy';
+export const EFFECTS: { id: Effect; label: string; help: string }[] = [
+  { id: 'none', label: 'None', help: 'No background effect.' },
+  { id: 'snow', label: 'Snow', help: 'Small flakes drifting slowly down.' },
+  { id: 'meteors', label: 'Meteors', help: 'A faint shooting star now and then.' },
+  { id: 'fireflies', label: 'Fireflies', help: 'Soft glowing specks wandering and pulsing.' },
+];
+export const EFFECT_AMOUNTS: { id: EffectAmount; label: string }[] = [
+  { id: 'light', label: 'Light' }, { id: 'medium', label: 'Medium' }, { id: 'heavy', label: 'Heavy' },
+];
+export interface Appearance { theme: ThemeId; accent: string | null; motion: Motion; cloud: boolean; cloudDrift: boolean; cloudFps: number; advanced: boolean; textSize: TextSize; effect: Effect; effectAmount: EffectAmount }
 
 /** Named after elements (the ids are the older names, kept so a saved choice still applies). */
 export const THEMES: { id: ThemeId; name: string; blurb: string; swatch: [string, string, string]; light?: boolean }[] = [
@@ -41,7 +53,7 @@ export function topicColor(topics: { id: number }[], id: number) {
 export const REF_COLOR = '#d9c9a3';
 
 const KEY = 'apollo.appearance';
-const DEFAULT: Appearance = { theme: 'midnight', accent: null, motion: 'normal', cloud: true, cloudDrift: true, cloudFps: 60, advanced: false, textSize: 'normal' };
+const DEFAULT: Appearance = { theme: 'midnight', accent: null, motion: 'normal', cloud: true, cloudDrift: true, cloudFps: 60, advanced: false, textSize: 'normal', effect: 'none', effectAmount: 'light' };
 
 function load(): Appearance {
   try {
@@ -52,6 +64,8 @@ function load(): Appearance {
       if ((a.motion as string) === 'full') a.motion = 'normal';
       if ((a.motion as string) === 'reduced') a.motion = 'off';
       if (!MOTIONS.some((m) => m.id === a.motion)) a.motion = 'normal';
+      if (!EFFECTS.some((e) => e.id === a.effect)) a.effect = 'none';
+      if (!EFFECT_AMOUNTS.some((e) => e.id === a.effectAmount)) a.effectAmount = 'light';
       return a;
     }
   } catch { /* storage unavailable: defaults */ }

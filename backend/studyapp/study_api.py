@@ -25,7 +25,7 @@ class IconBody(BaseModel):
     color: str | None = None
     icon_text: str | None = None
     icon_emoji: str | None = None
-    icon_name: str | None = None  # a Lucide icon name from the picker
+    icon_name: str | None = None  # a subject-art key from the picker (app/src/components/subjectIcons.ts)
     clear_image: bool = False
     image_path: str | None = None  # local file chosen by the user; copied into the app's assets
 

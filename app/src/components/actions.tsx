@@ -2,8 +2,20 @@ import { api, MaintScope, Subject, Topic } from '../api';
 import type { Route } from '../App';
 import { useOverlay } from './overlay';
 import { term } from '../terms';
+import { logError } from '../log';
+import { suggestArt } from './subjectIcons';
 
 const COLORS = ['#7c8cff', '#4fd1c5', '#f6ad55', '#f687b3', '#68d391', '#b794f4', '#63b3ed', '#fc8181'];
+
+/** Make a subject that already looks like its own: the next colour in turn and art matching its name, if any. */
+export async function createSubject(name: string, count: number) {
+  const s = await api.createSubject(name, COLORS[count % COLORS.length]);
+  const art = suggestArt(name);
+  if (art) {
+    try { await api.setIcon(s.id, { icon_name: art }); } catch (e) { logError('subject art', e); }
+  }
+  return s;
+}
 
 /** Create / rename / delete for subjects and topics, shared by the sidebar and the subject page. */
 export function useLibraryActions(subjects: Subject[], go: (r: Route) => void, onChange: () => void) {
@@ -12,7 +24,7 @@ export function useLibraryActions(subjects: Subject[], go: (r: Route) => void, o
     async newSubject() {
       const name = await ov.prompt({ title: 'New subject', placeholder: 'e.g. Physics', confirmText: 'Create' });
       if (!name) return;
-      const s = await api.createSubject(name, COLORS[subjects.length % COLORS.length]);
+      const s = await createSubject(name, subjects.length);
       onChange();
       go({ name: 'subject', id: s.id });
     },

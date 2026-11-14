@@ -7,7 +7,7 @@ import ShareView from './ShareView';
 import { useOverlay } from '../components/overlay';
 import { Button } from '../components/ui';
 import { ACCENTS, CLOUD_FPS, TEXT_SIZES, useAdvanced, useAppearance } from '../theme';
-import { MotionSeg, ThemeGrid } from '../components/AppearancePickers';
+import { EffectSeg, MotionSeg, ThemeGrid } from '../components/AppearancePickers';
 import { logError } from '../log';
 
 type Field = {
@@ -254,6 +254,10 @@ function AppearanceSettings() {
         <div className="field field-wide">
           <span className="field-label">Animations</span>
           <MotionSeg />
+        </div>
+        <div className="field field-wide">
+          <span className="field-label">Background effect</span>
+          <EffectSeg />
         </div>
         <label className="field field-bool">
           <input type="checkbox" checked={a.cloud} onChange={(e) => set({ cloud: e.target.checked })} />

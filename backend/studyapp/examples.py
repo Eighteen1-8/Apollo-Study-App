@@ -179,8 +179,9 @@ def create() -> dict:
     if old:
         return {"id": old["id"], "created": False}
     now = time.time()
-    sid = db.ex("INSERT INTO subjects(name, color, icon_text, questions, created_at) VALUES (?,?,?,?,?)",
-                (NAME, "#8b9bff", "PH", json.dumps(QUESTIONS), now))
+    # icon_name: subject art from app/src/components/subjectIcons.ts
+    sid = db.ex("INSERT INTO subjects(name, color, icon_name, questions, created_at) VALUES (?,?,?,?,?)",
+                (NAME, "#8b9bff", "comet", json.dumps(QUESTIONS), now))
     topics, files = {}, {}
     for i, (topic, filename, slides) in enumerate(LECTURES):
         topics[i] = db.ex("INSERT INTO topics(subject_id, name, description, created_at, position) VALUES (?,?,?,?,?)",
