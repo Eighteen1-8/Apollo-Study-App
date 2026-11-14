@@ -1,4 +1,4 @@
-/* 4 · Themes and motion: the seven themes (re-tuning the tokens from 1-base.css), reduced motion, and the visual
+/* 4 · Themes and motion: the nine themes (re-tuning the tokens from 1-base.css), reduced motion, and the visual
    refresh of shared surfaces; layout stays in 2/3. Themes are chosen in Settings → Appearance (theme.ts). Also the
    Settings → Maintenance and online-model styles. */
 
@@ -112,6 +112,51 @@
   --shadow-lg: 0 24px 60px rgba(15, 60, 30, 0.2);
   --glow-a: rgba(21, 128, 61, 0.16); --glow-b: rgba(110, 220, 150, 0.16); --glow-c: rgba(60, 180, 210, 0.08);
   --cloud-star: #5f8e6c;
+}
+/* Sodium: a pastel dusk, rose melting into periwinkle, trimmed in gold leaf (the sodium flame). Its gradients,
+   gilding and sparkles are under "Sodium and Nitrogen" at the end of this file; its roses, bubbles and stars are
+   components/themeScenes.ts. */
+:root[data-theme="sodium"] {
+  --bg: #efd9e7; --bg-elev: #fbf1f5; --bg-elev-2: #efdeec; --bg-hover: #e6d1e8;
+  --border: #e4cadc; --border-strong: #d6b585;
+  --text: #3b1f3d; --text-dim: #6c4a6e; --text-faint: #87688a;
+  --accent: #c8952e;
+  --accent-strong: color-mix(in srgb, var(--accent), black 28%);
+  --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
+  --on-accent: #3a2206;
+  --rose: #e27f9d; --peri: #7f93e6;
+  --gilt: color-mix(in srgb, var(--accent) 50%, transparent);
+  --ok: #2f9a73; --busy: #6d7fe0; --busy-soft: rgba(109, 127, 224, 0.13);
+  --minibar-bg: #ecd4e4;
+  --glass: color-mix(in srgb, #fff5f9 64%, transparent);
+  --glass-strong: color-mix(in srgb, #fff5f9 88%, transparent);
+  --hairline: rgba(255, 244, 222, 0.8);
+  --shadow: 0 1px 2px rgba(120, 70, 40, 0.08), 0 10px 30px rgba(110, 70, 140, 0.14);
+  --shadow-lg: 0 24px 60px rgba(110, 70, 140, 0.22);
+  --glow-a: rgba(255, 135, 175, 0.4); --glow-b: rgba(125, 155, 255, 0.4); --glow-c: rgba(245, 195, 100, 0.34);
+  --cloud-star: #b48a5a;
+  --cloud-ring: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+/* Nitrogen: hydrangea heads, azure petals shading into deeper blue with a hint of periwinkle, a sage leaf here and there;
+   its animated hydrangeas are components/themeScenes.ts */
+:root[data-theme="nitrogen"] {
+  --bg: #c2d3f3; --bg-elev: #edf3fe; --bg-elev-2: #d6e3fa; --bg-hover: #bfd1f4;
+  --border: #aac0ec; --border-strong: #8aa5de;
+  --text: #12213f; --text-dim: #364b78; --text-faint: #536894;
+  --accent: #3f66e0;
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+  --lilac: #7a86e6; --sage: #4f8a66;
+  --ok: #3f8a63; --ok-soft: rgba(63, 138, 99, 0.13);
+  --busy: #6f78e0; --busy-soft: rgba(111, 120, 224, 0.13);
+  --minibar-bg: #cddcf7;
+  --glass: color-mix(in srgb, #f3f7ff 62%, transparent);
+  --glass-strong: color-mix(in srgb, #f3f7ff 86%, transparent);
+  --hairline: rgba(255, 255, 255, 0.8);
+  --shadow: 0 1px 2px rgba(20, 40, 90, 0.08), 0 10px 30px rgba(30, 50, 120, 0.14);
+  --shadow-lg: 0 24px 60px rgba(30, 50, 120, 0.22);
+  --glow-a: rgba(70, 120, 250, 0.36); --glow-b: rgba(120, 150, 250, 0.32); --glow-c: rgba(110, 190, 150, 0.14);
+  --cloud-star: #7d90c4;
+  --cloud-ring: color-mix(in srgb, var(--accent) 26%, transparent);
 }
 /* graphite's accent is near-white: dark text on it */
 :root[data-theme="graphite"] { --on-accent: #0a0a0b; }
@@ -611,3 +656,65 @@ a.cite:hover { transform: translateY(-1px); background: color-mix(in srgb, var(-
 /* the hint line ignores the pointer except for its Re-arrange button */
 .cloud-hint .cloud-refit { pointer-events: auto; font-size: inherit; color: var(--text-dim); }
 .cloud:hover .cloud-hint:has(.cloud-refit:hover) { opacity: 1; }
+
+/* ================================================================ Sodium and Nitrogen: more than tokens */
+/* Sodium: the page is a rose → lilac → periwinkle dusk; gold leaf on buttons, edges and twinkling sparkles */
+:root[data-theme="sodium"] body { background: linear-gradient(155deg, #f7d3e2 0%, #eed6ea 34%, #dedcf5 66%, #cddbf8 100%) fixed; }
+:root[data-theme="sodium"] .app-backdrop::after {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cg fill='%23d4a64a'%3E%3Cpath d='M30 18l2.2 7.8 7.8 2.2-7.8 2.2L30 38l-2.2-7.8L20 28l7.8-2.2z' opacity='.6'/%3E%3Cpath d='M118 96l1.4 4.6 4.6 1.4-4.6 1.4-1.4 4.6-1.4-4.6-4.6-1.4 4.6-1.4z' opacity='.5'/%3E%3Ccircle cx='86' cy='40' r='1.4' opacity='.55'/%3E%3Ccircle cx='48' cy='124' r='1.1' opacity='.5'/%3E%3Ccircle cx='140' cy='146' r='1.5' opacity='.4'/%3E%3C/g%3E%3C/svg%3E");
+  background-size: 160px 160px; opacity: 0.9;
+  mask-image: radial-gradient(ellipse 90% 70% at 50% 0%, black, transparent 80%), radial-gradient(ellipse 60% 50% at 100% 100%, black, transparent 75%);
+  animation: sodium-twinkle 5s ease-in-out infinite alternate; }
+@keyframes sodium-twinkle { from { opacity: 0.45; } to { opacity: 0.95; } }
+:root[data-theme="sodium"] .minibar { background: linear-gradient(180deg, color-mix(in srgb, #f6d2e1 88%, transparent), color-mix(in srgb, #d7ddf7 88%, transparent));
+  border-right-color: var(--gilt); }
+:root[data-theme="sodium"] .btn-primary, :root[data-theme="sodium"] .send-btn {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent), white 58%) 0%, var(--accent) 38%, color-mix(in srgb, var(--accent), white 30%) 58%, color-mix(in srgb, var(--accent), black 16%) 100%);
+  box-shadow: 0 1px 0 rgba(255, 250, 230, 0.8) inset, 0 -1px 0 rgba(120, 80, 20, 0.25) inset, 0 8px 22px -8px color-mix(in srgb, var(--accent) 70%, transparent); }
+:root[data-theme="sodium"] .btn-primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent), white 66%) 0%, color-mix(in srgb, var(--accent), white 10%) 40%, color-mix(in srgb, var(--accent), white 40%) 60%, var(--accent) 100%); }
+:root[data-theme="sodium"] .btn-primary::after { background: linear-gradient(90deg, transparent, rgba(255, 252, 235, 0.75), transparent); }
+:root[data-theme="sodium"] .hero-title { background-image: linear-gradient(100deg, var(--text) 0%, var(--rose) 30%, var(--accent) 50%, var(--peri) 70%, var(--text) 100%); }
+:root[data-theme="sodium"] .hero-kicker { color: var(--accent-strong); border-color: var(--gilt);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--rose) 18%, transparent), color-mix(in srgb, var(--peri) 18%, transparent)); }
+:root[data-theme="sodium"] .widget, :root[data-theme="sodium"] .modal, :root[data-theme="sodium"] .chat-shell.floating, :root[data-theme="sodium"] .ctx-menu {
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent); border-top-color: color-mix(in srgb, var(--accent) 70%, transparent); }
+:root[data-theme="sodium"] .msg-user .bubble { background: linear-gradient(135deg, color-mix(in srgb, var(--rose) 30%, transparent), color-mix(in srgb, var(--peri) 26%, transparent));
+  border-color: var(--gilt); }
+:root[data-theme="sodium"] .progress-bar, :root[data-theme="sodium"] .lib-progress span { background-image: linear-gradient(90deg, var(--rose), var(--accent), var(--peri), var(--rose)); }
+:root[data-theme="sodium"] ::selection { background: color-mix(in srgb, var(--rose) 38%, transparent); }
+:root[data-theme="sodium"] ::-webkit-scrollbar-thumb { background-color: color-mix(in srgb, var(--accent) 38%, transparent); }
+:root[data-theme="sodium"] ::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+:root[data-theme="sodium"] .subject-icon { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 0 0 1px var(--gilt), 0 4px 12px -4px rgba(110, 70, 140, 0.3); }
+
+/* Nitrogen: azure at the top shading to periwinkle and lilac; frosted panels; hydrangea florets drifting in the corners */
+:root[data-theme="nitrogen"] body { background: linear-gradient(170deg, #e1ebfd 0%, #c8d9f8 36%, #b7cbf4 70%, #bcc4f1 100%) fixed; }
+:root[data-theme="nitrogen"] .app-backdrop::after {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cdefs%3E%3Cg id='f'%3E%3Cellipse cy='-6' rx='4.4' ry='6.2'/%3E%3Cellipse cy='6' rx='4.4' ry='6.2'/%3E%3Cellipse cx='-6' rx='6.2' ry='4.4'/%3E%3Cellipse cx='6' rx='6.2' ry='4.4'/%3E%3Ccircle r='1.7' fill='%235b74d6'/%3E%3C/g%3E%3C/defs%3E%3Cuse href='%23f' transform='translate(40 44) rotate(15) scale(1.3)' fill='%239db4f2' opacity='.75'/%3E%3Cuse href='%23f' transform='translate(66 27) rotate(40)' fill='%23b4a9f2' opacity='.75'/%3E%3Cuse href='%23f' transform='translate(64 64) rotate(5) scale(1.1)' fill='%23ffffff' opacity='.8'/%3E%3Cuse href='%23f' transform='translate(30 74) rotate(70) scale(.8)' fill='%23a9c2f6' opacity='.7'/%3E%3Cuse href='%23f' transform='translate(170 150) rotate(30) scale(1.4)' fill='%23ffffff' opacity='.8'/%3E%3Cuse href='%23f' transform='translate(198 172) rotate(10) scale(1)' fill='%239db4f2' opacity='.75'/%3E%3Cuse href='%23f' transform='translate(148 182) rotate(55) scale(1.1)' fill='%23b4a9f2' opacity='.75'/%3E%3Cuse href='%23f' transform='translate(176 120) rotate(80) scale(.8)' fill='%23a9c2f6' opacity='.7'/%3E%3Cuse href='%23f' transform='translate(208 38) rotate(20) scale(.8)' fill='%23ffffff' opacity='.6'/%3E%3Cuse href='%23f' transform='translate(28 208) rotate(45) scale(.9)' fill='%23b4a9f2' opacity='.55'/%3E%3C/svg%3E");
+  background-size: 240px 240px; opacity: 1;
+  mask-image: radial-gradient(ellipse 85% 75% at 100% 100%, black, transparent 80%), radial-gradient(ellipse 70% 60% at 0% 0%, black, transparent 78%);
+  animation: nitrogen-sway 46s ease-in-out infinite alternate; }
+@keyframes nitrogen-sway { from { background-position: 0 0; } to { background-position: 48px 24px; } }
+:root[data-theme="nitrogen"] .minibar { background: linear-gradient(180deg, color-mix(in srgb, #e5eefd 86%, transparent), color-mix(in srgb, #c3d0f5 86%, transparent));
+  border-right-color: rgba(255, 255, 255, 0.7); }
+:root[data-theme="nitrogen"] .btn-primary, :root[data-theme="nitrogen"] .send-btn {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent), white 16%) 0%, var(--accent) 45%, var(--lilac) 100%);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.4) inset, 0 8px 24px -8px color-mix(in srgb, var(--accent) 65%, transparent); }
+:root[data-theme="nitrogen"] .btn-primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent), white 26%) 0%, color-mix(in srgb, var(--accent), white 8%) 45%, color-mix(in srgb, var(--lilac), white 10%) 100%); }
+:root[data-theme="nitrogen"] .hero-title { background-image: linear-gradient(100deg, var(--text) 0%, var(--text) 30%, var(--accent) 52%, var(--lilac) 70%, var(--text) 90%); }
+:root[data-theme="nitrogen"] .hero-kicker { color: var(--sage); background: color-mix(in srgb, var(--sage) 13%, transparent); border-color: color-mix(in srgb, var(--sage) 35%, transparent); }
+:root[data-theme="nitrogen"] .widget, :root[data-theme="nitrogen"] .modal, :root[data-theme="nitrogen"] .chat-shell.floating {
+  border-color: rgba(255, 255, 255, 0.7); backdrop-filter: blur(22px) saturate(1.5); }
+:root[data-theme="nitrogen"] .msg-user .bubble { background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 22%, transparent), color-mix(in srgb, var(--lilac) 22%, transparent));
+  border-color: color-mix(in srgb, var(--accent) 25%, transparent); }
+:root[data-theme="nitrogen"] .progress-bar, :root[data-theme="nitrogen"] .lib-progress span { background-image: linear-gradient(90deg, var(--accent), var(--lilac), #7fb2e8, var(--accent)); }
+:root[data-theme="nitrogen"] ::selection { background: color-mix(in srgb, var(--lilac) 32%, transparent); }
+:root[data-theme="nitrogen"] ::-webkit-scrollbar-thumb { background-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+:root[data-theme="nitrogen"] .subject-icon { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.7), 0 4px 12px -4px rgba(30, 50, 120, 0.3); }
+
+/* their cards in Settings → Appearance show the gradient, not one flat colour */
+.theme-preview[data-preview="sodium"] { background: linear-gradient(135deg, #f7d3e2, #dedcf5 60%, #cddbf8) !important; }
+.theme-preview[data-preview="sodium"] .tp-panel { box-shadow: 0 0 0 1px #d6b585 inset, 0 -2px 0 #c8952e inset; }
+.theme-preview[data-preview="nitrogen"] { background: linear-gradient(160deg, #e1ebfd, #b7cbf4 60%, #bcc4f1) !important; }
+.theme-preview[data-preview="nitrogen"] .tp-panel { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8) inset; }

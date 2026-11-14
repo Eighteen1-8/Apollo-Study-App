@@ -205,7 +205,7 @@ Add it to `COMMANDS` in `components/slashCommands.tsx` (name, arguments, summary
 
 ### Change styles
 Find every rule for a selector across all five style files before changing it (later files restyle earlier ones).
-Colours are tokens (`var(--accent)`, `var(--text-dim)` …) so all seven themes follow. For a reorganisation, compare
+Colours are tokens (`var(--accent)`, `var(--text-dim)` …) so all nine themes follow. For a reorganisation, compare
 computed styles before and after with `app/tests/css/capture.mjs`.
 
 ### Change the model prompts

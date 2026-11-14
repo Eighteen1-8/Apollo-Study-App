@@ -1,7 +1,7 @@
 /* The theme cards and the animation-speed buttons: Settings → Appearance and the first-run setup use the same ones.
    Both apply at once (theme.ts saves them on this computer). */
 import { useEffect, useState } from 'react';
-import { EFFECT_AMOUNTS, EFFECTS, MOTIONS, THEMES, UI_SCALE, clampScale, scaleStep, useAppearance } from '../theme';
+import { EFFECT_AMOUNTS, effectsFor, MOTIONS, THEMES, UI_SCALE, clampScale, scaleStep, useAppearance } from '../theme';
 import Icon from './Icon';
 
 /** The UI size (theme.ts `uiScale`): a slider with − / + and Reset. The slider shows its value while dragged and
@@ -28,14 +28,16 @@ export function UiScaleControl() {
   );
 }
 
-/** The background effect (components/Ambient.tsx) and how much of it. */
+/** The background effect (components/Ambient.tsx) and how much of it. Sodium and Nitrogen add their own scene as a
+ * theme-only choice (theme.ts `effectsFor`), picked automatically when the theme is chosen. */
 export function EffectSeg() {
   const [a, set] = useAppearance();
-  const help = EFFECTS.find((e) => e.id === a.effect)?.help;
+  const effects = effectsFor(a.theme);
+  const help = effects.find((e) => e.id === a.effect)?.help;
   return (
     <>
       <div className="seg" role="radiogroup" aria-label="Background effect">
-        {EFFECTS.map((e) => (
+        {effects.map((e) => (
           <button key={e.id} role="radio" aria-checked={a.effect === e.id} className={a.effect === e.id ? 'active' : ''}
             onClick={() => set({ effect: e.id })}>{e.label}</button>
         ))}
@@ -62,7 +64,7 @@ export function ThemeGrid() {
     <div className="theme-grid">
       {THEMES.map((t) => (
         <button key={t.id} className={`theme-card${a.theme === t.id ? ' on' : ''}`} onClick={() => set({ theme: t.id })}>
-          <span className="theme-preview" style={{ background: t.swatch[0] }}>
+          <span className="theme-preview" data-preview={t.id} style={{ background: t.swatch[0] }}>
             <span className="tp-bar" style={{ background: t.swatch[1] }} />
             <span className="tp-panel" style={{ background: t.swatch[1] }}>
               <span className="tp-line" style={{ background: a.accent ?? t.swatch[2] }} />

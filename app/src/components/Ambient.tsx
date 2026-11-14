@@ -1,11 +1,15 @@
-/* The background effect (Settings → Appearance): snow, meteors or fireflies drawn on one canvas over the whole app,
+/* The background effect (Settings → Appearance): snow, meteors, fireflies or, for a theme that has one, the theme's own
+   scene (themeScenes.ts: Sodium's roses, bubbles and stars, Nitrogen's hydrangeas), drawn on one canvas over the whole app,
    under dialogs and menus, never taking a click. While content is open (a file, notes, flashcards… — SubjectView sets
    <html data-studying>) the layer fades to 10% so it never gets in the way of reading. Frames are drawn only while
    the window is focused and visible, capped at the knowledge cloud's frame rate; nothing runs when animations are off. */
 import { useEffect, useRef } from 'react';
-import { cloudFps, Effect, EffectAmount, reducedMotion, useAppearance } from '../theme';
+import { cloudFps, Effect, EffectAmount, reducedMotion, ThemeId, useAppearance } from '../theme';
+import { themeScene } from './themeScenes';
 
 const AMOUNT: Record<EffectAmount, number> = { light: 0.5, medium: 1, heavy: 1.8 };
+/** A theme scene is a picture as much as an effect, so light still shows a fair amount of it. */
+const SCENE_AMOUNT: Record<EffectAmount, number> = { light: 0.7, medium: 1, heavy: 1.5 };
 
 interface Fx { step(dt: number, t: number): void; draw(ctx: CanvasRenderingContext2D): void }
 
@@ -142,13 +146,14 @@ function fireflies(w: number, h: number, amount: number, light: boolean, accent:
   };
 }
 
-function make(effect: Effect, w: number, h: number, level: EffectAmount): Fx | null {
+function make(effect: Effect, theme: ThemeId, w: number, h: number, level: EffectAmount): Fx | null {
   const root = document.documentElement;
   const light = root.dataset.tone === 'light';
   const accent = getComputedStyle(root).getPropertyValue('--accent').trim() || '#8b9bff';
   if (effect === 'snow') return snow(w, h, AMOUNT[level], light);
   if (effect === 'meteors') return meteors(w, h, level, light, accent);
   if (effect === 'fireflies') return fireflies(w, h, AMOUNT[level], light, accent);
+  if (effect === 'theme') return themeScene(theme, w, h, SCENE_AMOUNT[level]);
   return null;
 }
 
@@ -167,7 +172,7 @@ export default function Ambient() {
       w = window.innerWidth; h = window.innerHeight;
       canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      fx = make(a.effect, w, h, a.effectAmount);
+      fx = make(a.effect, a.theme, w, h, a.effectAmount);
     };
     size();
 
@@ -205,7 +210,7 @@ export default function Ambient() {
       document.removeEventListener('visibilitychange', onVis);
       ctx.clearRect(0, 0, w, h);
     };
-  }, [a.effect, a.effectAmount, off]);
+  }, [a.effect, a.effectAmount, a.theme, off]);
 
   if (off) return null;
   return <canvas ref={ref} className="ambient" aria-hidden />;

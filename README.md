@@ -22,7 +22,7 @@ Electron + React frontend, Python (FastAPI) sidecar backend. Local models by def
 | Settings (Helium) | Settings (Fluorine) |
 |:--:|:--:|
 | ![Settings](docs/screenshots/05-settings.png) | ![Settings — Fluorine](docs/screenshots/14-settings-themes.png) |
-| Seven themes to pick from (Helium shown) | The same settings in the Fluorine theme |
+| Nine themes to pick from (Helium shown) | The same settings in the Fluorine theme |
 
 | Quiz | Flashcards |
 |:--:|:--:|
@@ -146,7 +146,7 @@ The **calculator** button (also in the note, mind map and drawing toolbars) open
 
 ### Settings
 - Endpoints, model ids and keys (local or OpenRouter - online mode is optional; the OpenRouter models are listed to pick from). **Test connections** also checks what the model server supports (reasoning levels, JSON, tools, streamed usage).
-- Appearance: **UI size** (80–160%; Ctrl + / Ctrl − / Ctrl 0 move the same slider), themes (Hydrogen, Lithium, Iodine, Carbon, Oxygen, Helium, Fluorine), accent colour, **animation speed** (Off, Fast, Normal, Gentle), a background effect (snow, meteors, fireflies), 3D knowledge cloud, its idle drift, its **frame rate** (match the display by default, or 30 for laptops, 60, 120), and the pet.
+- Appearance: **UI size** (80–160%; Ctrl + / Ctrl − / Ctrl 0 move the same slider), themes (Hydrogen, Lithium, Iodine, Carbon, Oxygen, Helium, Fluorine, Sodium, Nitrogen), accent colour, **animation speed** (Off, Fast, Normal, Gentle), a background effect (snow, meteors, fireflies, or a theme-only one picked automatically with Sodium (roses, bubbles, gold stars) and Nitrogen (hydrangeas)), 3D knowledge cloud, its idle drift, its **frame rate** (match the display by default, or 30 for laptops, 60, 120), and the pet.
 - **Chat tutor**: how Apollo answers (Assistive, Length from thorough to very concise, Interactive) and, in advanced mode, its rules.
 - **Mode**: Standard (plain words, guided steps) or Advanced (technical terms, the context meter, Maintenance, every tuning setting).
 - **Maintenance**: disk use, clean-up, re-embedding and re-reading files, vision flags, the log, and database backups (daily and on demand, restored at the next start).

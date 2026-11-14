@@ -2,7 +2,7 @@
    <html> (styles/4-themes.css defines the themes), so it is in place before the first render. */
 import { useEffect, useState } from 'react';
 
-export type ThemeId = 'midnight' | 'aurora' | 'nebula' | 'graphite' | 'daylight' | 'helium' | 'fluorine';
+export type ThemeId = 'midnight' | 'aurora' | 'nebula' | 'graphite' | 'daylight' | 'helium' | 'fluorine' | 'sodium' | 'nitrogen';
 /** Animation speed: 'off' is the reduced-motion style (nothing moves); the others scale every animation's speed. */
 export type Motion = 'off' | 'fast' | 'normal' | 'gentle';
 export const MOTIONS: { id: Motion; label: string; rate: number }[] = [
@@ -22,13 +22,15 @@ export function scaleStep(v: number, dir: -1 | 0 | 1) {
 /** The sizes the older three-step text size setting used. */
 const OLD_TEXT_SIZES: Record<string, number> = { normal: 100, large: 112, xl: 125 };
 /** A light animated layer over the whole app (components/Ambient.tsx); it fades almost away while content is open. */
-export type Effect = 'none' | 'snow' | 'meteors' | 'fireflies';
+/** 'theme': the theme's own scene (components/themeScenes.ts), offered only for a theme with one (THEMES[].scene). */
+export type Effect = 'none' | 'snow' | 'meteors' | 'fireflies' | 'theme';
 export type EffectAmount = 'light' | 'medium' | 'heavy';
 export const EFFECTS: { id: Effect; label: string; help: string }[] = [
   { id: 'none', label: 'None', help: 'No background effect.' },
   { id: 'snow', label: 'Snow', help: 'Small flakes drifting slowly down.' },
   { id: 'meteors', label: 'Meteors', help: 'Shooting stars: now and then when light, a steady stream with showers when heavy.' },
   { id: 'fireflies', label: 'Fireflies', help: 'Soft glowing specks wandering and pulsing.' },
+  { id: 'theme', label: 'Theme', help: "The theme's own scene." },
 ];
 export const EFFECT_AMOUNTS: { id: EffectAmount; label: string }[] = [
   { id: 'light', label: 'Light' }, { id: 'medium', label: 'Medium' }, { id: 'heavy', label: 'Heavy' },
@@ -40,7 +42,7 @@ export const EFFECT_AMOUNTS: { id: EffectAmount; label: string }[] = [
 export interface Appearance { theme: ThemeId; accent: string | null; motion: Motion; cloud: boolean; cloudDrift: boolean; cloudFps: number; advanced: boolean; uiScale: number; effect: Effect; effectAmount: EffectAmount; pet: boolean; version: number }
 
 /** Named after elements (the ids are the older names, kept so a saved choice still applies). */
-export const THEMES: { id: ThemeId; name: string; blurb: string; swatch: [string, string, string]; light?: boolean }[] = [
+export const THEMES: { id: ThemeId; name: string; blurb: string; swatch: [string, string, string]; light?: boolean; scene?: { label: string; help: string } }[] = [
   { id: 'midnight', name: 'Hydrogen', blurb: 'Deep blue-black with indigo light', swatch: ['#0b0d14', '#161a26', '#8b9bff'] },
   { id: 'aurora', name: 'Lithium', blurb: 'Polar teal over dark spruce', swatch: ['#06110f', '#0f1f1c', '#3ee6b8'] },
   { id: 'nebula', name: 'Iodine', blurb: 'Violet dusk with magenta glow', swatch: ['#0e0914', '#1b1226', '#d58bff'] },
@@ -48,7 +50,18 @@ export const THEMES: { id: ThemeId; name: string; blurb: string; swatch: [string
   { id: 'daylight', name: 'Oxygen', blurb: 'Bright paper with ink accents', swatch: ['#f6f7fb', '#ffffff', '#4f5bd5'], light: true },
   { id: 'helium', name: 'Helium', blurb: 'Pink all through, with raspberry accents', swatch: ['#f5d3e2', '#fae4ee', '#c2185b'], light: true },
   { id: 'fluorine', name: 'Fluorine', blurb: 'Green all through, with forest accents', swatch: ['#cdebd5', '#e2f4e7', '#15803d'], light: true },
+  { id: 'sodium', name: 'Sodium', blurb: 'Rose-to-periwinkle dusk, trimmed in gold', swatch: ['#f3d6e4', '#fbf1f5', '#c8952e'], light: true,
+    scene: { label: 'Roses & bubbles', help: 'Sodium only: roses, blossoms and petals drifting down, bubbles rising and gold stars twinkling.' } },
+  { id: 'nitrogen', name: 'Nitrogen', blurb: 'Hydrangea blues, all through', swatch: ['#c2d3f3', '#edf3fe', '#3f66e0'], light: true,
+    scene: { label: 'Hydrangeas', help: 'Nitrogen only: hydrangea florets tumbling down, whole hydrangeas floating by and a few leaves.' } },
 ];
+/** Whether a theme brings its own animated scene (components/themeScenes.ts): the 'theme' background effect. */
+export const hasScene = (id: ThemeId) => !!THEMES.find((t) => t.id === id)?.scene;
+/** The background effects a theme offers: the common ones, plus 'theme' named after its scene if it has one. */
+export function effectsFor(id: ThemeId) {
+  const scene = THEMES.find((t) => t.id === id)?.scene;
+  return EFFECTS.flatMap((e) => (e.id !== 'theme' ? [e] : scene ? [{ ...e, label: scene.label, help: scene.help }] : []));
+}
 
 export const ACCENTS = ['#8b9bff', '#3ee6b8', '#d58bff', '#ff8fa3', '#ffb454', '#5cc8ff', '#a3e635', '#f472b6'];
 
@@ -92,6 +105,8 @@ function load(): Appearance {
       if (!EFFECTS.some((e) => e.id === a.effect)) a.effect = 'none';
       if (!EFFECT_AMOUNTS.some((e) => e.id === a.effectAmount)) a.effectAmount = 'light';
       a.pet = a.pet === true;
+      if (a.effect === 'theme' && !hasScene(a.theme)) a.effect = 'none';
+      delete (a as { themeScene?: boolean }).themeScene; // briefly a separate switch before it became an effect
       localStorage.setItem(KEY, JSON.stringify(a)); // the migrations run once
       return a;
     }
@@ -129,6 +144,11 @@ export function applyAppearance(a: Appearance = current) {
 }
 
 export function setAppearance(patch: Partial<Appearance>) {
+  // a theme with its own scene starts with it as the background effect; leaving it drops that effect
+  if (patch.theme && patch.theme !== current.theme && patch.effect === undefined) {
+    if (hasScene(patch.theme)) patch = { ...patch, effect: 'theme' };
+    else if (current.effect === 'theme') patch = { ...patch, effect: 'none' };
+  }
   current = { ...current, ...patch };
   try { localStorage.setItem(KEY, JSON.stringify(current)); } catch { /* not persisted */ }
   // Cross-fade colours while the theme switches, then drop the transition so it never slows normal UI.

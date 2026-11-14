@@ -223,7 +223,8 @@ The ? button on the left bar shows this list."""),
 - Mode: Standard (plain words, guided steps) or Advanced (technical terms, token numbers, Maintenance, every tuning
   setting).
 - Appearance: themes named after elements, accent colour, UI size (80-160%; Ctrl + and Ctrl - do the same),
-  animation speed, a background effect (snow, meteors or fireflies), the 3D knowledge map and its frame rate, and
+  animation speed, a background effect (snow, meteors or fireflies, plus a theme-only one for Sodium (roses,
+  bubbles and gold stars) and Nitrogen (hydrangeas), chosen automatically with those themes), the 3D knowledge map and its frame rate, and
   the pet (an optional small cat that shows what Apollo is doing).
 - Models: where the models run (this computer or OpenRouter online), addresses, model names, and Test connections.
 - Maintenance (advanced): disk use, clean-up, re-reading files, vision checks, the log and database backups.
